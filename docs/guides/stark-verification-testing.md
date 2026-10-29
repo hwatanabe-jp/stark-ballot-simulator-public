@@ -98,7 +98,7 @@ pnpm build:zkvm:dev-mode
 
 ## Journal artifact を区別する
 
-同じ guest output に由来していても、次の表現は交換可能ではありません。
+同じ guest output を、用途に応じて次の形式で扱います。形式ごとに encoding や field の表現が異なるため、相互に置き換えて使うことはできません。
 
 | 表現                                        | 内容と用途                                                                                                                                                 |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -187,12 +187,13 @@ export EXPECTED_IMAGE_ID="$(node verifier-service/scripts/read-image-id.mjs publ
 ./verifier-service/target/release/verifier-service verify /path/to/bundle-or-receipt
 ```
 
-checked-in `public/imageId-mapping.json` の現行 methodVersion `14` では、変更後のguestに対応する
-`default` は承認済みのmanaged ARM64 Prover releaseを根拠に `confirmed` です。
+checked-in `public/imageId-mapping.json` の現行 methodVersion `14` では、`default` は承認済みの
+managed ARM64 Prover releaseからconfirmedであり、source、image digest、release recordのprovenanceを保持します。
 `x86_64` は新しい出力先で行ったlocal production guest buildから独立にconfirmedです。
 通常のApp deploymentは選択したProver releaseとdefaultの一致を確認します。稼働中deploymentの
 receiptを検証する場合は、そのreleaseに対応するソースとconfirmed variantを使ってください。
-variant間のfallbackはありません。
+variant未指定時は `default` を選び、local x86_64 receiptには `x86_64` を明示します。
+unconfirmedまたは利用できないvariantは拒否し、variant間のfallbackはありません。
 
 `verifier-service` が bundle directory または zip を受け取った場合、内部の `receipt.json` を探して
 `Receipt::verify(expectedImageId)` と top-level `image_id` の一致を検証します。これは **bundle 内の

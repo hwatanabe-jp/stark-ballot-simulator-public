@@ -135,11 +135,6 @@ def canonicalInputCommitmentPreimage (testCase : InputCommitmentCase) : List Nat
     u32LE testCase.votes.length ++
     (canonicalVoteEncodings testCase.votes).flatMap encodeVoteForInputCommitment
 
-theorem lexNatLE_refl (value : List Nat) : lexNatLE value value = true := by
-  induction value with
-  | nil => simp [lexNatLE]
-  | cons _ _ ih => simp [lexNatLE, ih]
-
 theorem lexNatLE_antisymm
     (left right : List Nat)
     (hLeft : lexNatLE left right = true)
@@ -604,15 +599,5 @@ theorem canonical_encoding_duplicate_indices_deterministic
       else
         lexNatLE left.commitment right.commitment := by
   simp only [canonicalVoteLE, canonicalEncodingLE, voteEncoding, hIndex, ite_true]
-
-theorem encoded_vote_index_is_u32_bounded
-    (vote : CommitmentVote)
-    (h : boundedU32 vote.index) :
-    vote.index ≤ u32Max := h
-
-theorem encoded_vote_path_length_is_u16_bounded
-    (vote : CommitmentVote)
-    (h : boundedU16 vote.merklePath.length) :
-    vote.merklePath.length ≤ u16Max := h
 
 end StarkBallotFormal

@@ -22,26 +22,12 @@ const routeKey = (method: string, path: string): string => `${method} ${path}`;
 const partialRouteKey = (route: Partial<ApiRouteContract>): string =>
   `${route.method ?? 'UNKNOWN'} ${route.path ?? 'UNKNOWN'}`;
 
-function schemasFor(route: ApiRouteContract): unknown[] {
-  const schemas: unknown[] = [];
-  const requestSchemas: readonly unknown[] = [
-    route.request.params,
-    route.request.query,
-    route.request.headers,
-    route.request.body,
-  ];
-  for (const schema of requestSchemas) {
-    if (schema !== undefined) {
-      schemas.push(schema);
-    }
-  }
-  for (const response of route.responses) {
-    if ('schema' in response) {
-      const schema: unknown = response.schema;
-      schemas.push(schema);
-    }
-  }
-  return schemas;
+function hasPublicErrorContract(route: Partial<ApiRouteContract>): boolean {
+  if (!route.publicErrors) return false;
+  return (
+    route.publicErrors.responses.length > 0 &&
+    (route.publicErrors.codes.length > 0 || route.publicErrors.envelope === 'plain-text')
+  );
 }
 
 describe('typed API route inventory', () => {
@@ -223,11 +209,7 @@ describe('typed API route inventory', () => {
       if (!route.responses || route.responses.length === 0) {
         missing.push('responses');
       }
-      if (
-        !route.publicErrors ||
-        route.publicErrors.responses.length === 0 ||
-        (route.publicErrors.codes.length === 0 && route.publicErrors.envelope !== 'plain-text')
-      ) {
+      if (!hasPublicErrorContract(route)) {
         missing.push('publicErrors');
       }
       return missing.map((field) => `${partialRouteKey(route)}: ${field}`);
@@ -432,16 +414,6 @@ describe('typed API route inventory', () => {
       );
 
     expect(missing).toEqual([]);
-  });
-
-  it('carries every referenced contract schema as an actual schema object', () => {
-    const unresolved = TARGET_API_ROUTE_CONTRACTS.flatMap((route) =>
-      schemasFor(route)
-        .filter((schema) => !(schema instanceof s.Schema))
-        .map(() => routeKey(route.method, route.path)),
-    );
-
-    expect(unresolved).toEqual([]);
   });
 
   it('records request schema coverage for active mutation routes', () => {

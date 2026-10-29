@@ -1,6 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type Dispatch, type SetStateAction } from 'react';
+import type { UseTranslationResult } from '@stark-ballot/web/hooks/useTranslation';
+import type { SessionIdentity } from '@stark-ballot/web/session';
+import type { SessionData } from '@stark-ballot/web/session/types';
 import {
   FinalizeButton,
   ProgressDisplay,
@@ -66,39 +69,37 @@ const knowledgeOptions = (expectedSessionId: string | undefined, omitKeys?: type
     expectedSessionId,
   });
 
-export default function AggregatePage(): React.ReactElement {
-  const { t } = useTranslation();
-  const router = useAppRouter();
-  const [selectedScenario, setSelectedScenario] = useState<ScenarioId | null>(
-    () => getKnowledgeValue('scenarioId') ?? null,
-  );
-  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
-  const requireFinalizeTurnstile = isBrowserTurnstileRequiredForAction('finalize');
-  const [expectedSessionIdentity] = useState(() => captureSessionIdentity(getSessionData()));
-  const [error, setError] = useState<string | null>(() =>
-    isSessionReplacedForIdentity(expectedSessionIdentity) || isSessionReplaced()
-      ? t('pages.aggregate.errors.sessionReplaced')
-      : null,
-  );
+interface FinalizationBinding {
+  t: UseTranslationResult['t'];
+  router: ReturnType<typeof useAppRouter>;
+  expectedSessionIdentity: SessionIdentity | null;
+  expectedSessionId: string | undefined;
+  getExpectedSession: () => SessionData | null;
+  resolveSessionErrorMessage: () => string;
+}
+
+function initialFinalizationError(identity: SessionIdentity | null, t: UseTranslationResult['t']): string | null {
+  return isSessionReplacedForIdentity(identity) || isSessionReplaced()
+    ? t('pages.aggregate.errors.sessionReplaced')
+    : null;
+}
+
+function useFinalizationProgress({
+  t,
+  router,
+  expectedSessionIdentity,
+  expectedSessionId,
+  getExpectedSession,
+  resolveSessionErrorMessage,
+}: FinalizationBinding) {
+  const [error, setError] = useState<string | null>(() => initialFinalizationError(expectedSessionIdentity, t));
   const [phase, setPhase] = useState<FinalizationPhase>(error ? 'failed' : 'idle');
   const [queueInfo, setQueueInfo] = useState<QueueInfo>({});
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const navigationTimeoutRef = useRef<number | null>(null);
-  const submissionControllerRef = useRef<AbortController | null>(null);
-  const expectedSessionId = expectedSessionIdentity?.sessionId;
-
-  const getExpectedSession = useCallback(
-    () => getSessionDataForIdentity(expectedSessionIdentity),
-    [expectedSessionIdentity],
-  );
-
-  const resolveSessionErrorMessage = useCallback(
-    (): string =>
-      isSessionReplacedForIdentity(expectedSessionIdentity) || isSessionReplaced()
-        ? t('pages.aggregate.errors.sessionReplaced')
-        : t('pages.aggregate.errors.sessionNotFound'),
-    [expectedSessionIdentity, t],
-  );
+  const cancelResultNavigation = useCallback(() => {
+    if (navigationTimeoutRef.current) window.clearTimeout(navigationTimeoutRef.current);
+  }, []);
 
   const scheduleResultNavigation = useCallback(
     (finalizationResult: ClientFinalizationSnapshot): void => {
@@ -111,9 +112,7 @@ export default function AggregatePage(): React.ReactElement {
         finalizeResult: finalizationResult,
         phase: 'verifying',
       });
-      if (navigationTimeoutRef.current) {
-        window.clearTimeout(navigationTimeoutRef.current);
-      }
+      cancelResultNavigation();
       navigationTimeoutRef.current = window.setTimeout(() => {
         if (!getExpectedSession()) {
           setError(resolveSessionErrorMessage());
@@ -123,7 +122,14 @@ export default function AggregatePage(): React.ReactElement {
         router.push('/result');
       }, RESULT_TRANSITION_DELAY_MS);
     },
-    [expectedSessionId, expectedSessionIdentity, getExpectedSession, resolveSessionErrorMessage, router],
+    [
+      expectedSessionId,
+      expectedSessionIdentity,
+      getExpectedSession,
+      resolveSessionErrorMessage,
+      router,
+      cancelResultNavigation,
+    ],
   );
 
   const handleMissingFinalizeResult = useCallback(
@@ -202,46 +208,39 @@ export default function AggregatePage(): React.ReactElement {
     [expectedSessionIdentity, handleSucceededResource, handleTerminalFailure],
   );
 
-  useEffect(() => {
-    return () => {
-      submissionControllerRef.current?.abort();
-      if (navigationTimeoutRef.current) {
-        window.clearTimeout(navigationTimeoutRef.current);
-      }
-    };
-  }, []);
+  return {
+    error,
+    setError,
+    phase,
+    setPhase,
+    queueInfo,
+    startedAt,
+    cancelResultNavigation,
+    applyFinalizationResource,
+    handleMissingSession,
+  };
+}
 
-  useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key !== SESSION_STORAGE_KEY) {
-        return;
-      }
-      if (!isSessionReplacedForIdentity(expectedSessionIdentity)) {
-        return;
-      }
-      setError(t('pages.aggregate.errors.sessionReplaced'));
-      setPhase('failed');
-    };
+function isTerminalFinalization(resource: FinalizationResource): boolean {
+  return resource.status === 'succeeded' || resource.status === 'failed' || resource.status === 'timeout';
+}
 
-    window.addEventListener('storage', handleStorage);
-    return () => {
-      window.removeEventListener('storage', handleStorage);
-    };
-  }, [expectedSessionIdentity, t]);
+type CurrentFinalizationOptions = Pick<FinalizationBinding, 't' | 'getExpectedSession' | 'resolveSessionErrorMessage'> &
+  Pick<
+    ReturnType<typeof useFinalizationProgress>,
+    'applyFinalizationResource' | 'handleMissingSession' | 'phase' | 'setError' | 'setPhase'
+  >;
 
-  const handleScenarioChange = useCallback(
-    (scenarioId: ScenarioId): void => {
-      if (isSessionReplacedForIdentity(expectedSessionIdentity)) {
-        setError(t('pages.aggregate.errors.sessionReplaced'));
-        setPhase('failed');
-        return;
-      }
-      setSelectedScenario(scenarioId);
-      saveKnowledgeData({ scenarioId }, knowledgeOptions(expectedSessionId));
-    },
-    [expectedSessionId, expectedSessionIdentity, t],
-  );
-
+function useCurrentFinalization({
+  t,
+  getExpectedSession,
+  resolveSessionErrorMessage,
+  applyFinalizationResource,
+  handleMissingSession,
+  phase,
+  setError,
+  setPhase,
+}: CurrentFinalizationOptions): void {
   useEffect(() => {
     const sessionData = getExpectedSession();
     if (!sessionData?.sessionId) {
@@ -286,7 +285,7 @@ export default function AggregatePage(): React.ReactElement {
       cancelled = true;
       controller.abort();
     };
-  }, [applyFinalizationResource, getExpectedSession, handleMissingSession, t]);
+  }, [applyFinalizationResource, getExpectedSession, handleMissingSession, setError, setPhase, t]);
 
   // Poll for finalization status when in queued/running phase
   useEffect(() => {
@@ -314,6 +313,17 @@ export default function AggregatePage(): React.ReactElement {
       };
     }
 
+    const handlePollingFailure = (err: unknown) => {
+      if (isPollingStopped()) {
+        return;
+      }
+      if (resolveFinalizationStatusErrorCode(err) === 'SESSION_NOT_FOUND') {
+        handleMissingSession();
+        return;
+      }
+      console.error('[AggregatePage] Poll error:', err);
+      timeoutId = window.setTimeout(() => void poll(), 3000);
+    };
     const poll = async () => {
       if (isPollingStopped()) return;
       if (!getExpectedSession()) {
@@ -337,22 +347,14 @@ export default function AggregatePage(): React.ReactElement {
           return;
         }
         applyFinalizationResource(resource);
-        if (resource.status === 'succeeded' || resource.status === 'failed' || resource.status === 'timeout') {
+        if (isTerminalFinalization(resource)) {
           return;
         }
 
         // Continue polling
         timeoutId = window.setTimeout(() => void poll(), 1500);
       } catch (err) {
-        if (isPollingStopped()) {
-          return;
-        }
-        if (resolveFinalizationStatusErrorCode(err) === 'SESSION_NOT_FOUND') {
-          handleMissingSession();
-          return;
-        }
-        console.error('[AggregatePage] Poll error:', err);
-        timeoutId = window.setTimeout(() => void poll(), 3000);
+        handlePollingFailure(err);
       }
     };
 
@@ -364,36 +366,208 @@ export default function AggregatePage(): React.ReactElement {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [getExpectedSession, applyFinalizationResource, handleMissingSession, phase, resolveSessionErrorMessage, t]);
+  }, [
+    getExpectedSession,
+    applyFinalizationResource,
+    handleMissingSession,
+    phase,
+    resolveSessionErrorMessage,
+    setError,
+    setPhase,
+    t,
+  ]);
+}
+
+interface FinalizationSubmissionAdmission {
+  getExpectedSession: () => SessionData | null;
+  resolveSessionErrorMessage: () => string;
+  t: UseTranslationResult['t'];
+  selectedScenario: ScenarioId | null;
+  requireFinalizeTurnstile: boolean;
+  turnstileToken: string | null;
+  setError: Dispatch<SetStateAction<string | null>>;
+  setPhase: Dispatch<SetStateAction<FinalizationPhase>>;
+}
+
+function admitFinalizationSubmission({
+  getExpectedSession,
+  resolveSessionErrorMessage,
+  t,
+  selectedScenario,
+  requireFinalizeTurnstile,
+  turnstileToken,
+  setError,
+  setPhase,
+}: FinalizationSubmissionAdmission) {
+  const sessionData = getExpectedSession();
+  if (!sessionData?.sessionId) {
+    setError(resolveSessionErrorMessage());
+    setPhase('failed');
+    return null;
+  }
+
+  if (!selectedScenario) {
+    setError(t('pages.aggregate.errors.scenarioRequired'));
+    return null;
+  }
+
+  if (requireFinalizeTurnstile && !turnstileToken) {
+    setError(t('errors.captchaFailed'));
+    return null;
+  }
+
+  return { sessionData, scenarioId: selectedScenario };
+}
+
+function aggregatePresentation(phase: FinalizationPhase, t: UseTranslationResult['t']) {
+  const isProcessing = phase !== 'idle' && phase !== 'failed';
+  const showProgress = phase === 'queued' || phase === 'running' || phase === 'succeeded';
+
+  // Map phase to ProgressDisplay status
+  const progressStatus: 'pending' | 'running' | 'succeeded' =
+    phase === 'queued' ? 'pending' : phase === 'running' ? 'running' : phase === 'succeeded' ? 'succeeded' : 'pending';
+  const progressTitle =
+    phase === 'succeeded'
+      ? t('pages.aggregate.progress.title.completed')
+      : t('pages.aggregate.progress.title.processing');
+  const progressDescription =
+    phase === 'succeeded'
+      ? t('pages.aggregate.progress.description.completed')
+      : t('pages.aggregate.progress.description.processing');
+
+  return { isProcessing, showProgress, progressStatus, progressTitle, progressDescription };
+}
+
+function useAggregationController(t: UseTranslationResult['t'], router: ReturnType<typeof useAppRouter>) {
+  const [selectedScenario, setSelectedScenario] = useState<ScenarioId | null>(
+    () => getKnowledgeValue('scenarioId') ?? null,
+  );
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const requireFinalizeTurnstile = isBrowserTurnstileRequiredForAction('finalize');
+  const [expectedSessionIdentity] = useState(() => captureSessionIdentity(getSessionData()));
+  const submissionControllerRef = useRef<AbortController | null>(null);
+  const expectedSessionId = expectedSessionIdentity?.sessionId;
+
+  const getExpectedSession = useCallback(
+    () => getSessionDataForIdentity(expectedSessionIdentity),
+    [expectedSessionIdentity],
+  );
+
+  const resolveSessionErrorMessage = useCallback(
+    (): string =>
+      isSessionReplacedForIdentity(expectedSessionIdentity) || isSessionReplaced()
+        ? t('pages.aggregate.errors.sessionReplaced')
+        : t('pages.aggregate.errors.sessionNotFound'),
+    [expectedSessionIdentity, t],
+  );
+
+  const {
+    error,
+    setError,
+    phase,
+    setPhase,
+    queueInfo,
+    startedAt,
+    cancelResultNavigation,
+    applyFinalizationResource,
+    handleMissingSession,
+  } = useFinalizationProgress({
+    t,
+    router,
+    expectedSessionIdentity,
+    expectedSessionId,
+    getExpectedSession,
+    resolveSessionErrorMessage,
+  });
+
+  useEffect(() => {
+    return () => {
+      submissionControllerRef.current?.abort();
+      cancelResultNavigation();
+    };
+  }, [cancelResultNavigation]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== SESSION_STORAGE_KEY) {
+        return;
+      }
+      if (!isSessionReplacedForIdentity(expectedSessionIdentity)) {
+        return;
+      }
+      setError(t('pages.aggregate.errors.sessionReplaced'));
+      setPhase('failed');
+    };
+
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [expectedSessionIdentity, setError, setPhase, t]);
+
+  const handleScenarioChange = useCallback(
+    (scenarioId: ScenarioId): void => {
+      if (isSessionReplacedForIdentity(expectedSessionIdentity)) {
+        setError(t('pages.aggregate.errors.sessionReplaced'));
+        setPhase('failed');
+        return;
+      }
+      setSelectedScenario(scenarioId);
+      saveKnowledgeData({ scenarioId }, knowledgeOptions(expectedSessionId));
+    },
+    [expectedSessionId, expectedSessionIdentity, setError, setPhase, t],
+  );
+
+  useCurrentFinalization({
+    t,
+    getExpectedSession,
+    resolveSessionErrorMessage,
+    applyFinalizationResource,
+    handleMissingSession,
+    phase,
+    setError,
+    setPhase,
+  });
 
   const handleFinalize = useCallback(async () => {
     if (submissionControllerRef.current) return;
-    const sessionData = getExpectedSession();
-    if (!sessionData?.sessionId) {
-      setError(resolveSessionErrorMessage());
-      setPhase('failed');
-      return;
-    }
-
-    if (!selectedScenario) {
-      setError(t('pages.aggregate.errors.scenarioRequired'));
-      return;
-    }
-
-    if (requireFinalizeTurnstile && !turnstileToken) {
-      setError(t('errors.captchaFailed'));
-      return;
-    }
+    const ready = admitFinalizationSubmission({
+      getExpectedSession,
+      resolveSessionErrorMessage,
+      t,
+      selectedScenario,
+      requireFinalizeTurnstile,
+      turnstileToken,
+      setError,
+      setPhase,
+    });
+    if (!ready) return;
+    const { sessionData, scenarioId } = ready;
 
     const controller = new AbortController();
     submissionControllerRef.current = controller;
     setPhase('submitting');
     setError(null);
 
-    try {
-      // scenarioId is stored for API continuity (hidden in Knowledge Panel)
+    const handleRequestFailure = (requestError: unknown): void => {
+      if (controller.signal.aborted) return;
+      const errorCode = resolveApiClientErrorCode(requestError);
+      if (errorCode === 'CAPTCHA_FAILED') {
+        setError(t('errors.captchaFailed'));
+        setTurnstileToken(null);
+        setPhase('idle');
+        return;
+      }
+      throw requestError;
+    };
+    const handleFinalizeFailure = (err: unknown): void => {
+      if (controller.signal.aborted) return;
+      console.error('[AggregatePage] Finalize error:', err);
+      setError(err instanceof Error ? err.message : t('errors.generic'));
+      setPhase('failed');
+    };
 
-      const scenarioId = selectedScenario;
+    try {
       let result;
       try {
         result = await startFinalization(
@@ -405,15 +579,8 @@ export default function AggregatePage(): React.ReactElement {
           { signal: controller.signal },
         );
       } catch (requestError) {
-        if (controller.signal.aborted) return;
-        const errorCode = resolveApiClientErrorCode(requestError);
-        if (errorCode === 'CAPTCHA_FAILED') {
-          setError(t('errors.captchaFailed'));
-          setTurnstileToken(null);
-          setPhase('idle');
-          return;
-        }
-        throw requestError;
+        handleRequestFailure(requestError);
+        return;
       }
 
       if (controller.signal.aborted) return;
@@ -424,10 +591,7 @@ export default function AggregatePage(): React.ReactElement {
       }
       applyFinalizationResource(result.data);
     } catch (err) {
-      if (controller.signal.aborted) return;
-      console.error('[AggregatePage] Finalize error:', err);
-      setError(err instanceof Error ? err.message : t('errors.generic'));
-      setPhase('failed');
+      handleFinalizeFailure(err);
     } finally {
       if (submissionControllerRef.current === controller) submissionControllerRef.current = null;
     }
@@ -439,22 +603,43 @@ export default function AggregatePage(): React.ReactElement {
     t,
     applyFinalizationResource,
     resolveSessionErrorMessage,
+    setError,
+    setPhase,
   ]);
 
-  const isProcessing = phase !== 'idle' && phase !== 'failed';
-  const showProgress = phase === 'queued' || phase === 'running' || phase === 'succeeded';
+  return {
+    selectedScenario,
+    handleScenarioChange,
+    turnstileToken,
+    setTurnstileToken,
+    requireFinalizeTurnstile,
+    error,
+    phase,
+    queueInfo,
+    startedAt,
+    handleFinalize,
+  };
+}
 
-  // Map phase to ProgressDisplay status
-  const progressStatus =
-    phase === 'queued' ? 'pending' : phase === 'running' ? 'running' : phase === 'succeeded' ? 'succeeded' : 'pending';
-  const progressTitle =
-    phase === 'succeeded'
-      ? t('pages.aggregate.progress.title.completed')
-      : t('pages.aggregate.progress.title.processing');
-  const progressDescription =
-    phase === 'succeeded'
-      ? t('pages.aggregate.progress.description.completed')
-      : t('pages.aggregate.progress.description.processing');
+export default function AggregatePage(): React.ReactElement {
+  const { t } = useTranslation();
+  const router = useAppRouter();
+  const {
+    selectedScenario,
+    handleScenarioChange,
+    turnstileToken,
+    setTurnstileToken,
+    requireFinalizeTurnstile,
+    error,
+    phase,
+    queueInfo,
+    startedAt,
+    handleFinalize,
+  } = useAggregationController(t, router);
+  const { isProcessing, showProgress, progressStatus, progressTitle, progressDescription } = aggregatePresentation(
+    phase,
+    t,
+  );
 
   return (
     <div className="aggregate-page">

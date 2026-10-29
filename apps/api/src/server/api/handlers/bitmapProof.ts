@@ -148,6 +148,71 @@ export function resolveBitmapProofResponse(params: {
   };
 }
 
+function admitUserBitmapIndex(
+  voting: SessionAdmittedContext['session']['voting'],
+  voteIndex: number,
+): { ok: true; index: BitmapBitIndex } | { ok: false; response: Response } {
+  const index = validateIndex(voteIndex);
+  if (index === null) return { ok: false, response: bitmapProofErrorResponse('Invalid or missing index parameter') };
+  if (voting.userParticipation.status !== 'cast')
+    return { ok: false, response: errorResponse(ErrorCode.USER_NOT_VOTED) };
+  if (index !== voting.userParticipation.voteIndex)
+    return {
+      ok: false,
+      response: bitmapProofErrorResponse('Bitmap proof requests are limited to the session user vote.'),
+    };
+  return { ok: true, index };
+}
+
+function bitmapProofResponse(
+  responseData: BitmapProofResponse,
+  ifNoneMatch: string | undefined,
+  index: BitmapBitIndex,
+  kind: BitmapKind,
+  startTime: number,
+): Response {
+  // Generate ETag for caching
+  const etag = generateETag(responseData);
+
+  // Check for conditional request
+  const clientETag = ifNoneMatch ?? null;
+  if (matchesIfNoneMatch(clientETag, etag)) {
+    // Return 304 Not Modified
+    return new Response(null, {
+      status: 304,
+      headers: getCacheHeaders(etag),
+    });
+  }
+
+  // Log performance in development
+  if (process.env['NODE_ENV'] === 'development') {
+    const duration = performance.now() - startTime;
+    logger.debug(`[API] Bitmap proof generated in ${duration.toFixed(2)}ms`, {
+      index,
+      kind,
+      leafIndex: Math.floor(index / 256),
+      pathLength: responseData.auditPath.length,
+      responseSize: JSON.stringify(responseData).length,
+    });
+  }
+
+  // Return proof with aggressive caching (data is immutable)
+  return respondWithRoute(
+    currentFinalizationBitmapProofRoute,
+    { status: 200, content: 'json', body: { data: responseData } },
+    { headers: getCacheHeaders(etag) },
+  );
+}
+
+function logBitmapProofError(error: unknown, startTime: number): void {
+  if (process.env['NODE_ENV'] !== 'test' && process.env['VITEST'] !== 'true') {
+    logger.error('[API] Error generating bitmap proof:', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      duration: performance.now() - startTime,
+    });
+  }
+}
+
 /**
  * GET /api/sessions/:sessionId/finalizations/current/bitmap-proofs/:kind/:voteIndex
  *
@@ -182,17 +247,9 @@ export async function getCurrentFinalizationBitmapProofHandler({
     const finalizationResult = session.finalization.finalizationResult;
 
     const { kind } = input.params;
-    const index = validateIndex(input.params.voteIndex);
-
-    if (index === null) {
-      return bitmapProofErrorResponse('Invalid or missing index parameter');
-    }
-    if (session.voting.userParticipation.status !== 'cast') {
-      return errorResponse(ErrorCode.USER_NOT_VOTED);
-    }
-    if (index !== session.voting.userParticipation.voteIndex) {
-      return bitmapProofErrorResponse('Bitmap proof requests are limited to the session user vote.');
-    }
+    const admittedIndex = admitUserBitmapIndex(session.voting, input.params.voteIndex);
+    if (!admittedIndex.ok) return admittedIndex.response;
+    const index = admittedIndex.index;
 
     // Retrieve session-scoped bitmap data
     const bitmapData = await store.getBitmapData(sessionId, session.finalization.finalizationId);
@@ -212,48 +269,12 @@ export async function getCurrentFinalizationBitmapProofHandler({
     }
     const responseData = proofResolution.response;
 
-    // Generate ETag for caching
-    const etag = generateETag(responseData);
-
-    // Check for conditional request
-    const clientETag = input.headers['If-None-Match'] ?? null;
-    if (matchesIfNoneMatch(clientETag, etag)) {
-      // Return 304 Not Modified
-      return new Response(null, {
-        status: 304,
-        headers: getCacheHeaders(etag),
-      });
-    }
-
-    // Log performance in development
-    if (process.env['NODE_ENV'] === 'development') {
-      const duration = performance.now() - startTime;
-      logger.debug(`[API] Bitmap proof generated in ${duration.toFixed(2)}ms`, {
-        index,
-        kind,
-        leafIndex: Math.floor(index / 256),
-        pathLength: responseData.auditPath.length,
-        responseSize: JSON.stringify(responseData).length,
-      });
-    }
-
-    // Return proof with aggressive caching (data is immutable)
-    return respondWithRoute(
-      currentFinalizationBitmapProofRoute,
-      { status: 200, content: 'json', body: { data: responseData } },
-      { headers: getCacheHeaders(etag) },
-    );
+    return bitmapProofResponse(responseData, input.headers['If-None-Match'], index, kind, startTime);
   } catch (error) {
-    if (process.env['NODE_ENV'] !== 'test' && process.env['VITEST'] !== 'true') {
-      logger.error('[API] Error generating bitmap proof:', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        duration: performance.now() - startTime,
-      });
-    }
+    logBitmapProofError(error, startTime);
 
     return errorResponse(ErrorCode.INTERNAL_ERROR, { details: 'Failed to generate bitmap proof' });
   }
 }
 
 // Disable body parsing for GET requests
-export const dynamic = 'force-dynamic';

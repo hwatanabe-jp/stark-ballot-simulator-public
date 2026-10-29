@@ -114,18 +114,22 @@ export class RFC6962MerkleTree {
     return root;
   }
 
-  /**
-   * CT-style MTH (Merkle Tree Hash) function
-   *
-   * Recursively computes the root hash of a subtree range
-   */
-  private mthRange(start: number, size: number): string {
+  private validateMthRange(start: number, size: number): void {
     if (size < 0 || start < 0) {
       throw new Error('Invalid MTH range');
     }
     if (start + size > this.leaves.length) {
       throw new Error('MTH range exceeds tree size');
     }
+  }
+
+  /**
+   * CT-style MTH (Merkle Tree Hash) function
+   *
+   * Recursively computes the root hash of a subtree range
+   */
+  private mthRange(start: number, size: number): string {
+    this.validateMthRange(start, size);
 
     if (size === 0) {
       // MTH({}) = HASH()
@@ -263,13 +267,8 @@ export class RFC6962MerkleTree {
     const n = size;
 
     // Base cases
-    if (m === n && b) {
-      return []; // Empty proof
-    }
-
-    if (m === n && !b) {
-      // Return the root hash of the subtree
-      return [this.mthRange(start, size)];
+    if (m === n) {
+      return b ? [] : [this.mthRange(start, size)];
     }
 
     // Special case for 1→2: Return raw leaf, not MTH
@@ -316,51 +315,30 @@ export class RFC6962MerkleTree {
       return false;
     }
 
-    // Validate proof nodes are valid hex strings
-    for (const node of proofNodes) {
-      // Check valid hex string of correct length
-      if (!node || node.length !== 64 || !/^[0-9a-fA-F]+$/.test(node)) {
-        return false;
-      }
-    }
+    if (!hasValidConsistencyProofNodes(proofNodes)) return false;
 
     // Special case: 1→2 verification
     if (oldSize === 1 && newSize === 2) {
-      if (proofNodes.length !== 1) {
-        return false;
-      }
-
-      // oldRoot = MTH(leaf0) = HASH(0x00 || leaf0)
-      // newRoot should be = HASH(0x01 || MTH(leaf0) || MTH(leaf1))
-      // proof contains raw leaf1
-      const leaf1 = proofNodes[0];
-      if (!leaf1) {
-        return false;
-      }
-      const mthLeaf1 = this.hashLeaf(leaf1);
-
-      // Compute expected new root
-      const computedNewRoot = this.hashPair(oldRoot, mthLeaf1);
-
-      return computedNewRoot === newRoot;
+      return this.verifySingleNodeExtension(oldRoot, newRoot, proofNodes, true);
     }
 
     // Special case: Power-of-2 to power-of-2 (e.g., 4→8)
-    if (this.isPowerOfTwo(oldSize) && this.isPowerOfTwo(newSize) && newSize === oldSize * 2) {
-      if (proofNodes.length !== 1) {
-        return false;
-      }
-
-      // Simple doubling case: newRoot = HASH(0x01 || oldRoot || proofNodes[0])
-      const rightRoot = proofNodes[0];
-      if (!rightRoot) {
-        return false;
-      }
-      const computedNewRoot = this.hashPair(oldRoot, rightRoot);
-
-      return computedNewRoot === newRoot;
+    if (this.isPerfectTreeDoubling(oldSize, newSize)) {
+      return this.verifySingleNodeExtension(oldRoot, newRoot, proofNodes, false);
     }
 
+    return this.verifyReconstructedConsistencyProof(oldRoot, newRoot, proof);
+  }
+
+  private isPerfectTreeDoubling(oldSize: number, newSize: number): boolean {
+    return this.isPowerOfTwo(oldSize) && this.isPowerOfTwo(newSize) && newSize === oldSize * 2;
+  }
+
+  private verifyReconstructedConsistencyProof(
+    oldRoot: string,
+    newRoot: string,
+    { oldSize, newSize, proofNodes }: ConsistencyProof,
+  ): boolean {
     try {
       const { oldHash, newHash, nextIndex } = this.reconstructConsistencyHashes(
         oldSize,
@@ -378,6 +356,14 @@ export class RFC6962MerkleTree {
     }
   }
 
+  private verifySingleNodeExtension(oldRoot: string, newRoot: string, proofNodes: string[], rawLeaf: boolean): boolean {
+    if (proofNodes.length !== 1) return false;
+    const node = proofNodes[0];
+    if (!node) return false;
+    const rightHash = rawLeaf ? this.hashLeaf(node) : node;
+    return this.hashPair(oldRoot, rightHash) === newRoot;
+  }
+
   /**
    * Recursively reconstruct the old and new roots from the proof nodes.
    *
@@ -392,46 +378,14 @@ export class RFC6962MerkleTree {
     index: number,
     includeOldRoot: boolean,
     knownOldRoot?: string,
-  ): { oldHash: string; newHash: string; nextIndex: number } {
+  ): ReconstructedConsistencyHashes {
     // When the subtree sizes are equal, either reuse the known old root
     // (includeOldRoot = true) or consume the subtree hash from the proof
-    if (oldSize === newSize) {
-      if (includeOldRoot) {
-        if (!knownOldRoot) {
-          throw new Error('Known old root required for prefix subtree');
-        }
-        return { oldHash: knownOldRoot, newHash: knownOldRoot, nextIndex: index };
-      }
-
-      if (index >= proofNodes.length) {
-        throw new Error('Proof exhausted while reading subtree hash');
-      }
-
-      const subtreeHash = proofNodes[index];
-      if (!subtreeHash) {
-        throw new Error('Proof exhausted while reading subtree hash');
-      }
-      return { oldHash: subtreeHash, newHash: subtreeHash, nextIndex: index + 1 };
-    }
+    if (oldSize === newSize) return resolveEqualConsistencySubtree(proofNodes, index, includeOldRoot, knownOldRoot);
 
     // Special-case the 1→2 transition where the proof carries the raw leaf
-    if (oldSize === 1 && newSize === 2 && includeOldRoot) {
-      if (!knownOldRoot) {
-        throw new Error('Known old root required for 1→2 verification');
-      }
-
-      if (index >= proofNodes.length) {
-        throw new Error('Proof exhausted while reading raw leaf');
-      }
-
-      const rawLeaf = proofNodes[index];
-      if (!rawLeaf) {
-        throw new Error('Proof exhausted while reading raw leaf');
-      }
-      const hashedLeaf = this.hashLeaf(rawLeaf);
-      const newHash = this.hashPair(knownOldRoot, hashedLeaf);
-      return { oldHash: knownOldRoot, newHash, nextIndex: index + 1 };
-    }
+    if (oldSize === 1 && newSize === 2 && includeOldRoot)
+      return this.reconstructRawLeafExtension(proofNodes, index, knownOldRoot);
 
     const split = this.largestPowerOfTwoLessThan(newSize);
     if (split === 0) {
@@ -443,14 +397,7 @@ export class RFC6962MerkleTree {
       const left = this.reconstructConsistencyHashes(oldSize, split, proofNodes, index, includeOldRoot, knownOldRoot);
 
       const nextIndex = left.nextIndex;
-      if (nextIndex >= proofNodes.length) {
-        throw new Error('Proof exhausted while reading right subtree hash');
-      }
-
-      const rightHash = proofNodes[nextIndex];
-      if (!rightHash) {
-        throw new Error('Proof exhausted while reading right subtree hash');
-      }
+      const rightHash = readConsistencyProofNode(proofNodes, nextIndex, 'right subtree hash');
       const combinedNewHash = this.hashPair(left.newHash, rightHash);
       return {
         oldHash: left.oldHash,
@@ -464,26 +411,32 @@ export class RFC6962MerkleTree {
     const right = this.reconstructConsistencyHashes(oldSize - split, newSize - split, proofNodes, index, false);
 
     const nextIndex = right.nextIndex;
-    if (nextIndex >= proofNodes.length) {
-      throw new Error('Proof exhausted while reading left subtree hash');
-    }
-
-    const leftHash = proofNodes[nextIndex];
-    if (!leftHash) {
-      throw new Error('Proof exhausted while reading left subtree hash');
-    }
+    const leftHash = readConsistencyProofNode(proofNodes, nextIndex, 'left subtree hash');
     const combinedOldHash = this.hashPair(leftHash, right.oldHash);
     const combinedNewHash = this.hashPair(leftHash, right.newHash);
 
-    if (includeOldRoot && knownOldRoot && combinedOldHash !== knownOldRoot) {
-      throw new Error('Old root mismatch detected');
-    }
+    assertKnownOldRootMatch(combinedOldHash, includeOldRoot, knownOldRoot);
 
     return {
       oldHash: combinedOldHash,
       newHash: combinedNewHash,
       nextIndex: nextIndex + 1,
     };
+  }
+
+  private reconstructRawLeafExtension(
+    proofNodes: string[],
+    index: number,
+    knownOldRoot: string | undefined,
+  ): ReconstructedConsistencyHashes {
+    if (!knownOldRoot) {
+      throw new Error('Known old root required for 1→2 verification');
+    }
+
+    const rawLeaf = readConsistencyProofNode(proofNodes, index, 'raw leaf');
+    const hashedLeaf = this.hashLeaf(rawLeaf);
+    const newHash = this.hashPair(knownOldRoot, hashedLeaf);
+    return { oldHash: knownOldRoot, newHash, nextIndex: index + 1 };
   }
 
   /**
@@ -695,5 +648,52 @@ export class RFC6962MerkleTree {
         nodesConsumed: rightResult.nodesConsumed + 1,
       };
     }
+  }
+}
+
+interface ReconstructedConsistencyHashes {
+  oldHash: string;
+  newHash: string;
+  nextIndex: number;
+}
+
+function hasValidConsistencyProofNodes(nodes: readonly string[]): boolean {
+  for (const node of nodes) {
+    if (!node || node.length !== 64 || !/^[0-9a-fA-F]+$/.test(node)) return false;
+  }
+  return true;
+}
+
+function readConsistencyProofNode(nodes: string[], index: number, label: string): string {
+  if (index >= nodes.length) throw new Error(`Proof exhausted while reading ${label}`);
+  const node = nodes[index];
+  if (!node) throw new Error(`Proof exhausted while reading ${label}`);
+  return node;
+}
+
+function resolveEqualConsistencySubtree(
+  proofNodes: string[],
+  index: number,
+  includeOldRoot: boolean,
+  knownOldRoot: string | undefined,
+): ReconstructedConsistencyHashes {
+  if (includeOldRoot) {
+    if (!knownOldRoot) {
+      throw new Error('Known old root required for prefix subtree');
+    }
+    return { oldHash: knownOldRoot, newHash: knownOldRoot, nextIndex: index };
+  }
+
+  const subtreeHash = readConsistencyProofNode(proofNodes, index, 'subtree hash');
+  return { oldHash: subtreeHash, newHash: subtreeHash, nextIndex: index + 1 };
+}
+
+function assertKnownOldRootMatch(
+  combinedOldHash: string,
+  includeOldRoot: boolean,
+  knownOldRoot: string | undefined,
+): void {
+  if (includeOldRoot && knownOldRoot && combinedOldHash !== knownOldRoot) {
+    throw new Error('Old root mismatch detected');
   }
 }

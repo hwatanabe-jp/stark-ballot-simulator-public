@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RefObject } from 'react';
@@ -90,8 +91,7 @@ function createSupportedFinalizeResult(): NonNullable<SessionData['finalizeResul
 
 function session(): SessionData {
   return {
-    sessionId: 'session-1',
-    capabilityToken: 'capability-token',
+    ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'capability-token' }),
     lastActivity: 1,
     expiresAt: 86_400_001,
     phase: 'verifying',
@@ -209,8 +209,7 @@ function availableResource(): AvailableVerificationResource {
 function identityRef(): RefObject<SessionIdentity | null> {
   return {
     current: {
-      sessionId: 'session-1',
-      capabilityToken: 'capability-token',
+      ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'capability-token' }),
     },
   };
 }

@@ -10,8 +10,6 @@
 
 import { randomUUID } from 'crypto';
 
-export { isValidVoteId } from '@stark-ballot/domain/vote/voteIdValidation';
-
 /**
  * Generate a new UUID v4 vote identifier
  *

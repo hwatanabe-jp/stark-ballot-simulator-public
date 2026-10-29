@@ -3,10 +3,10 @@ import { isRecord } from './guards';
 import { isValidHexString, normalizeHexString } from './hex';
 import { CURRENT_ZKVM_SEMANTIC_CONTRACT } from './semantic-contract';
 
-export const INCLUDED_BITMAP_ARTIFACT_SCHEMA = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.includedBitmap.schema;
-export const INCLUDED_BITMAP_ARTIFACT_VERSION = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.includedBitmap.version;
-export const SEEN_BITMAP_ARTIFACT_SCHEMA = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.seenBitmap.schema;
-export const SEEN_BITMAP_ARTIFACT_VERSION = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.seenBitmap.version;
+const INCLUDED_BITMAP_ARTIFACT_SCHEMA = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.includedBitmap.schema;
+const INCLUDED_BITMAP_ARTIFACT_VERSION = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.includedBitmap.version;
+const SEEN_BITMAP_ARTIFACT_SCHEMA = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.seenBitmap.schema;
+const SEEN_BITMAP_ARTIFACT_VERSION = CURRENT_ZKVM_SEMANTIC_CONTRACT.artifacts.seenBitmap.version;
 
 export interface IncludedBitmapArtifact {
   schema: typeof INCLUDED_BITMAP_ARTIFACT_SCHEMA;

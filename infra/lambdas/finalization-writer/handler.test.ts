@@ -1,3 +1,4 @@
+import { reconcileAwsFinalizations } from '@stark-ballot/aws-adapters/finalize/reconcileFinalizations';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
 import { targetRuntimeProfileEnv } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
@@ -5,6 +6,8 @@ import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { TransientBundleRestoreError } from '@stark-ballot/aws-adapters/aws/bundle-restore';
 import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+
+vi.mock('@stark-ballot/aws-adapters/finalize/reconcileFinalizations', () => ({ reconcileAwsFinalizations: vi.fn() }));
 
 const emitCanonicalEventMock = vi.hoisted(() => vi.fn());
 
@@ -554,4 +557,11 @@ describe('target finalization-writer handler', () => {
       }),
     );
   });
+});
+
+it('runs scheduled reconciliation through the writer after runtime admission', async () => {
+  Object.assign(process.env, targetRuntimeProfileEnv());
+  vi.mocked(reconcileAwsFinalizations).mockResolvedValue({ visited: 2 });
+  await expect(handler({ operation: 'reconcile-finalizations' })).resolves.toEqual({ visited: 2 });
+  expect(reconcileAwsFinalizations).toHaveBeenCalledOnce();
 });

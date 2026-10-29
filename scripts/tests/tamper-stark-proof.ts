@@ -12,7 +12,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'node:url';
-import { isNumberArray, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { isNumberArray, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -49,6 +49,53 @@ interface Receipt {
   [key: string]: unknown;
 }
 
+function flipSealBit(seal: number[]): string {
+  // Flip the least significant bit of seal[1000]
+  const original = seal[1000];
+  seal[1000] = strictDefined(seal[1000]) ^ 1;
+  return `Flipped bit in seal[1000]: ${original} → ${seal[1000]}`;
+}
+
+function changeSealValue(seal: number[]): string {
+  // Change seal[5000] to a completely different value
+  const before = seal[5000];
+  seal[5000] = (strictDefined(seal[5000]) + 12345) & 0xffffffff;
+  return `Changed seal[5000]: ${before} → ${seal[5000]}`;
+}
+
+function changeMultipleSealValues(seal: number[]): string {
+  // Change values at multiple positions
+  const changes: string[] = [];
+  [1000, 10000, 30000].forEach((index) => {
+    const oldVal = seal[index];
+    seal[index] = (strictDefined(seal[index]) + 1) & 0xffffffff;
+    changes.push(`seal[${index}]: ${oldVal} → ${seal[index]}`);
+  });
+  return `Changed 3 positions:\n    ${changes.join('\n    ')}`;
+}
+
+function zeroSealRange(seal: number[]): string {
+  // Zero out 100 consecutive elements
+  let nonZeroCount = 0;
+  for (let i = 20000; i < 20100; i++) {
+    if (seal[i] !== 0) nonZeroCount++;
+    seal[i] = 0;
+  }
+  return `Zeroed seal[20000:20100] (${nonZeroCount} non-zero values → 0)`;
+}
+
+const SEAL_TAMPERS = new Map<TamperType, (seal: number[]) => string>([
+  [TamperType.SINGLE_BIT_FLIP, flipSealBit],
+  [TamperType.SINGLE_VALUE_CHANGE, changeSealValue],
+  [TamperType.MULTIPLE_VALUES, changeMultipleSealValues],
+  [TamperType.ZERO_OUT_RANGE, zeroSealRange],
+]);
+function applySealTamper(type: TamperType, seal: number[]): string {
+  const operation = SEAL_TAMPERS.get(type);
+  if (!operation) throw new Error('Unknown tamper type');
+  return operation(seal);
+}
+
 function tamperReceipt(type: TamperType): void {
   console.log('STARK Proof Tamper Tool\n');
   console.log(`Reading valid receipt from: ${VALID_RECEIPT}`);
@@ -70,51 +117,7 @@ function tamperReceipt(type: TamperType): void {
   console.log(`  Seal array length: ${originalLength.toLocaleString()} elements`);
   console.log(`  Tamper type: ${type}\n`);
 
-  let changeDescription = '';
-
-  switch (type) {
-    case TamperType.SINGLE_BIT_FLIP: {
-      // Flip the least significant bit of seal[1000]
-      const original = seal[1000];
-      seal[1000] = strictDefined(seal[1000]) ^ 1;
-      changeDescription = `Flipped bit in seal[1000]: ${original} → ${seal[1000]}`;
-      break;
-    }
-
-    case TamperType.SINGLE_VALUE_CHANGE: {
-      // Change seal[5000] to a completely different value
-      const before = seal[5000];
-      seal[5000] = (strictDefined(seal[5000]) + 12345) & 0xffffffff;
-      changeDescription = `Changed seal[5000]: ${before} → ${seal[5000]}`;
-      break;
-    }
-
-    case TamperType.MULTIPLE_VALUES: {
-      // Change values at multiple positions
-      const changes: string[] = [];
-      [1000, 10000, 30000].forEach((index) => {
-        const oldVal = seal[index];
-        seal[index] = (strictDefined(seal[index]) + 1) & 0xffffffff;
-        changes.push(`seal[${index}]: ${oldVal} → ${seal[index]}`);
-      });
-      changeDescription = `Changed 3 positions:\n    ${changes.join('\n    ')}`;
-      break;
-    }
-
-    case TamperType.ZERO_OUT_RANGE: {
-      // Zero out 100 consecutive elements
-      let nonZeroCount = 0;
-      for (let i = 20000; i < 20100; i++) {
-        if (seal[i] !== 0) nonZeroCount++;
-        seal[i] = 0;
-      }
-      changeDescription = `Zeroed seal[20000:20100] (${nonZeroCount} non-zero values → 0)`;
-      break;
-    }
-
-    default:
-      assertNever(type);
-  }
+  const changeDescription = applySealTamper(type, seal);
 
   console.log(`Applied tampering:`);
   console.log(`  ${changeDescription}\n`);
@@ -126,32 +129,30 @@ function tamperReceipt(type: TamperType): void {
   console.log(`   Even a 1-bit change breaks STARK proof integrity.\n`);
 }
 
-function assertNever(value: never): never {
-  void value;
-  throw new Error('Unknown tamper type');
-}
-
-function isReceipt(value: unknown): value is Receipt {
-  if (!isRecord(value)) {
-    return false;
-  }
-  const receipt = value['receipt'];
-  if (!isRecord(receipt)) {
-    return false;
-  }
-  const inner = receipt['inner'];
-  if (!isRecord(inner)) {
+function hasCompositeSeal(inner: unknown): boolean {
+  if (!isNonNullObject(inner)) {
     return false;
   }
   const composite = inner['Composite'];
-  if (!isRecord(composite)) {
+  if (!isNonNullObject(composite)) {
     return false;
   }
   const segments = composite['segments'];
   if (!Array.isArray(segments)) {
     return false;
   }
-  return segments.every((segment) => isRecord(segment) && isNumberArray(segment['seal']));
+  return segments.every((segment) => isNonNullObject(segment) && isNumberArray(segment['seal']));
+}
+
+function isReceipt(value: unknown): value is Receipt {
+  if (!isNonNullObject(value)) {
+    return false;
+  }
+  const receipt = value['receipt'];
+  if (!isNonNullObject(receipt)) {
+    return false;
+  }
+  return hasCompositeSeal(receipt['inner']);
 }
 
 // Parse command line arguments

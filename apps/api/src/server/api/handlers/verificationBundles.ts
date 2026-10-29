@@ -134,18 +134,18 @@ function parseRangeHeader(rangeHeader: string | undefined): ArtifactRangeRequest
   if (!rawStart && !rawEnd) {
     return { kind: 'invalid' };
   }
-  if (!rawStart) {
-    const length = Number(rawEnd);
-    return Number.isSafeInteger(length) && length > 0 ? { kind: 'suffix', length } : { kind: 'invalid' };
-  }
+  return rawStart ? parseForwardRange(rawStart, rawEnd) : parseSuffixRange(rawEnd);
+}
 
+function parseSuffixRange(rawEnd: string | undefined): ArtifactRangeRequest {
+  const length = Number(rawEnd);
+  return Number.isSafeInteger(length) && length > 0 ? { kind: 'suffix', length } : { kind: 'invalid' };
+}
+
+function parseForwardRange(rawStart: string, rawEnd: string | undefined): ArtifactRangeRequest {
   const start = Number(rawStart);
-  if (!Number.isSafeInteger(start) || start < 0) {
-    return { kind: 'invalid' };
-  }
-  if (!rawEnd) {
-    return { kind: 'openEnded', start };
-  }
+  if (!Number.isSafeInteger(start) || start < 0) return { kind: 'invalid' };
+  if (!rawEnd) return { kind: 'openEnded', start };
   const end = Number(rawEnd);
   return Number.isSafeInteger(end) && end >= start ? { kind: 'closed', start, end } : { kind: 'invalid' };
 }
@@ -238,39 +238,40 @@ function validRangeResult(result: Extract<ArtifactReadResult, { kind: 'range' }>
   );
 }
 
+function bundleBytesResponse(
+  result: Extract<ArtifactReadResult, { kind: 'full' | 'range' }>,
+  finalizationId: string,
+  requestedRange: ArtifactRangeRequest | undefined,
+): Response | null {
+  if (result.kind === 'full') {
+    if (requestedRange !== undefined || !validFullResult(result)) return null;
+    return new Response(Uint8Array.from(result.bytes), {
+      headers: buildBundleHeaders(finalizationId, result.representation, {
+        'Content-Length': String(result.totalBytes),
+      }),
+    });
+  }
+  if (requestedRange === undefined || !validRangeResult(result)) return null;
+  return new Response(Uint8Array.from(result.bytes), {
+    status: 206,
+    headers: buildBundleHeaders(finalizationId, result.representation, {
+      'Content-Range': `bytes ${result.start}-${result.end}/${result.totalBytes}`,
+      'Content-Length': String(result.bytes.byteLength),
+    }),
+  });
+}
+
 function bundleReaderResponse(
   result: ArtifactReadResult,
   finalizationId: string,
   requestedRange: ArtifactRangeRequest | undefined,
 ): { response: Response; observationCode: BundleDownloadS3ErrorCode } {
   switch (result.kind) {
-    case 'full': {
-      if (requestedRange !== undefined || !validFullResult(result)) {
-        break;
-      }
-      return {
-        response: new Response(Uint8Array.from(result.bytes), {
-          headers: buildBundleHeaders(finalizationId, result.representation, {
-            'Content-Length': String(result.totalBytes),
-          }),
-        }),
-        observationCode: 'not_applicable',
-      };
-    }
+    case 'full':
     case 'range': {
-      if (requestedRange === undefined || !validRangeResult(result)) {
-        break;
-      }
-      return {
-        response: new Response(Uint8Array.from(result.bytes), {
-          status: 206,
-          headers: buildBundleHeaders(finalizationId, result.representation, {
-            'Content-Range': `bytes ${result.start}-${result.end}/${result.totalBytes}`,
-            'Content-Length': String(result.bytes.byteLength),
-          }),
-        }),
-        observationCode: 'not_applicable',
-      };
+      const response = bundleBytesResponse(result, finalizationId, requestedRange);
+      if (!response) break;
+      return { response, observationCode: 'not_applicable' };
     }
     case 'notFound':
       return {
@@ -366,18 +367,24 @@ async function resolveReaderResult(
   }
 }
 
+function matchesAdmittedArtifactIdentity(
+  params: { sessionId: string; finalizationId: string },
+  context: SessionFinalizationIdentityContext,
+): boolean {
+  return (
+    isSafeVerifierSegment(params.sessionId) &&
+    isSafeVerifierSegment(params.finalizationId) &&
+    params.sessionId === context.sessionId &&
+    params.finalizationId === context.finalizationId
+  );
+}
+
 export async function getVerificationBundleHandler({
   input,
   context,
 }: ApiHandlerArguments<typeof finalizationArtifactBundleRoute, ArtifactDeliveryHandlerContext>): Promise<Response> {
-  const { sessionId: wireSessionId, finalizationId: wireFinalizationId } = input.params;
   const { sessionId, finalizationId } = context;
-  if (
-    !isSafeVerifierSegment(wireSessionId) ||
-    !isSafeVerifierSegment(wireFinalizationId) ||
-    wireSessionId !== sessionId ||
-    wireFinalizationId !== finalizationId
-  ) {
+  if (!matchesAdmittedArtifactIdentity(input.params, context)) {
     return artifactErrorResponse(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference');
   }
 
@@ -411,14 +418,8 @@ export async function getVerificationReportHandler({
   input,
   context,
 }: ApiHandlerArguments<typeof finalizationArtifactReportRoute, ArtifactDeliveryHandlerContext>): Promise<Response> {
-  const { sessionId: wireSessionId, finalizationId: wireFinalizationId } = input.params;
   const { sessionId, finalizationId } = context;
-  if (
-    !isSafeVerifierSegment(wireSessionId) ||
-    !isSafeVerifierSegment(wireFinalizationId) ||
-    wireSessionId !== sessionId ||
-    wireFinalizationId !== finalizationId
-  ) {
+  if (!matchesAdmittedArtifactIdentity(input.params, context)) {
     return artifactErrorResponse(ErrorCode.INVALID_BUNDLE_REFERENCE, 400, 'Invalid bundle reference');
   }
 

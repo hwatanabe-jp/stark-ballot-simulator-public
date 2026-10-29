@@ -6,19 +6,11 @@
  */
 
 import {
-  BITMAP_CHUNK_BITS,
-  BITMAP_CHUNK_BYTES,
-  calculateBitmapBitOffset as calculateBitmapBitOffsetCore,
-  calculateBitmapLeafIndex as calculateBitmapLeafIndexCore,
   computeIncludedBitmapRootHex,
   extractBitFromBitmapChunkBytes,
   getBitmapLeafChunkBytes,
-  getBitmapLeafChunkHex as getBitmapLeafChunkHexCore,
-  isBitmapChunkHex as isBitmapChunkHexCore,
   packBitmapBitsToBytes,
 } from './bitmap-core';
-
-export { BITMAP_CHUNK_BITS, BITMAP_CHUNK_BYTES };
 
 /**
  * Pack boolean array into bytes using LSB-first encoding
@@ -40,24 +32,8 @@ export function computeIncludedBitmapRoot(bitmap: boolean[]): string {
   return computeIncludedBitmapRootHex(bitmap);
 }
 
-export function calculateBitmapLeafIndex(bitIndex: number): number {
-  return calculateBitmapLeafIndexCore(bitIndex);
-}
-
-export function calculateBitmapBitOffset(bitIndex: number): number {
-  return calculateBitmapBitOffsetCore(bitIndex);
-}
-
 export function getBitmapLeafChunkBuffer(bitmap: boolean[], leafIndex: number): Buffer {
   return Buffer.from(getBitmapLeafChunkBytes(bitmap, leafIndex));
-}
-
-export function getBitmapLeafChunkHex(bitmap: boolean[], leafIndex: number): string {
-  return getBitmapLeafChunkHexCore(bitmap, leafIndex);
-}
-
-export function isBitmapChunkHex(chunkHex: string): boolean {
-  return isBitmapChunkHexCore(chunkHex);
 }
 
 export function extractBitFromChunkBuffer(chunk: Buffer, bitOffset: number): boolean {

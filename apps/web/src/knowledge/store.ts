@@ -1,12 +1,10 @@
+import { isCurrentKnowledgeData } from './admission';
 import type { KnowledgeData, KnowledgeItem, KnowledgePhase, KnowledgeUpdateListener } from './types';
 import { BOT_KNOWLEDGE_KEYS, KNOWLEDGE_KEYS } from './types';
 import { knowledgeItemsFromData } from './items';
 import { normalizeKnowledgeData, getPhaseForKey, type KnowledgeCandidate } from './normalizer';
-import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
-import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { getSessionData, isSessionReplaced } from '@stark-ballot/web/session';
 import { clearStoredKnowledgeData, KNOWLEDGE_STORAGE_KEY as STORAGE_KEY } from '@stark-ballot/web/session/storage';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {
   if (value === undefined || value === null) {
@@ -28,7 +26,7 @@ const itemTimestamps: Map<keyof KnowledgeData, number> = new Map();
 /**
  * New item threshold (ms) - items added within this time are considered "new"
  */
-export const KNOWLEDGE_NEW_ITEM_THRESHOLD_MS = 2000;
+const KNOWLEDGE_NEW_ITEM_THRESHOLD_MS = 2000;
 const NEW_ITEM_THRESHOLD_MS = KNOWLEDGE_NEW_ITEM_THRESHOLD_MS;
 
 export interface MergeKnowledgeOptions {
@@ -43,228 +41,6 @@ export type KnowledgeDataPatch = {
 type StoredKnowledgeSnapshot = { kind: 'missing' } | { kind: 'corrupt' } | { kind: 'valid'; data: KnowledgeData };
 
 const KNOWLEDGE_KEY_SET = new Set<string>(KNOWLEDGE_KEYS);
-const STRING_KNOWLEDGE_KEYS = new Set<keyof KnowledgeData>([
-  'sessionId',
-  'electionId',
-  'electionConfigHash',
-  'logId',
-  'user.random',
-  'user.commitment',
-  'user.voteId',
-  'user.bulletinRootAtCast',
-  'bulletinRoot',
-  'sthDigest',
-  'seenBitmapRoot',
-  'includedBitmapRoot',
-  'inputCommitment',
-  'imageId',
-  'bot.random',
-  'bot.commitment',
-  'bot.voteId',
-  'bot.bulletinRootAtCast',
-]);
-const COUNT_KNOWLEDGE_KEYS = new Set<keyof KnowledgeData>([
-  'user.bulletinIndex',
-  'user.castAtMs',
-  'tally.totalVotes',
-  'tally.tamperedCount',
-  'missingSlots',
-  'invalidPresentedSlots',
-  'rejectedRecords',
-  'validVotes',
-  'excludedSlots',
-  'totalExpected',
-  'treeSize',
-  'bot.id',
-  'bot.bulletinIndex',
-  'bot.voteTimestamp',
-]);
-const VERIFICATION_STEP_IDS = new Set([
-  'cast_as_intended',
-  'recorded_as_cast',
-  'counted_as_recorded',
-  'stark_verification',
-]);
-const VERIFICATION_STEP_STATUSES = new Set(['pending', 'running', 'success', 'failed', 'not_run']);
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): boolean {
-  const keys = Object.keys(value);
-  const allowed = new Set([...required, ...optional]);
-  return required.every((key) => key in value) && keys.every((key) => allowed.has(key));
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isCanonicalInclusionProof(value: unknown): boolean {
-  if (!isRecord(value) || !hasExactKeys(value, ['leafIndex', 'treeSize', 'merklePath', 'bulletinRootAtCast'])) {
-    return false;
-  }
-  const leafIndex = value['leafIndex'];
-  const treeSize = value['treeSize'];
-  const merklePath = value['merklePath'];
-  const bulletinRootAtCast = value['bulletinRootAtCast'];
-  if (
-    !Number.isSafeInteger(leafIndex) ||
-    typeof leafIndex !== 'number' ||
-    leafIndex < 0 ||
-    !Number.isSafeInteger(treeSize) ||
-    typeof treeSize !== 'number' ||
-    treeSize <= 0 ||
-    leafIndex >= treeSize ||
-    !Array.isArray(merklePath) ||
-    !merklePath.every((node) => typeof node === 'string' && isValidHexString(node, 32)) ||
-    typeof bulletinRootAtCast !== 'string' ||
-    !isValidHexString(bulletinRootAtCast, 32)
-  ) {
-    return false;
-  }
-  const proof = toCanonicalRfc6962Proof(value);
-  if (!proof) {
-    return false;
-  }
-  return (
-    proof.leafIndex === value['leafIndex'] &&
-    proof.treeSize === value['treeSize'] &&
-    proof.bulletinRootAtCast === value['bulletinRootAtCast'] &&
-    proof.merklePath.length === merklePath.length &&
-    proof.merklePath.every((node, index) => node === merklePath[index])
-  );
-}
-
-function isVerificationStep(value: unknown): boolean {
-  if (!isRecord(value) || !hasExactKeys(value, ['id', 'status', 'inputs'], ['error'])) {
-    return false;
-  }
-  return (
-    typeof value['id'] === 'string' &&
-    VERIFICATION_STEP_IDS.has(value['id']) &&
-    typeof value['status'] === 'string' &&
-    VERIFICATION_STEP_STATUSES.has(value['status']) &&
-    Array.isArray(value['inputs']) &&
-    value['inputs'].every((input) => typeof input === 'string') &&
-    (value['error'] === undefined || typeof value['error'] === 'string')
-  );
-}
-
-function isCurrentKnowledgeData(value: Record<string, unknown>): value is Record<string, unknown> & KnowledgeData {
-  for (const [rawKey, entry] of Object.entries(value)) {
-    if (!KNOWLEDGE_KEY_SET.has(rawKey) || entry === null || entry === undefined) {
-      return false;
-    }
-    const key = rawKey as keyof KnowledgeData;
-    if (STRING_KNOWLEDGE_KEYS.has(key) && (typeof entry !== 'string' || entry.length === 0)) {
-      return false;
-    }
-    if (COUNT_KNOWLEDGE_KEYS.has(key) && !isNonNegativeSafeInteger(entry)) {
-      return false;
-    }
-  }
-
-  const choiceValues = [value['user.choice'], value['bot.choice']].filter((entry) => entry !== undefined);
-  if (choiceValues.some((entry) => !['A', 'B', 'C', 'D', 'E'].includes(entry as string))) {
-    return false;
-  }
-  if (
-    value['scenarioId'] !== undefined &&
-    !['S0', 'S1', 'S2', 'S3', 'S4', 'S5'].includes(value['scenarioId'] as string)
-  ) {
-    return false;
-  }
-  if (
-    value['proofBundleStatus'] !== undefined &&
-    !['not_downloaded', 'downloaded'].includes(value['proofBundleStatus'] as string)
-  ) {
-    return false;
-  }
-
-  const botVotesStatus = value['botVotesStatus'];
-  if (
-    botVotesStatus !== undefined &&
-    !(
-      botVotesStatus === 'pending' ||
-      botVotesStatus === 'completed' ||
-      (isRecord(botVotesStatus) &&
-        hasExactKeys(botVotesStatus, ['status'], ['total']) &&
-        (botVotesStatus['status'] === 'pending' || botVotesStatus['status'] === 'completed') &&
-        (botVotesStatus['total'] === undefined || isNonNegativeSafeInteger(botVotesStatus['total'])))
-    )
-  ) {
-    return false;
-  }
-
-  const tally = value['tally.counts'];
-  if (
-    tally !== undefined &&
-    (!isRecord(tally) ||
-      !hasExactKeys(tally, ['A', 'B', 'C', 'D', 'E']) ||
-      Object.values(tally).some((count) => !isNonNegativeSafeInteger(count)))
-  ) {
-    return false;
-  }
-  for (const key of ['user.merklePath', 'bot.merklePath'] as const) {
-    if (value[key] !== undefined && !isCanonicalInclusionProof(value[key])) {
-      return false;
-    }
-  }
-  for (const key of ['verification.steps', 'bot.verification.steps'] as const) {
-    if (value[key] !== undefined && (!Array.isArray(value[key]) || !value[key].every(isVerificationStep))) {
-      return false;
-    }
-  }
-
-  const receipt = value['user.voteReceipt'];
-  if (
-    receipt !== undefined &&
-    (!isRecord(receipt) ||
-      !hasExactKeys(
-        receipt,
-        ['voteId', 'commitment', 'bulletinIndex', 'bulletinRootAtCast', 'timestamp'],
-        ['inputCommitment'],
-      ) ||
-      !['voteId', 'commitment', 'bulletinRootAtCast'].every((key) => typeof receipt[key] === 'string') ||
-      !isNonNegativeSafeInteger(receipt['bulletinIndex']) ||
-      !isNonNegativeSafeInteger(receipt['timestamp']) ||
-      (receipt['inputCommitment'] !== undefined && typeof receipt['inputCommitment'] !== 'string'))
-  ) {
-    return false;
-  }
-
-  const publication = value['receiptPublication'];
-  if (
-    publication !== undefined &&
-    (!isRecord(publication) ||
-      !hasExactKeys(publication, ['receiptHash', 'boardIndex'], ['timestamp']) ||
-      typeof publication['receiptHash'] !== 'string' ||
-      !isValidHexString(publication['receiptHash'], 32) ||
-      !isNonNegativeSafeInteger(publication['boardIndex']) ||
-      (publication['timestamp'] !== undefined && !isNonNegativeSafeInteger(publication['timestamp'])))
-  ) {
-    return false;
-  }
-
-  const reportSummary = value['verification.reportSummary'];
-  if (
-    reportSummary !== undefined &&
-    (!isRecord(reportSummary) ||
-      !hasExactKeys(reportSummary, ['status'], ['duration_ms', 'errors']) ||
-      typeof reportSummary['status'] !== 'string' ||
-      reportSummary['status'].length === 0 ||
-      (reportSummary['duration_ms'] !== undefined && !isNonNegativeSafeInteger(reportSummary['duration_ms'])) ||
-      (reportSummary['errors'] !== undefined &&
-        (!Array.isArray(reportSummary['errors']) ||
-          !reportSummary['errors'].every((error) => typeof error === 'string'))))
-  ) {
-    return false;
-  }
-  return true;
-}
-
 function getSessionIdFromKnowledge(data: KnowledgeCandidate | null | undefined): string | null {
   const sessionId = data?.sessionId;
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -301,9 +77,6 @@ function readStoredKnowledgeSnapshot(): StoredKnowledgeSnapshot {
 
   try {
     const parsed = JSON.parse(stored) as unknown;
-    if (!isRecord(parsed)) {
-      return { kind: 'corrupt' };
-    }
     if (!isCurrentKnowledgeData(parsed)) {
       return { kind: 'corrupt' };
     }
@@ -311,6 +84,19 @@ function readStoredKnowledgeSnapshot(): StoredKnowledgeSnapshot {
   } catch {
     return { kind: 'corrupt' };
   }
+}
+
+function conflictsWithExpectedSession(actual: string | null, expected: string | undefined): boolean {
+  return Boolean(expected) && actual !== expected;
+}
+
+function bindKnowledgeSession(
+  incoming: string | null,
+  expected: string | undefined,
+  active: string | null,
+  existing: string | null,
+): string | null {
+  return incoming ?? expected ?? active ?? existing;
 }
 
 function resolveKnowledgeBase(
@@ -325,17 +111,17 @@ function resolveKnowledgeBase(
     return { base: existing, boundSessionId: expectedSessionId ?? existingSessionId, rejected: true };
   }
 
-  if (expectedSessionId && activeSessionId !== expectedSessionId) {
-    return { base: existing, boundSessionId: expectedSessionId, rejected: true };
+  if (conflictsWithExpectedSession(activeSessionId, expectedSessionId)) {
+    return { base: existing, boundSessionId: expectedSessionId ?? null, rejected: true };
   }
 
-  const boundSessionId = incomingSessionId ?? expectedSessionId ?? activeSessionId ?? existingSessionId;
+  const boundSessionId = bindKnowledgeSession(incomingSessionId, expectedSessionId, activeSessionId, existingSessionId);
 
   if (!boundSessionId) {
     return { base: existing, boundSessionId: null, rejected: false };
   }
 
-  if (expectedSessionId && boundSessionId !== expectedSessionId) {
+  if (conflictsWithExpectedSession(boundSessionId, expectedSessionId)) {
     return { base: existing, boundSessionId, rejected: true };
   }
 
@@ -436,15 +222,13 @@ export function saveKnowledgeData(data: KnowledgeDataPatch, options?: MergeKnowl
   return saveKnowledgeCandidate(data, options);
 }
 
-function saveKnowledgeCandidate(data: KnowledgeCandidate, options?: MergeKnowledgeOptions): readonly KnowledgeItem[] {
-  const existing = safeParseKnowledge() ?? {};
-  const { base, boundSessionId, rejected } = resolveKnowledgeBase(existing, data, options?.expectedSessionId);
-  if (rejected) {
-    return [];
-  }
-  const payload: KnowledgeCandidate =
-    boundSessionId && !getSessionIdFromKnowledge(data) ? { sessionId: boundSessionId, ...data } : data;
-  const now = Date.now();
+function mergeKnowledgeCandidate(
+  base: Partial<KnowledgeData>,
+  payload: KnowledgeCandidate,
+): {
+  candidate: Record<string, unknown>;
+  changedKeys: string[];
+} {
   const candidate: Record<string, unknown> = { ...base };
   const changedKeys: string[] = [];
 
@@ -455,6 +239,19 @@ function saveKnowledgeCandidate(data: KnowledgeCandidate, options?: MergeKnowled
     }
     candidate[key] = value;
   }
+  return { candidate, changedKeys };
+}
+
+function saveKnowledgeCandidate(data: KnowledgeCandidate, options?: MergeKnowledgeOptions): readonly KnowledgeItem[] {
+  const existing = safeParseKnowledge() ?? {};
+  const { base, boundSessionId, rejected } = resolveKnowledgeBase(existing, data, options?.expectedSessionId);
+  if (rejected) {
+    return [];
+  }
+  const payload: KnowledgeCandidate =
+    boundSessionId && !getSessionIdFromKnowledge(data) ? { sessionId: boundSessionId, ...data } : data;
+  const now = Date.now();
+  const { candidate, changedKeys } = mergeKnowledgeCandidate(base, payload);
 
   if (!isCurrentKnowledgeData(candidate)) {
     return [];

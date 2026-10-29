@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
 import {
@@ -25,7 +26,9 @@ vi.mock('@stark-ballot/web/api/apiBaseUrl', () => ({
 
 vi.mock('@stark-ballot/web/session', () => ({
   captureSessionIdentity: vi.fn((session?: { sessionId?: string; capabilityToken?: string } | null) =>
-    session?.sessionId ? { sessionId: session.sessionId, capabilityToken: session.capabilityToken } : null,
+    session?.sessionId && session.capabilityToken
+      ? admitSessionIdentity({ sessionId: session.sessionId, capabilityToken: session.capabilityToken })
+      : null,
   ),
   clearSession: vi.fn(),
   getSessionData: vi.fn(),
@@ -139,8 +142,7 @@ function createSessionWithFinalization(finalizationId = 'finalization-1') {
     throw new Error('Failed to build finalization fixture');
   }
   return {
-    sessionId: 'session-1',
-    capabilityToken: 'test-capability-token',
+    ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'test-capability-token' }),
     electionId: '550e8400-e29b-41d4-a716-446655440000',
     electionConfigHash: HEX_A,
     logId: HEX_B,

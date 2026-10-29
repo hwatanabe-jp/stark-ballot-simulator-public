@@ -366,7 +366,7 @@ describe('runVerificationHandler', () => {
     const payload = await readJsonRecord(response, 'local verification run response');
     const data = requireDataRecord(payload, 'local verification run data');
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getBooleanProperty(data, 'idempotent')).toBe(true);
@@ -387,7 +387,7 @@ describe('runVerificationHandler', () => {
     const payload = await readJsonRecord(response, 'target verification run recovery response');
     const data = requireDataRecord(payload, 'target verification run recovery data');
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getBooleanProperty(data, 'idempotent')).toBe(true);
@@ -450,8 +450,8 @@ describe('runVerificationHandler', () => {
     const response = await invokeVerificationRun(store, asFinalizationId('other-finalization'));
     const payload = await readJsonRecord(response, 'mismatched path finalization response');
 
-    expect(response.status).toBe(400);
-    expect(getApiErrorCode(payload)).toBe('INVALID_REQUEST');
+    expect(response.status).toBe(409);
+    expect(getApiErrorCode(payload)).toBe('FINALIZATION_NOT_CURRENT');
     expect(verificationQueueMocks.publishVerificationWorkMessage).not.toHaveBeenCalled();
     expect(markVerificationRunning).not.toHaveBeenCalled();
     expect(rollbackVerificationResult).not.toHaveBeenCalled();
@@ -487,7 +487,7 @@ describe('runVerificationHandler', () => {
     const payload = await readJsonRecord(response, 'target verification run response');
     const data = requireDataRecord(payload, 'target verification run data');
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getBooleanProperty(data, 'idempotent')).toBe(false);
@@ -536,7 +536,7 @@ describe('runVerificationHandler', () => {
     const payload = await readJsonRecord(response, 'quiesced target verification run response');
     const data = requireDataRecord(payload, 'quiesced target verification run data');
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
     expect(markVerificationRunning).toHaveBeenCalledWith(sessionId, finalizationId);
     expect(verificationQueueMocks.publishVerificationWorkMessage).toHaveBeenCalledWith(
@@ -599,7 +599,7 @@ describe('runVerificationHandler', () => {
     const payload = await readJsonRecord(response, 'target duplicate verification run response');
     const data = requireDataRecord(payload, 'target duplicate verification run data');
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(getStringProperty(data, 'verificationStatus')).toBe('running');
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getBooleanProperty(data, 'idempotent')).toBe(true);

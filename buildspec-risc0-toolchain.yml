@@ -11,6 +11,11 @@ env:
 # See: docs/infrastructure/risc0-base-image.md
 
 phases:
+  install:
+    runtime-versions:
+      nodejs: 24
+    commands:
+      - bash infra/terraform/bootstrap/source-path-build-scripts/install-node.sh
   pre_build:
     commands:
       - echo "Validating the exact requested source revision..."
@@ -71,7 +76,6 @@ phases:
         export AWS_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
         export AWS_DEFAULT_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
         export IMAGE_REPO_NAME="$DEPLOYMENT_CONTEXT_NAMES_TOOLCHAIN_REPOSITORY"
-        export TOOLCHAIN_RELEASE_BUCKET="$DEPLOYMENT_CONTEXT_NAMES_RELEASE_MANIFEST_BUCKET"
         printf '%s' "$DEPLOYMENT_CONTEXT_SOURCE_REPOSITORY_URL" > /tmp/source-repository
       - |
         if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
@@ -126,11 +130,11 @@ phases:
           export "$name"
         }
         require_build_pin RISC0_VERSION "3.0.6"
-        require_build_pin RUST_VERSION "1.97.1"
+        require_build_pin RUST_VERSION "1.99.0"
         require_build_pin RISC0_RUST_VERSION "1.97.0"
         require_build_pin RUST_TOOLCHAIN_TAG "r0.1.97.0"
         require_build_pin RISC0_COMMIT "1cc70cf05033a79ebc90f07c679cb4bd1cd301b9"
-        require_build_pin RUST_COMMIT "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+        require_build_pin RUST_COMMIT "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
         require_build_pin RISC0_RUST_COMMIT "e638c6cfea1eff5fbbb24a27e60538e3760d21b8"
         if [ "$RUST_TOOLCHAIN_TAG" != "r0.$RISC0_RUST_VERSION" ]; then
           echo "RUST_TOOLCHAIN_TAG must equal r0.$RISC0_RUST_VERSION; got $RUST_TOOLCHAIN_TAG." >&2
@@ -244,25 +248,18 @@ phases:
           fi
           docker run --rm "$IMAGE_URI" rzup --version
         fi
-      - |
-        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
-          if [ "${PUSH_LATEST:-0}" = "1" ]; then
-            echo "PUSH_LATEST=1 - will also tag the toolchain image as latest"
-            docker tag "$IMAGE_URI" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest"
-          else
-            echo "Skipping latest tag for toolchain image candidate."
-          fi
-        fi
 
   post_build:
     commands:
       - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-}" != "1" ]; then
+          echo "Image publication requires a successful build phase." >&2
+          exit 1
+        fi
+      - |
         if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
           echo "Pushing toolchain image to ECR..."
           docker push "$IMAGE_URI"
-          if [ "${PUSH_LATEST:-0}" = "1" ]; then
-            docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest"
-          fi
         fi
       - |
         if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
@@ -270,24 +267,6 @@ phases:
           sleep 10
           echo "Waiting for ECR image scan to complete..."
           aws ecr wait image-scan-complete --repository-name "$IMAGE_REPO_NAME" --image-id imageTag="$IMAGE_TAG"
-          CRITICAL_HIGH_COUNT=$(aws ecr describe-image-scan-findings \
-            --repository-name "$IMAGE_REPO_NAME" \
-            --image-id imageTag="$IMAGE_TAG" \
-            --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
-            --output text)
-          if ! printf '%s' "$CRITICAL_HIGH_COUNT" | grep -Eq '^[0-9]+$'; then
-            echo "Unable to parse HIGH/CRITICAL ECR scan finding count: $CRITICAL_HIGH_COUNT" >&2
-            exit 1
-          fi
-          if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
-            SCAN_STATUS="FINDINGS_PRESENT"
-            echo "[WARN] ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings."
-            echo "Toolchain vulnerabilities are accepted and non-blocking for this PoC under repository policy."
-            # Preserve digest-bound findings as evidence; no per-finding remediation or review gates this build.
-          else
-            SCAN_STATUS="PASS"
-            echo "[OK] ECR scan passed with no HIGH/CRITICAL findings."
-          fi
         fi
       - |
         if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
@@ -306,6 +285,20 @@ phases:
           fi
           echo "Image pushed with digest: $DIGEST"
           DIGEST_PINNED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME@$DIGEST"
+        fi
+      - |
+        if [ "$TOOLCHAIN_SELECTION" = "build" ]; then
+          CRITICAL_HIGH_COUNT=$(node infra/terraform/bootstrap/foundation-pipeline-scripts/image-authority-aws.mjs \
+            --context /tmp/deployment-context.json --kind toolchain \
+            --image-uri "$DIGEST_PINNED_IMAGE_URI") || exit 1
+          if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
+            SCAN_STATUS="FINDINGS_PRESENT"
+            echo "[WARN] ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings."
+            echo "Toolchain vulnerabilities are accepted and non-blocking for this PoC under repository policy."
+          else
+            SCAN_STATUS="PASS"
+            echo "[OK] ECR scan passed with no HIGH/CRITICAL findings."
+          fi
         fi
       - |
         if [ "$TOOLCHAIN_SELECTION" = "build" ]; then

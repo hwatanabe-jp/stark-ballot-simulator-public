@@ -209,13 +209,13 @@ fn reference_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     let mut current_level = leaves.to_vec();
     while current_level.len() > 1 {
         let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
-        let mut chunks = current_level.chunks_exact(2);
+        let (pairs, remainder) = current_level.as_chunks::<2>();
 
-        for pair in &mut chunks {
+        for pair in pairs {
             next_level.push(reference_hash_internal(&pair[0], &pair[1]));
         }
 
-        if let Some(remaining) = chunks.remainder().first() {
+        if let Some(remaining) = remainder.first() {
             next_level.push(*remaining);
         }
 
@@ -241,13 +241,13 @@ fn build_reference_audit_path(leaves: &[[u8; 32]], leaf_index: usize) -> (Vec<[u
         }
 
         let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
-        let mut chunks = current_level.chunks_exact(2);
+        let (pairs, remainder) = current_level.as_chunks::<2>();
 
-        for pair in &mut chunks {
+        for pair in pairs {
             next_level.push(reference_hash_internal(&pair[0], &pair[1]));
         }
 
-        if let Some(remaining) = chunks.remainder().first() {
+        if let Some(remaining) = remainder.first() {
             next_level.push(*remaining);
         }
 

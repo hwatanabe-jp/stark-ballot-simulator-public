@@ -2,7 +2,7 @@ import { isNode, isReexport, isStringLiteral, parseSource, staticText } from '..
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,6 +18,7 @@ import { projectTypedRoutesForBaseline, type BaselineApiRouteContract } from './
 import {
   buildPublicContractCliPlan,
   parsePublicContractCli,
+  type PublicContractCliPlan,
   renderPublicContractCaptureSuccess,
   renderPublicContractComparisonSuccess,
   renderPublicContractDriftFailure,
@@ -162,6 +163,26 @@ export function resolveCurrentSourceMetadata(repoRoot: string): {
   throw new Error(`git rev-parse --short=12 HEAD failed: ${headResult.stderr.trim()}`);
 }
 
+async function linkWorkspacePackage(packageDir: string, scope: string, onlyMissing: boolean): Promise<void> {
+  const manifestPath = path.join(packageDir, 'package.json');
+  if (!existsSync(manifestPath)) return;
+  const manifest = parseJsonRecord(await readFile(manifestPath, 'utf8'), `package manifest ${manifestPath}`);
+  const packageName = manifest['name'];
+  if (typeof packageName !== 'string' || !packageName.startsWith('@stark-ballot/')) return;
+  const linkPath = path.join(scope, packageName.slice('@stark-ballot/'.length));
+  if (!onlyMissing || !existsSync(linkPath)) await symlink(packageDir, linkPath);
+}
+
+async function linkWorkspaceDependencies(repoRoot: string, scope: string, onlyMissing: boolean): Promise<void> {
+  for (const workspaceRoot of ['apps', 'packages'] as const) {
+    const rootPath = path.join(repoRoot, workspaceRoot);
+    if (!existsSync(rootPath)) continue;
+    for (const entry of await readdir(rootPath)) {
+      await linkWorkspacePackage(path.join(rootPath, entry), scope, onlyMissing);
+    }
+  }
+}
+
 async function linkCurrentDependencies(repoRoot: string): Promise<void> {
   const tempNodeModules = path.join(repoRoot, 'node_modules');
   const currentNodeModules = path.join(process.cwd(), 'node_modules');
@@ -178,46 +199,8 @@ async function linkCurrentDependencies(repoRoot: string): Promise<void> {
 
   const starkBallotScope = path.join(tempNodeModules, '@stark-ballot');
   await mkdir(starkBallotScope, { recursive: true });
-  for (const workspaceRoot of ['apps', 'packages'] as const) {
-    const rootPath = path.join(repoRoot, workspaceRoot);
-    if (!existsSync(rootPath)) {
-      continue;
-    }
-    for (const entry of await readdir(rootPath)) {
-      const packageDir = path.join(rootPath, entry);
-      const manifestPath = path.join(packageDir, 'package.json');
-      if (!existsSync(manifestPath)) {
-        continue;
-      }
-      const manifest = parseJsonRecord(await readFile(manifestPath, 'utf8'), `package manifest ${manifestPath}`);
-      const packageName = manifest['name'];
-      if (typeof packageName === 'string' && packageName.startsWith('@stark-ballot/')) {
-        await symlink(packageDir, path.join(starkBallotScope, packageName.slice('@stark-ballot/'.length)));
-      }
-    }
-  }
-  for (const workspaceRoot of ['apps', 'packages'] as const) {
-    const rootPath = path.join(process.cwd(), workspaceRoot);
-    if (!existsSync(rootPath)) {
-      continue;
-    }
-    for (const entry of await readdir(rootPath)) {
-      const packageDir = path.join(rootPath, entry);
-      const manifestPath = path.join(packageDir, 'package.json');
-      if (!existsSync(manifestPath)) {
-        continue;
-      }
-      const manifest = parseJsonRecord(await readFile(manifestPath, 'utf8'), `package manifest ${manifestPath}`);
-      const packageName = manifest['name'];
-      if (typeof packageName !== 'string' || !packageName.startsWith('@stark-ballot/')) {
-        continue;
-      }
-      const linkPath = path.join(starkBallotScope, packageName.slice('@stark-ballot/'.length));
-      if (!existsSync(linkPath)) {
-        await symlink(packageDir, linkPath);
-      }
-    }
-  }
+  await linkWorkspaceDependencies(repoRoot, starkBallotScope, false);
+  await linkWorkspaceDependencies(process.cwd(), starkBallotScope, true);
 }
 
 async function materializeSourceRefFromRoot(sourceRepoRoot: string, sourceRef: string): Promise<MaterializedSourceRef> {
@@ -260,7 +243,10 @@ function runSourceRootJson(repoRoot: string, script: string): unknown {
       TSX_TSCONFIG_PATH: path.join(repoRoot, 'tsconfig.json'),
     },
     maxBuffer: 1024 * 1024 * 20,
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
   });
+  if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`source-root module evaluation failed: ${result.stderr.trim()}`);
   }
@@ -354,9 +340,12 @@ async function prepareProbeArtifacts(root: string, sessionId: string, finalizati
   await mkdir(artifactDir, { recursive: true });
   const bundlePolicy = resolvePublicBundlePolicy('sync');
   await Promise.all(
-    bundlePolicy.requiredMembers.map((member) =>
-      writeFile(path.join(artifactDir, member), `${JSON.stringify({ artifact: member })}\n`),
-    ),
+    bundlePolicy.requiredMembers.map(async (member) => {
+      const memberPath = path.join(artifactDir, member);
+      await writeFile(memberPath, `${JSON.stringify({ artifact: member })}\n`);
+      // ZIP headers retain file modes; canonicalize synthetic fixtures inside the private temp root.
+      await chmod(memberPath, 0o644);
+    }),
   );
   await createVerificationBundleArchive(artifactDir, { policy: bundlePolicy });
   await writeFile(path.join(artifactDir, 'verification.json'), `${JSON.stringify({ ok: true })}\n`);
@@ -377,6 +366,7 @@ async function snapshotProbeResponse(
   });
 }
 
+// fallow-ignore-next-line unused-export -- imported by the isolated subprocess probe below
 export async function captureMountedBehaviorForSourceRoot(repoRoot: string): Promise<MountedBehaviorProbeSnapshot[]> {
   const sessionId = 'session-baseline-mounted';
   const finalizationId = 'finalization-baseline-mounted';
@@ -424,7 +414,7 @@ export async function captureMountedBehaviorForSourceRoot(repoRoot: string): Pro
           init?: RequestInit,
           env?: {
             requestContext: {
-              requestId: string;
+              extendedRequestId: string;
             };
           },
         ) => Promise<Response>;
@@ -463,7 +453,7 @@ export async function captureMountedBehaviorForSourceRoot(repoRoot: string): Pro
       const app = resolveApp(probe.mode);
       const headers = { ...(probe.headers ?? {}) };
       const requestId = deterministicProbeRequestId(probe.probeId);
-      const env = { requestContext: { requestId } };
+      const env = { requestContext: { extendedRequestId: requestId } };
       if (probe.probeId === 'lambda.bitmap.conditional.no-body') {
         const fresh = await app.request(
           probe.url,
@@ -521,6 +511,23 @@ console.log('__PUBLIC_CONTRACT_BASELINE_JSON__' + JSON.stringify(result));
   );
 }
 
+function* referencedSchemaModules(
+  repoRoot: string,
+  currentPath: string,
+  sourceFile: SchemaSourceModule['sourceFile'],
+  includeImports: boolean,
+): Generator<string> {
+  for (const statement of sourceFile.body) {
+    const moduleSpecifier =
+      (includeImports && isNode(statement, 'ImportDeclaration')) || isReexport(statement)
+        ? statement.source
+        : undefined;
+    if (!moduleSpecifier || !isStringLiteral(moduleSpecifier)) continue;
+    const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, staticText(moduleSpecifier));
+    if (resolved) yield resolved;
+  }
+}
+
 async function readSchemaSourceModules(repoRoot: string): Promise<Map<string, SchemaSourceModule>> {
   const pending = [resolveSchemaEntryPath(repoRoot)];
   const modules = new Map<string, SchemaSourceModule>();
@@ -534,14 +541,8 @@ async function readSchemaSourceModules(repoRoot: string): Promise<Map<string, Sc
     const sourceFile = parseSource(currentPath, source);
     modules.set(currentPath, { source, sourceFile });
 
-    for (const statement of sourceFile.body) {
-      if (!isReexport(statement) || !statement.source || !isStringLiteral(statement.source)) {
-        continue;
-      }
-      const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, staticText(statement.source));
-      if (resolved && !modules.has(resolved)) {
-        pending.push(resolved);
-      }
+    for (const resolved of referencedSchemaModules(repoRoot, currentPath, sourceFile, false)) {
+      if (!modules.has(resolved)) pending.push(resolved);
     }
   }
 
@@ -558,6 +559,7 @@ async function readSchemaFingerprints(repoRoot: string): Promise<Record<string, 
   return buildSchemaDeclarationFingerprints(modules.values());
 }
 
+// fallow-ignore-next-line unused-export -- imported by the isolated subprocess probe below
 export async function captureSchemaSemanticsForSourceRoot(repoRoot: string): Promise<SchemaSemanticSnapshot> {
   const entryPath = resolveSchemaEntryPath(repoRoot);
   const schemaModule = (await import(pathToFileURL(entryPath).href)) as Record<string, unknown>;
@@ -582,6 +584,23 @@ console.log('__PUBLIC_CONTRACT_BASELINE_JSON__' + JSON.stringify(result));
   );
 }
 
+function resolveWildcardExportTarget(exportsMap: Record<string, unknown>, exportKey: string): string | undefined {
+  for (const [key, target] of Object.entries(exportsMap)) {
+    if (!key.includes('*') || typeof target !== 'string' || !target.includes('*')) {
+      continue;
+    }
+    const wildcardIndex = key.indexOf('*');
+    const keyPrefix = key.slice(0, wildcardIndex);
+    const keySuffix = key.slice(wildcardIndex + 1);
+    if (!exportKey.startsWith(keyPrefix) || !exportKey.endsWith(keySuffix)) {
+      continue;
+    }
+    const matched = exportKey.slice(keyPrefix.length, exportKey.length - keySuffix.length);
+    return target.replace('*', matched);
+  }
+  return undefined;
+}
+
 function resolveWorkspacePackageExport(packageDir: string, subpath: string | undefined): string | undefined {
   const manifestPath = path.join(packageDir, 'package.json');
   if (!existsSync(manifestPath)) {
@@ -598,20 +617,8 @@ function resolveWorkspacePackageExport(packageDir: string, subpath: string | und
   if (typeof exactTarget === 'string') {
     return path.resolve(packageDir, exactTarget);
   }
-  for (const [key, target] of Object.entries(exportsMap)) {
-    if (!key.includes('*') || typeof target !== 'string' || !target.includes('*')) {
-      continue;
-    }
-    const wildcardIndex = key.indexOf('*');
-    const keyPrefix = key.slice(0, wildcardIndex);
-    const keySuffix = key.slice(wildcardIndex + 1);
-    if (!exportKey.startsWith(keyPrefix) || !exportKey.endsWith(keySuffix)) {
-      continue;
-    }
-    const matched = exportKey.slice(keyPrefix.length, exportKey.length - keySuffix.length);
-    return path.resolve(packageDir, target.replace('*', matched));
-  }
-  return undefined;
+  const wildcardTarget = resolveWildcardExportTarget(exportsMap, exportKey);
+  return wildcardTarget === undefined ? undefined : path.resolve(packageDir, wildcardTarget);
 }
 
 function resolveSchemaAuthorityImport(repoRoot: string, importerPath: string, moduleName: string): string | undefined {
@@ -664,16 +671,8 @@ async function readSchemaAuthorityFingerprints(repoRoot: string): Promise<Record
     }
 
     const sourceFile = parseSource(currentPath, source);
-    for (const statement of sourceFile.body) {
-      const moduleSpecifier =
-        isNode(statement, 'ImportDeclaration') || isReexport(statement) ? statement.source : undefined;
-      if (!moduleSpecifier || !isStringLiteral(moduleSpecifier)) {
-        continue;
-      }
-      const resolved = resolveSchemaAuthorityImport(repoRoot, currentPath, staticText(moduleSpecifier));
-      if (resolved && !visited.has(resolved)) {
-        pending.push(resolved);
-      }
+    for (const resolved of referencedSchemaModules(repoRoot, currentPath, sourceFile, true)) {
+      if (!visited.has(resolved)) pending.push(resolved);
     }
   }
 
@@ -710,7 +709,7 @@ export async function capturePublicContractSnapshot(
     const registrations = await importTypedRouteRegistrations(
       repoRoot,
       isolatedSourceRoot,
-      await readFile(path.join(repoRoot, 'apps/api/src/server/api/routes/hono.ts'), 'utf8'),
+      await readFile(path.join(repoRoot, 'apps/api/src/server/api/routes/honoBindings.ts'), 'utf8'),
     );
     const mountedBehavior = captureMountedBehavior(repoRoot);
     const mountedBehaviorCoverage = validateMountedBehaviorCoverage(mountedBehavior);
@@ -754,6 +753,21 @@ async function writeSnapshot(outPath: string, snapshot: PublicContractSnapshot):
   await writeFile(outPath, await formatSource(outPath, stableStringify(snapshot)));
 }
 
+async function captureContractFromPlan(plan: Extract<PublicContractCliPlan, { command: 'capture' }>): Promise<void> {
+  const snapshot = await capturePublicContractSnapshot(omitUndefinedProperties({ sourceRef: plan.sourceRef }));
+  if (plan.requireCleanCurrent && !plan.sourceRef && snapshot.dirtyStatus !== 'clean') {
+    throw new Error('Current public-contract capture requires a clean worktree for source-SHA-bound final evidence');
+  }
+  await writeSnapshot(plan.outPath, snapshot);
+  for (const line of renderPublicContractCaptureSuccess(
+    snapshot.routeContracts.length,
+    plan.outPath,
+    snapshot.contractHash,
+  )) {
+    console.log(line);
+  }
+}
+
 async function main(): Promise<void> {
   const options = parsePublicContractCli(process.argv.slice(2));
   const initialPlan = buildPublicContractCliPlan(options, false);
@@ -762,18 +776,7 @@ async function main(): Promise<void> {
       ? buildPublicContractCliPlan(options, existsSync(initialPlan.currentPath))
       : initialPlan;
   if (plan.command === 'capture') {
-    const snapshot = await capturePublicContractSnapshot(omitUndefinedProperties({ sourceRef: plan.sourceRef }));
-    if (plan.requireCleanCurrent && !plan.sourceRef && snapshot.dirtyStatus !== 'clean') {
-      throw new Error('Current public-contract capture requires a clean worktree for source-SHA-bound final evidence');
-    }
-    await writeSnapshot(plan.outPath, snapshot);
-    for (const line of renderPublicContractCaptureSuccess(
-      snapshot.routeContracts.length,
-      plan.outPath,
-      snapshot.contractHash,
-    )) {
-      console.log(line);
-    }
+    await captureContractFromPlan(plan);
     return;
   }
 

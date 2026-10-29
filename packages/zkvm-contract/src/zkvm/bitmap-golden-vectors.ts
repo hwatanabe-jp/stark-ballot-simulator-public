@@ -1,3 +1,4 @@
+import { requireContractString as requireString, requireExactContractKeys } from './contract-values';
 import { isRecord } from './guards';
 
 export const CURRENT_BITMAP_GOLDEN_VECTOR_TYPE = 'stark-ballot.bitmap-proof-parity.current' as const;
@@ -37,20 +38,8 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
   return value;
 }
 
-function requireExactKeys(record: Record<string, unknown>, expected: readonly string[], label: string): void {
-  const keys = Object.keys(record).sort();
-  const expectedKeys = [...expected].sort();
-  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
-    throw new Error(`${label} must contain the exact keys for the current bitmap golden-vector envelope`);
-  }
-}
-
-function requireString(record: Record<string, unknown>, key: string, label: string): string {
-  const value = record[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`${label}.${key} must be a non-empty string`);
-  }
-  return value;
+function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  requireExactContractKeys(record, keys, label, 'current bitmap golden-vector envelope');
 }
 
 function requireInteger(value: unknown, label: string): number {

@@ -75,6 +75,23 @@ interface MonitorReport {
   specsUrl?: string;
 }
 
+function parseMaxAgeHours(rawValue: string): number {
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0)
+    throw new Error(`--max-age-hours must be a positive integer: ${rawValue}`);
+  return parsed;
+}
+
+function parseMonitorTimestamp(rawValue: string): Date {
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`--now must be an ISO-8601 timestamp: ${rawValue}`);
+  return parsed;
+}
+
+function isOptionalWorkflowText(value: unknown): boolean {
+  return typeof value === 'string' || value === undefined;
+}
+
 export function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = {
     maxAgeHours: DEFAULT_MAX_AGE_HOURS,
@@ -91,19 +108,11 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       index += 1;
     } else if (arg === '--max-age-hours') {
       const rawValue = readOptionValue(argv, index, arg);
-      const parsed = Number.parseInt(rawValue, 10);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new Error(`--max-age-hours must be a positive integer: ${rawValue}`);
-      }
-      options.maxAgeHours = parsed;
+      options.maxAgeHours = parseMaxAgeHours(rawValue);
       index += 1;
     } else if (arg === '--now') {
       const rawValue = readOptionValue(argv, index, arg);
-      const parsed = new Date(rawValue);
-      if (Number.isNaN(parsed.getTime())) {
-        throw new Error(`--now must be an ISO-8601 timestamp: ${rawValue}`);
-      }
-      options.now = parsed;
+      options.now = parseMonitorTimestamp(rawValue);
       index += 1;
     } else if (arg === '--help' || arg === '-h') {
       printUsage();
@@ -313,8 +322,8 @@ function isGhWorkflowRun(value: unknown): value is GhWorkflowRun {
     typeof value['createdAt'] === 'string' &&
     typeof value['updatedAt'] === 'string' &&
     typeof value['url'] === 'string' &&
-    (typeof value['headSha'] === 'string' || value['headSha'] === undefined) &&
-    (typeof value['event'] === 'string' || value['event'] === undefined)
+    isOptionalWorkflowText(value['headSha']) &&
+    isOptionalWorkflowText(value['event'])
   );
 }
 

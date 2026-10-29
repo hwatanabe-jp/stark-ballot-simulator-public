@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@stark-ballot/web/components/ui/Button';
 import '@stark-ballot/web/components/aggregate/AggregationViews.css';
 import { useTranslation } from '@stark-ballot/web/hooks';
+import type { UseTranslationResult } from '@stark-ballot/web/hooks/useTranslation';
+import type { SessionIdentity } from '@stark-ballot/web/session';
 import {
   captureSessionIdentity,
   getSessionData,
@@ -30,18 +32,74 @@ import {
 } from '@stark-ballot/web/finalize/client-finalization-boundary';
 import {
   projectFinalizationResourceToClientSnapshot,
+  type ClientFinalizationSnapshot,
   projectClientFinalizationSnapshotForKnowledge,
   resolveCanonicalFinalizationPayload,
   resolveClientFinalizationVerificationStatus,
 } from '@stark-ballot/web/finalize/client-finalization-result';
 import { startStarkVerificationPolling } from '@stark-ballot/web/verification/stark-verification-polling';
 import { isCapabilityLossErrorCode } from '@stark-ballot/api-contract/errors/apiErrorGuards';
-import type { VoteChoice } from '@stark-ballot/web/session/types';
+import type { VoteChoice, SessionData } from '@stark-ballot/web/session/types';
 import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 type TallyCounts = Record<VoteChoice, number>;
+
+function saveResultCountKnowledge(
+  finalizeResult: ClientFinalizationSnapshot,
+  expectedSessionIdentity: SessionIdentity | null,
+): void {
+  // Save additional knowledge data from result
+  const knowledgeUpdates: KnowledgeData = {
+    missingSlots: finalizeResult.missingSlots,
+    invalidPresentedSlots: finalizeResult.invalidPresentedSlots,
+    rejectedRecords: finalizeResult.rejectedRecords,
+    validVotes: finalizeResult.journal.validVotes,
+    excludedSlots: finalizeResult.excludedSlots,
+    totalExpected: finalizeResult.totalExpected,
+  };
+
+  // Set initial proof bundle status only if not already downloaded
+  const currentBundleStatus = getKnowledgeValue('proofBundleStatus');
+  if (!currentBundleStatus) {
+    knowledgeUpdates['proofBundleStatus'] = 'not_downloaded';
+  }
+
+  if (Object.keys(knowledgeUpdates).length > 0) {
+    saveKnowledgeData(knowledgeUpdates, {
+      ...omitUndefinedProperties({ expectedSessionId: expectedSessionIdentity?.sessionId }),
+    });
+  }
+}
+
+function startResultVerification(
+  sessionData: SessionData,
+  finalizationSnapshot: ClientFinalizationSnapshot,
+  expectedSessionIdentity: SessionIdentity | null,
+): void {
+  const sessionId = sessionData.sessionId;
+  const verificationStatus = resolveClientFinalizationVerificationStatus(finalizationSnapshot);
+  const shouldTriggerVerification = !verificationStatus || verificationStatus === 'not_run';
+  const shouldStartPolling = shouldTriggerVerification || verificationStatus === 'running';
+
+  if (sessionId) {
+    saveSessionDataForIdentity(expectedSessionIdentity, { verificationRequestedAt: Date.now() });
+    if (shouldTriggerVerification) {
+      void runVerification(sessionData, finalizationSnapshot.finalizationId).catch((err) => {
+        console.warn('[ResultPage] Failed to start STARK verification', err);
+      });
+    }
+    if (shouldStartPolling) {
+      startStarkVerificationPolling({
+        sessionId,
+        finalizationId: finalizationSnapshot.finalizationId,
+      });
+    }
+  }
+}
+
+type ResultRestoration = { kind: 'handled' } | { kind: 'restored'; snapshot: ClientFinalizationSnapshot | null };
 
 export default function ResultPage(): React.ReactElement {
   const { t } = useTranslation();
@@ -113,6 +171,73 @@ export default function ResultPage(): React.ReactElement {
       return false;
     };
 
+    const admitRestoredResource = (resource: FinalizationResource | null): ResultRestoration => {
+      let finalizeResult: ClientFinalizationSnapshot | null = null;
+      if (resource?.status === 'failed' || resource?.status === 'timeout') {
+        handleTerminalResource(resource);
+        return { kind: 'handled' };
+      }
+      if (resource?.status === 'succeeded') {
+        finalizeResult = projectFinalizationResourceToClientSnapshot(resource);
+        if (!finalizeResult) {
+          clearClientFinalizedProjection(expectedSessionIdentity);
+        }
+      } else if (resource) {
+        clearClientFinalizedProjection(expectedSessionIdentity);
+      }
+      return { kind: 'restored', snapshot: finalizeResult };
+    };
+    const handleRestorationError = (err: unknown): boolean => {
+      if (!canApplyResponse()) return true;
+      const errorCode = resolveFinalizationStatusErrorCode(err);
+      if (errorCode === 'SESSION_NOT_FOUND') {
+        handleMissingSession();
+        return true;
+      }
+      if (isCapabilityLossErrorCode(errorCode)) {
+        clearClientSessionAuthority(expectedSessionIdentity);
+        setError(resolveSessionErrorMessage());
+        setIsLoading(false);
+        return true;
+      }
+      console.error('[ResultPage] Failed to restore finalization result:', err);
+      return false;
+    };
+    const publishRestoredSnapshot = (finalizeResult: ClientFinalizationSnapshot | null): void => {
+      if (!finalizeResult) {
+        setError(t('pages.result.errors.noResult'));
+        setIsLoading(false);
+        return;
+      }
+
+      saveSessionDataForIdentity(expectedSessionIdentity, { finalizeResult, phase: 'verifying' });
+
+      mergeKnowledgeFromApi(projectClientFinalizationSnapshotForKnowledge(finalizeResult), {
+        omitKeys: VERIFICATION_GATED_KEYS,
+        ...omitUndefinedProperties({ expectedSessionId: expectedSessionIdentity?.sessionId }),
+      });
+
+      setTallyCounts({ ...finalizeResult.tally.counts });
+      setTotalVotes(finalizeResult.tally.totalVotes);
+
+      saveResultCountKnowledge(finalizeResult, expectedSessionIdentity);
+
+      setIsLoading(false);
+    };
+    const restoreFinalizationResult = async (session: SessionData): Promise<void> => {
+      let restored: ResultRestoration;
+      try {
+        const resource = await fetchCurrentFinalization(session, { signal: controller.signal });
+        if (!canApplyResponse()) return;
+        restored = admitRestoredResource(resource);
+      } catch (error) {
+        if (handleRestorationError(error)) return;
+        restored = { kind: 'restored', snapshot: null };
+      }
+      if (restored.kind === 'handled') return;
+      publishRestoredSnapshot(restored.snapshot);
+    };
+
     const loadResult = async () => {
       try {
         const sessionData = getExpectedSession();
@@ -122,77 +247,7 @@ export default function ResultPage(): React.ReactElement {
           return;
         }
 
-        let finalizeResult = null;
-        try {
-          const resource = await fetchCurrentFinalization(sessionData, { signal: controller.signal });
-          if (!canApplyResponse()) return;
-          if (resource?.status === 'failed' || resource?.status === 'timeout') {
-            handleTerminalResource(resource);
-            return;
-          }
-          if (resource?.status === 'succeeded') {
-            finalizeResult = projectFinalizationResourceToClientSnapshot(resource);
-            if (!finalizeResult) {
-              clearClientFinalizedProjection(expectedSessionIdentity);
-            }
-          } else if (resource) {
-            clearClientFinalizedProjection(expectedSessionIdentity);
-          }
-        } catch (err) {
-          if (!canApplyResponse()) return;
-          const errorCode = resolveFinalizationStatusErrorCode(err);
-          if (errorCode === 'SESSION_NOT_FOUND') {
-            handleMissingSession();
-            return;
-          }
-          if (isCapabilityLossErrorCode(errorCode)) {
-            clearClientSessionAuthority(expectedSessionIdentity);
-            setError(resolveSessionErrorMessage());
-            setIsLoading(false);
-            return;
-          }
-          console.error('[ResultPage] Failed to restore finalization result:', err);
-        }
-
-        if (!finalizeResult) {
-          setError(t('pages.result.errors.noResult'));
-          setIsLoading(false);
-          return;
-        }
-
-        saveSessionDataForIdentity(expectedSessionIdentity, { finalizeResult, phase: 'verifying' });
-
-        mergeKnowledgeFromApi(projectClientFinalizationSnapshotForKnowledge(finalizeResult), {
-          omitKeys: VERIFICATION_GATED_KEYS,
-          ...omitUndefinedProperties({ expectedSessionId: expectedSessionIdentity?.sessionId }),
-        });
-
-        setTallyCounts({ ...finalizeResult.tally.counts });
-        setTotalVotes(finalizeResult.tally.totalVotes);
-
-        // Save additional knowledge data from result
-        const knowledgeUpdates: KnowledgeData = {
-          missingSlots: finalizeResult.missingSlots,
-          invalidPresentedSlots: finalizeResult.invalidPresentedSlots,
-          rejectedRecords: finalizeResult.rejectedRecords,
-          validVotes: finalizeResult.journal.validVotes,
-          excludedSlots: finalizeResult.excludedSlots,
-          totalExpected: finalizeResult.totalExpected,
-        };
-
-        // Set initial proof bundle status only if not already downloaded
-        const currentBundleStatus = getKnowledgeValue('proofBundleStatus');
-        if (!currentBundleStatus) {
-          knowledgeUpdates['proofBundleStatus'] = 'not_downloaded';
-        }
-
-        if (Object.keys(knowledgeUpdates).length > 0) {
-          saveKnowledgeData(knowledgeUpdates, {
-            ...omitUndefinedProperties({ expectedSessionId: expectedSessionIdentity?.sessionId }),
-          });
-        }
-
-        setIsLoading(false);
+        await restoreFinalizationResult(sessionData);
       } catch (err) {
         if (!canApplyResponse()) return;
         console.error('[ResultPage] Error loading result:', err);
@@ -227,25 +282,7 @@ export default function ResultPage(): React.ReactElement {
       setIsNavigating(false);
       return;
     }
-    const sessionId = sessionData.sessionId;
-    const verificationStatus = resolveClientFinalizationVerificationStatus(finalizationSnapshot);
-    const shouldTriggerVerification = !verificationStatus || verificationStatus === 'not_run';
-    const shouldStartPolling = shouldTriggerVerification || verificationStatus === 'running';
-
-    if (sessionId) {
-      saveSessionDataForIdentity(expectedSessionIdentity, { verificationRequestedAt: Date.now() });
-      if (shouldTriggerVerification) {
-        void runVerification(sessionData, finalizationSnapshot.finalizationId).catch((err) => {
-          console.warn('[ResultPage] Failed to start STARK verification', err);
-        });
-      }
-      if (shouldStartPolling) {
-        startStarkVerificationPolling({
-          sessionId,
-          finalizationId: finalizationSnapshot.finalizationId,
-        });
-      }
-    }
+    startResultVerification(sessionData, finalizationSnapshot, expectedSessionIdentity);
 
     router.push('/verify');
   };
@@ -256,6 +293,41 @@ export default function ResultPage(): React.ReactElement {
     router.push('/');
   };
 
+  return (
+    <ResultView
+      t={t}
+      tallyCounts={tallyCounts}
+      totalVotes={totalVotes}
+      isLoading={isLoading}
+      isNavigating={isNavigating}
+      error={error}
+      handleReset={handleReset}
+      handleVerify={handleVerify}
+    />
+  );
+}
+
+interface ResultViewProps {
+  t: UseTranslationResult['t'];
+  tallyCounts: TallyCounts | null;
+  totalVotes: number;
+  isLoading: boolean;
+  isNavigating: boolean;
+  error: string | null;
+  handleReset: () => void;
+  handleVerify: () => void;
+}
+
+function ResultView({
+  t,
+  tallyCounts,
+  totalVotes,
+  isLoading,
+  isNavigating,
+  error,
+  handleReset,
+  handleVerify,
+}: ResultViewProps): React.ReactElement {
   // Calculate max count for bar scaling
   const maxCount = tallyCounts ? Math.max(...Object.values(tallyCounts), 1) : 1;
 

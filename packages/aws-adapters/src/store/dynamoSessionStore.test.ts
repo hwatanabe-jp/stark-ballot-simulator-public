@@ -1,3 +1,4 @@
+import { reconcileFinalization } from '@stark-ballot/application/finalize/reconcile-finalization';
 import { isDeepStrictEqual } from 'node:util';
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
@@ -195,15 +196,17 @@ class FakeDynamoDocumentClient {
     throw new Error(`Unexpected table: ${tableName}`);
   }
 
+  private findUpdateTarget(tableName: string, key: { sessionId: string; voteIndex?: number }) {
+    if (tableName === this.sessionsTableName) return this.sessions.get(key.sessionId);
+    if (tableName === this.votesTableName && key.voteIndex !== undefined)
+      return this.votes.get(key.sessionId)?.get(key.voteIndex);
+    return undefined;
+  }
+
   private update(input: Record<string, unknown>): Record<string, unknown> {
     const tableName = this.requireString(input['TableName'], 'TableName');
     const key = input['Key'] as { sessionId: string; voteIndex?: number };
-    const existing =
-      tableName === this.sessionsTableName
-        ? this.sessions.get(key.sessionId)
-        : tableName === this.votesTableName && key.voteIndex !== undefined
-          ? this.votes.get(key.sessionId)?.get(key.voteIndex)
-          : undefined;
+    const existing = this.findUpdateTarget(tableName, key);
     this.assertCondition(input, existing);
     if (!existing) {
       throw this.conditionalError();
@@ -254,6 +257,45 @@ class FakeDynamoDocumentClient {
     return {};
   }
 
+  private captureTransactionRows() {
+    const sessionSnapshot = structuredClone(Array.from(this.sessions.entries()));
+    const voteSnapshot = structuredClone(
+      Array.from(this.votes, ([sessionId, rows]) => [sessionId, Array.from(rows.entries())] as const),
+    );
+    const extraSnapshot = structuredClone(Array.from(this.extraVoteRows.entries()));
+    return { sessionSnapshot, voteSnapshot, extraSnapshot };
+  }
+
+  private restoreTransactionRows(snapshot: ReturnType<FakeDynamoDocumentClient['captureTransactionRows']>): void {
+    const { sessionSnapshot, voteSnapshot, extraSnapshot } = snapshot;
+    this.sessions.clear();
+    for (const [key, row] of sessionSnapshot) {
+      this.sessions.set(key, row);
+    }
+    this.votes.clear();
+    for (const [sessionId, rows] of voteSnapshot) {
+      this.votes.set(sessionId, new Map(rows));
+    }
+    this.extraVoteRows.clear();
+    for (const [sessionId, rows] of extraSnapshot) {
+      this.extraVoteRows.set(sessionId, rows);
+    }
+  }
+
+  private executeTransactionItem(item: TransactionItem): void {
+    if (item['Put']) {
+      this.put(item['Put']);
+    } else if (item['Update']) {
+      this.update(item['Update']);
+    } else if (item['Delete']) {
+      this.delete(item['Delete']);
+    } else if (item['ConditionCheck']) {
+      this.conditionCheck(item['ConditionCheck']);
+    } else {
+      throw new Error('Unsupported transaction item');
+    }
+  }
+
   private async transactWrite(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.transactWriteCalls += 1;
     this.lastTransactWriteItemCount = ((input['TransactItems'] ?? []) as TransactionItem[]).length;
@@ -267,42 +309,17 @@ class FakeDynamoDocumentClient {
       this.nextTransactWriteError = null;
       throw error;
     }
-    const sessionSnapshot = structuredClone(Array.from(this.sessions.entries()));
-    const voteSnapshot = structuredClone(
-      Array.from(this.votes, ([sessionId, rows]) => [sessionId, Array.from(rows.entries())] as const),
-    );
-    const extraSnapshot = structuredClone(Array.from(this.extraVoteRows.entries()));
+    const snapshot = this.captureTransactionRows();
     const items = (input['TransactItems'] ?? []) as TransactionItem[];
     let itemIndex = 0;
     try {
       for (const [index, item] of items.entries()) {
         itemIndex = index;
-        if (item['Put']) {
-          this.put(item['Put']);
-        } else if (item['Update']) {
-          this.update(item['Update']);
-        } else if (item['Delete']) {
-          this.delete(item['Delete']);
-        } else if (item['ConditionCheck']) {
-          this.conditionCheck(item['ConditionCheck']);
-        } else {
-          throw new Error('Unsupported transaction item');
-        }
+        this.executeTransactionItem(item);
       }
       return {};
     } catch (error) {
-      this.sessions.clear();
-      for (const [key, row] of sessionSnapshot) {
-        this.sessions.set(key, row);
-      }
-      this.votes.clear();
-      for (const [sessionId, rows] of voteSnapshot) {
-        this.votes.set(sessionId, new Map(rows));
-      }
-      this.extraVoteRows.clear();
-      for (const [sessionId, rows] of extraSnapshot) {
-        this.extraVoteRows.set(sessionId, rows);
-      }
+      this.restoreTransactionRows(snapshot);
       if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
         throw new TransactionCanceledException({
           $metadata: {},
@@ -326,32 +343,41 @@ class FakeDynamoDocumentClient {
     const names = (input['ExpressionAttributeNames'] ?? {}) as Record<string, string>;
     const values = (input['ExpressionAttributeValues'] ?? {}) as Record<string, unknown>;
     for (const part of expression.split(/\s+AND\s+/u)) {
-      const notExists = /^attribute_not_exists\((#[A-Za-z0-9_]+)\)$/.exec(part);
-      if (notExists?.[1]) {
-        const attribute = names[notExists[1]];
-        if (attribute && existing?.[attribute] !== undefined) {
-          throw this.conditionalError();
-        }
-        continue;
-      }
-      const exists = /^attribute_exists\((#[A-Za-z0-9_]+)\)$/.exec(part);
-      if (exists?.[1]) {
-        const attribute = names[exists[1]];
-        if (!attribute || existing?.[attribute] === undefined) {
-          throw this.conditionalError();
-        }
-        continue;
-      }
-      const equality = /^(#[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+)$/.exec(part);
-      if (equality?.[1] && equality[2]) {
-        const attribute = names[equality[1]];
-        if (!attribute || !isDeepStrictEqual(existing?.[attribute], values[equality[2]])) {
-          throw this.conditionalError();
-        }
-        continue;
-      }
-      throw new Error(`Unsupported condition expression: ${part}`);
+      if (!this.matchesConditionClause(part, names, values, existing)) throw this.conditionalError();
     }
+  }
+
+  private matchesConditionClause(
+    part: string,
+    names: Record<string, string>,
+    values: Record<string, unknown>,
+    existing: Record<string, unknown> | undefined,
+  ): boolean {
+    const notExists = /^attribute_not_exists\((#[A-Za-z0-9_]+)\)$/.exec(part);
+    if (notExists?.[1]) return !this.conditionAttributeExists(names[notExists[1]], existing);
+    const exists = /^attribute_exists\((#[A-Za-z0-9_]+)\)$/.exec(part);
+    if (exists?.[1]) return this.conditionAttributeExists(names[exists[1]], existing);
+    const equality = /^(#[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+)$/.exec(part);
+    if (equality?.[1] && equality[2])
+      return this.conditionAttributeEquals(names[equality[1]], existing, values[equality[2]]);
+    throw new Error(`Unsupported condition expression: ${part}`);
+  }
+
+  private conditionAttributeExists(
+    attribute: string | undefined,
+    existing: Record<string, unknown> | undefined,
+  ): boolean {
+    if (!attribute) return false;
+    return existing?.[attribute] !== undefined;
+  }
+
+  private conditionAttributeEquals(
+    attribute: string | undefined,
+    existing: Record<string, unknown> | undefined,
+    expected: unknown,
+  ): boolean {
+    if (!attribute) return false;
+    return isDeepStrictEqual(existing?.[attribute], expected);
   }
 
   private conditionalError(): Error {
@@ -1247,6 +1273,33 @@ describe('DynamoSessionStore', () => {
           message === 'finalize_state_transition' && (detail as { changed?: unknown } | undefined)?.changed === false,
       ),
     ).toBe(true);
+  });
+
+  it('keeps a concurrent success when reconciliation loses the Dynamo transaction CAS', async () => {
+    const store = createStore(client);
+    const writer = createStore(client);
+    const identity = await store.createSession();
+    const finalizationId = asFinalizationId('reconcile-cas');
+    await store.markFinalizationRunning(identity.sessionId, {
+      finalizationId,
+      queuedAtMs: 10,
+      startedAtMs: 20,
+      scenarioContext,
+    });
+    let winner: FinalizationRecord | undefined;
+    client.runBeforeNextTransactWrite(async () => {
+      winner = await finalizeSucceeded(writer, identity.sessionId, finalizationId);
+    });
+    await expect(
+      reconcileFinalization(
+        { sessionId: identity.sessionId, finalizationId, nowMs: 100_000, dispatchDeadlineMs: 900_000 },
+        {
+          store,
+          observeExecution: async () => ({ status: 'failed', stoppedAtMs: 25 }),
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(await store.getCurrentFinalizationRecord(identity.sessionId)).toEqual(winner);
   });
 
   it('observes a retried transition from the exact lifecycle snapshot evaluated after a stale write', async () => {

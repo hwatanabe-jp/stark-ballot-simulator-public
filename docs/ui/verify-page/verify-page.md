@@ -9,7 +9,16 @@
   `packages/verification/src/verification/verification-summary.ts`
 - stage status、display eligibility、render readiness:
   `packages/verification/src/verification/verification-presentation-policy.ts`
-- 画面制御: `apps/web/src/routes/verify/page.tsx`
+- 画面構成: `apps/web/src/routes/verify/page.tsx`
+- session identity と取得・開始・invalidation の制御:
+  `apps/web/src/routes/verify/hooks/useVerificationSession.ts`、`useVerificationController.ts`
+- resource admission、Cast overlay、検証 sequence:
+  `apps/web/src/routes/verify/hooks/useVerificationData.ts`、`useVerificationSequence.ts`、
+  `apps/web/src/routes/verify/lib/local-cast-evidence.ts`
+- shared policy から画面表示への変換: `apps/web/src/routes/verify/lib/verification-presentation.ts`
+- download、最終観測、tamper message:
+  `apps/web/src/routes/verify/hooks/useVerificationArtifacts.ts`、`useVerificationObservation.ts`、
+  `useVerificationTamperError.ts`
 - 4 category と22項目の表示: `apps/web/src/components/verification/UnifiedVerificationCard.tsx`
 - request/response schema: `packages/api-contract/src/schemas/verification.ts`
 
@@ -19,8 +28,10 @@
 ## 到達条件とデータライフサイクル
 
 - 検証開始の導線は `/result` の「検証」ボタンです。
-- `/verify` は path の exact `sessionId` / `finalizationId` と session capability を使って
-  `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` を実行し、strict response
+- `/verify` 自体は session / finalization の path parameter を持ちません。browser session identity の
+  `sessionId` と canonical finalized snapshot の `finalizationId` を API request path に入れ、
+  session capability とともに
+  `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification` を実行します。strict response
   schema と取得対象の `finalizationId` の一致を確認した data だけを表示に使います。schema は
   canonical checks の順序・metadata と steps、公開 evidence から再評価できる check status、
   report / journal / tally / voter evidence / scenario / policy の相互整合を検証します。
@@ -32,9 +43,9 @@
   verification sequence を自動開始します。
 - verification resource の `verification.checks` は、重複や欠落のない22 checks の inventory と
   Recorded、Counted、STARK の結果の authority です。server の Cast-as-Intended 4 checks は
-  `not_run` です。browser は resource の admission 後、保存済みの receipt、choice、random を
-  使ってその4 checks を再計算し、すべて local result で置き換えます。STARK receipt の検証は
-  server が担当します。
+  `not_run` です。browser は resource の admission 後、`voterEvidence` から得た receipt と
+  browser session に保存済みの election ID、choice、random を使ってその4 checks を再計算し、
+  すべて local result で置き換えます。STARK receipt の検証は server が担当します。
 - verification 開始前は `user.voteReceipt` と `user.merklePath` を knowledge panel に公開しません。
   sequence 開始後、STARK の実待機が解決してから、取得した evidence を同じ session の knowledge
   として反映します。待機中に session が無効になった場合は公開しません。
@@ -42,6 +53,8 @@
 ## Unified Verification Card と表示シーケンス
 
 画面は title、subtitle、`UnifiedVerificationCard`、knowledge panel、footer で構成します。
+route が title、subtitle、card を組み立て、knowledge panel と footer は共通の
+`apps/web/src/components/LayoutProvider.tsx` が配置します。
 `UnifiedVerificationCard` は先頭に Result Summary と Download CTA を配置し、その下に4 category の
 Verification Steps を表示します。小項目は番号、label、evidence、status の対応が読み取れる行で
 揃えます。
@@ -239,7 +252,9 @@ server-side の保存、idempotency、event emission contract は `docs/ui/api-c
 
 - initial loading、session missing / replaced、direct access block は card 外の page-level alert で表示
 - direct access block では `/result` へ戻る操作を提供
-- STARK poll timeout は verification failure として summary に反映
+- STARK poll timeout は STARK step の失敗と明示的な verification failure として扱います。
+  summary は display readiness が `ready` の場合に表示し、取得済み checks に `pending` / `running`
+  が残る間は最終 summary を表示しません。
 - step 実行中の operational error は該当 category 内に一般化した message で表示可能
 - unsupported / corrupt finalized artifact や capability loss は fail closed とし、stale finalized
   projection をそのまま表示しない

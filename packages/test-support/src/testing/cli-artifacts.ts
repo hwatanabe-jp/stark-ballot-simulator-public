@@ -75,6 +75,22 @@ async function ensureDirectory(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }
 
+function formatPersistedCliReport(
+  outputFormat: PersistCliReportOptions['outputFormat'],
+  jsonContent: string,
+  reportContent: string,
+  evidenceContent: string | null,
+): string {
+  return outputFormat === 'json'
+    ? jsonContent
+    : reportContent +
+        (evidenceContent
+          ? outputFormat === 'markdown'
+            ? `\n## Run evidence\n\n\`\`\`json\n${evidenceContent}\n\`\`\`\n`
+            : `\nRun evidence:\n${evidenceContent}\n`
+          : '');
+}
+
 export async function persistCliReport(options: PersistCliReportOptions): Promise<PersistCliReportResult> {
   const {
     sessionId,
@@ -115,15 +131,7 @@ export async function persistCliReport(options: PersistCliReportOptions): Promis
   const evidenceContent = evidence
     ? JSON.stringify({ evidence, scenarioExecution, runFailure: runFailure ?? null }, null, 2)
     : null;
-  const content =
-    outputFormat === 'json'
-      ? jsonContent
-      : reportContent +
-        (evidenceContent
-          ? outputFormat === 'markdown'
-            ? `\n## Run evidence\n\n\`\`\`json\n${evidenceContent}\n\`\`\`\n`
-            : `\nRun evidence:\n${evidenceContent}\n`
-          : '');
+  const content = formatPersistedCliReport(outputFormat, jsonContent, reportContent, evidenceContent);
 
   let formattedPath: string | undefined;
   if (outputFormat !== 'json') {

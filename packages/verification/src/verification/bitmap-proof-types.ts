@@ -1,5 +1,3 @@
-export type BitmapKind = 'included' | 'seen';
-
 declare const bitmapProofBrand: unique symbol;
 
 export type BitmapProofIdentifier<Name extends string> = number & {

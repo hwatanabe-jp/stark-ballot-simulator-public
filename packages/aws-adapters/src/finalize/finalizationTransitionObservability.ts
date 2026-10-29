@@ -74,6 +74,39 @@ function resolveRejectionReason({
   return authoritativeWrite ? 'TERMINAL_STATE_STICKY' : 'CONDITIONAL_WRITE_CONFLICT';
 }
 
+function emitObservedTransition(
+  outcome: FinalizationPersistenceOutcome,
+  metadata: FinalizationTransitionMetadata,
+  sessionIdHash: string,
+  changed: boolean,
+): void {
+  emitCanonicalEvent({
+    event: 'finalize_state_transition',
+    from: changed ? (outcome.before?.status ?? 'none') : outcome.actual.status,
+    to: outcome.actual.status,
+    source: metadata.source,
+    reason: changed ? (outcome.actualReason ?? metadata.reason) : 'IDEMPOTENT_RETRY',
+    changed,
+    session_id_hash: sessionIdHash,
+    finalization_id: outcome.actual.finalizationId,
+  });
+}
+
+function recordAdmittedTransition(
+  outcome: FinalizationPersistenceOutcome,
+  metadata: FinalizationTransitionMetadata,
+  sessionIdHash: string,
+): void {
+  const changed = outcome.authoritativeWrite && !hasSameState(outcome.before, outcome.actual);
+  if (changed && outcome.before === undefined && outcome.actual.status === 'pending') {
+    emitCanonicalEvent({
+      event: 'finalization_admitted',
+      finalization_id: outcome.actual.finalizationId,
+    });
+  }
+  emitObservedTransition(outcome, metadata, sessionIdHash, changed);
+}
+
 export function recordFinalizationPersistenceOutcome(outcome: FinalizationPersistenceOutcome): void {
   try {
     const metadata = outcome.metadata ?? resolveDefaultMetadata(outcome.requestedTo);
@@ -83,37 +116,12 @@ export function recordFinalizationPersistenceOutcome(outcome: FinalizationPersis
       outcome.actual.finalizationId === outcome.requestedFinalizationId;
 
     if (requestWasAdmitted) {
-      const changed = outcome.authoritativeWrite && !hasSameState(outcome.before, outcome.actual);
-      if (changed && outcome.before === undefined && outcome.actual.status === 'pending') {
-        emitCanonicalEvent({
-          event: 'finalization_admitted',
-          finalization_id: outcome.actual.finalizationId,
-        });
-      }
-      emitCanonicalEvent({
-        event: 'finalize_state_transition',
-        from: changed ? (outcome.before?.status ?? 'none') : outcome.actual.status,
-        to: outcome.actual.status,
-        source: metadata.source,
-        reason: changed ? (outcome.actualReason ?? metadata.reason) : 'IDEMPOTENT_RETRY',
-        changed,
-        session_id_hash: sessionIdHash,
-        finalization_id: outcome.actual.finalizationId,
-      });
+      recordAdmittedTransition(outcome, metadata, sessionIdHash);
       return;
     }
 
     if (outcome.authoritativeWrite && !hasSameState(outcome.before, outcome.actual)) {
-      emitCanonicalEvent({
-        event: 'finalize_state_transition',
-        from: outcome.before?.status ?? 'none',
-        to: outcome.actual.status,
-        source: metadata.source,
-        reason: outcome.actualReason ?? metadata.reason,
-        changed: true,
-        session_id_hash: sessionIdHash,
-        finalization_id: outcome.actual.finalizationId,
-      });
+      emitObservedTransition(outcome, metadata, sessionIdHash, true);
     }
 
     emitCanonicalEvent({

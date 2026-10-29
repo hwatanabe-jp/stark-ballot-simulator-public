@@ -20,7 +20,7 @@ import {
 } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getNumberProperty, getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { createHonoApp } from '../routes/hono';
 
 const finalizeSessionUsecaseMock = vi.hoisted(() => vi.fn());
@@ -60,7 +60,7 @@ function expectRequestStatusLog(
   const fields = call?.[1];
   expect(call?.[0]).toBe('request completed');
   expect(getStringProperty(fields, 'event')).toBe('http_request');
-  expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(expectedStatus);
+  expect(getNumberProperty(getObjectProperty(fields, 'http'), 'status')).toBe(expectedStatus);
 }
 
 function buildFinalizeRequest(sessionId: SessionId, headers: Record<string, string> = {}): Request {
@@ -171,7 +171,7 @@ describe('finalizeSessionHandler', () => {
 
     const response = await createTargetFinalizeTestApp(runtimeProfile).fetch(
       buildFinalizeRequest(session.sessionId, { 'X-Stark-Ballot-Origin-Verify': originVerifyHeader }),
-      { requestContext: { http: { sourceIp: '203.0.113.10' } } },
+      { requestContext: { identity: { sourceIp: '203.0.113.10' } } },
     );
 
     const responseText = await response.clone().text();
@@ -193,7 +193,7 @@ describe('finalizeSessionHandler', () => {
 
     const response = await createTargetFinalizeTestApp(runtimeProfile).fetch(
       buildFinalizeRequest(session.sessionId, { 'X-Stark-Ballot-Origin-Verify': originVerifyHeader }),
-      { requestContext: { http: { sourceIp: '203.0.113.10' } } },
+      { requestContext: { identity: { sourceIp: '203.0.113.10' } } },
     );
 
     expect(response.status, await response.clone().text()).toBe(403);

@@ -3,6 +3,7 @@
  * Provides utilities for testing the complete voting flow without a browser
  */
 
+import { formatCliCountDiagnostics } from './cli-report-fields';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -22,17 +23,18 @@ import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-serv
 import { loadPublicImageIdMapping } from '@stark-ballot/node-adapters/image-id-mapping';
 import { resolveExpectedImageId } from '@stark-ballot/verification/image-id';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getVerificationStepInputs, type VerificationCheck } from '@stark-ballot/verification/checks';
+import { type VerificationCheck } from '@stark-ballot/verification/checks';
 import {
   deriveVerificationPresentationPolicy,
+  projectVerificationPresentationSteps,
   type VerificationPresentationPolicyResult,
 } from '@stark-ballot/verification/presentation-policy';
 import {
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringArrayProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { isSessionUnavailableErrorCode } from '@stark-ballot/api-contract/errors/apiErrorGuards';
 import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
@@ -307,25 +309,46 @@ function getLatestNonNullState(
   return null;
 }
 
+function projectAvailableUserVote(
+  userVote: Extract<AvailableVerificationResource['voterEvidence'], { availability: 'available' }>['userVote'],
+) {
+  return {
+    commitment: userVote.commitment,
+    voteId: userVote.voteId,
+    leafIndex: userVote.proof.leafIndex,
+    merklePath: [...userVote.proof.merklePath],
+    treeSize: userVote.proof.treeSize,
+    proof: { ...userVote.proof, merklePath: [...userVote.proof.merklePath] },
+  };
+}
+
+function projectVerificationUserVote(voterEvidence: AvailableVerificationResource['voterEvidence']) {
+  if (voterEvidence.availability === 'available') return projectAvailableUserVote(voterEvidence.userVote);
+  if (voterEvidence.reason === 'exact_proof_unavailable')
+    return { commitment: voterEvidence.userVote.commitment, voteId: voterEvidence.userVote.voteId };
+  return { commitment: voterEvidence.userVote.commitment };
+}
+
+function cloneAffectedBotIds<T extends { affectedBotIds?: number[] | undefined }>(summary: T | undefined) {
+  if (!summary) return undefined;
+  return {
+    ...summary,
+    ...omitUndefinedProperties({ affectedBotIds: summary.affectedBotIds ? [...summary.affectedBotIds] : undefined }),
+  };
+}
+
+function cloneCliVerificationReport(report: AvailableVerificationResource['verifierResult']['report']) {
+  if (!report) return undefined;
+  if (report.status === 'success') return { ...report };
+  return { ...report, ...omitUndefinedProperties({ errors: report.errors ? [...report.errors] : undefined }) };
+}
+
 function projectFinalizationResource(
   sessionId: string,
   resource: Extract<FinalizationResource, { status: 'succeeded' }>,
 ): FinalizeScenarioData {
   const { authority, presentation, voterEvidence } = resource.result;
-  const userVote =
-    voterEvidence.state === 'available'
-      ? {
-          commitment: voterEvidence.userVote.commitment,
-          voteId: voterEvidence.userVote.voteId,
-          leafIndex: voterEvidence.userVote.proof.leafIndex,
-          merklePath: [...voterEvidence.userVote.proof.merklePath],
-          treeSize: voterEvidence.userVote.proof.treeSize,
-          proof: {
-            ...voterEvidence.userVote.proof,
-            merklePath: [...voterEvidence.userVote.proof.merklePath],
-          },
-        }
-      : undefined;
+  const userVote = voterEvidence.state === 'available' ? projectAvailableUserVote(voterEvidence.userVote) : undefined;
 
   return omitUndefinedProperties({
     sessionId,
@@ -373,13 +396,6 @@ function projectFinalizationResource(
     },
   });
 }
-
-const VERIFICATION_STEP_IDS = [
-  'cast_as_intended',
-  'recorded_as_cast',
-  'counted_as_recorded',
-  'stark_verification',
-] as const;
 
 function deriveCliVerificationPresentationPolicy(
   resource: AvailableVerificationResource,
@@ -436,22 +452,6 @@ function projectVerificationChecks(resource: AvailableVerificationResource): Ver
   });
 }
 
-function projectVerificationSteps(
-  resource: AvailableVerificationResource,
-  policy: VerificationPresentationPolicyResult,
-): VerificationStep[] {
-  const serverSteps = new Map(resource.verification.steps.map((step) => [step.id, step] as const));
-  return VERIFICATION_STEP_IDS.map((id) => {
-    const serverStep = serverSteps.get(id);
-    return {
-      id,
-      status: policy.stageStatuses[id],
-      inputs: serverStep?.inputs ? [...serverStep.inputs] : getVerificationStepInputs(id),
-      ...(serverStep?.error ? { error: serverStep.error } : {}),
-    };
-  });
-}
-
 function projectVerificationResource(resource: AvailableVerificationResource): FinalizeScenarioData {
   const proof = resource.proofAuthority;
   const presentation = resource.presentation;
@@ -460,27 +460,7 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
   const verificationChecks = projectVerificationChecks(resource);
   const policy = deriveCliVerificationPresentationPolicy(resource, verificationChecks);
   const voterEvidence = resource.voterEvidence;
-  const userVote =
-    voterEvidence.availability === 'available'
-      ? {
-          commitment: voterEvidence.userVote.commitment,
-          voteId: voterEvidence.userVote.voteId,
-          leafIndex: voterEvidence.userVote.proof.leafIndex,
-          merklePath: [...voterEvidence.userVote.proof.merklePath],
-          treeSize: voterEvidence.userVote.proof.treeSize,
-          proof: {
-            ...voterEvidence.userVote.proof,
-            merklePath: [...voterEvidence.userVote.proof.merklePath],
-          },
-        }
-      : voterEvidence.reason === 'exact_proof_unavailable'
-        ? {
-            commitment: voterEvidence.userVote.commitment,
-            voteId: voterEvidence.userVote.voteId,
-          }
-        : {
-            commitment: voterEvidence.userVote.commitment,
-          };
+  const userVote = projectVerificationUserVote(voterEvidence);
 
   return omitUndefinedProperties({
     finalizationId: resource.finalizationId,
@@ -514,16 +494,9 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
     }),
     scenarioId: presentation.scenarioId,
     verificationStatus: resource.verifierResult.status,
-    verificationSteps: projectVerificationSteps(resource, policy),
+    verificationSteps: projectVerificationPresentationSteps(resource.verification.steps, policy),
     verificationChecks,
-    verificationReport: verifierReport
-      ? verifierReport.status === 'success'
-        ? { ...verifierReport }
-        : {
-            ...verifierReport,
-            ...omitUndefinedProperties({ errors: verifierReport.errors ? [...verifierReport.errors] : undefined }),
-          }
-      : undefined,
+    verificationReport: cloneCliVerificationReport(verifierReport),
     presentationPolicy: policy,
     missingSlots: proof.missingSlots,
     invalidPresentedSlots: proof.invalidPresentedSlots,
@@ -536,26 +509,8 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
     includedBitmapRoot: proof.includedBitmapRoot,
     inputCommitment: proof.inputCommitment,
     seenIndicesCount: proof.seenIndicesCount,
-    botVotesSummary: presentation.botVotesSummary
-      ? {
-          ...presentation.botVotesSummary,
-          ...omitUndefinedProperties({
-            affectedBotIds: presentation.botVotesSummary.affectedBotIds
-              ? [...presentation.botVotesSummary.affectedBotIds]
-              : undefined,
-          }),
-        }
-      : undefined,
-    tamperSummary: presentation.tamperSummary
-      ? {
-          ...presentation.tamperSummary,
-          ...omitUndefinedProperties({
-            affectedBotIds: presentation.tamperSummary.affectedBotIds
-              ? [...presentation.tamperSummary.affectedBotIds]
-              : undefined,
-          }),
-        }
-      : undefined,
+    botVotesSummary: cloneAffectedBotIds(presentation.botVotesSummary),
+    tamperSummary: cloneAffectedBotIds(presentation.tamperSummary),
     debug: {
       verifiedTally: [...proof.verifiedTally],
       missingSlots: proof.missingSlots,
@@ -564,6 +519,32 @@ function projectVerificationResource(resource: AvailableVerificationResource): F
       excludedSlots: proof.excludedSlots,
     },
   });
+}
+
+function mergeFinalizationPresentation(finalizeData: FinalizeScenarioData, verificationData: FinalizeScenarioData) {
+  return {
+    sessionId: finalizeData.sessionId ?? verificationData.sessionId,
+    tally: finalizeData.tally ?? verificationData.tally,
+    result: finalizeData.result ?? verificationData.result,
+    bulletinRoot: finalizeData.bulletinRoot ?? verificationData.bulletinRoot,
+    totalVotes: finalizeData.totalVotes ?? verificationData.totalVotes,
+    tamperedCount: finalizeData.tamperedCount ?? verificationData.tamperedCount,
+    totalExpected: finalizeData.totalExpected ?? verificationData.totalExpected,
+    treeSize: finalizeData.treeSize ?? verificationData.treeSize,
+  };
+}
+
+function mergeFinalizationVoteEvidence(finalizeData: FinalizeScenarioData, verificationData: FinalizeScenarioData) {
+  return {
+    userMerklePath: finalizeData.userMerklePath ?? verificationData.userMerklePath,
+    userVote: finalizeData.userVote ?? verificationData.userVote,
+    receipt: finalizeData.receipt ?? verificationData.receipt,
+    receiptRaw: finalizeData.receiptRaw ?? verificationData.receiptRaw,
+    receiptEncoded: finalizeData.receiptEncoded ?? verificationData.receiptEncoded,
+    journal: verificationData.journal ?? finalizeData.journal,
+    imageId: finalizeData.imageId ?? verificationData.imageId,
+    proof: finalizeData.proof ?? verificationData.proof,
+  };
 }
 
 function mergeFinalizeScenarioData(
@@ -576,22 +557,8 @@ function mergeFinalizeScenarioData(
   return omitUndefinedProperties({
     ...verificationData,
     ...finalizeData,
-    sessionId: finalizeData.sessionId ?? verificationData.sessionId,
-    tally: finalizeData.tally ?? verificationData.tally,
-    result: finalizeData.result ?? verificationData.result,
-    bulletinRoot: finalizeData.bulletinRoot ?? verificationData.bulletinRoot,
-    totalVotes: finalizeData.totalVotes ?? verificationData.totalVotes,
-    tamperedCount: finalizeData.tamperedCount ?? verificationData.tamperedCount,
-    totalExpected: finalizeData.totalExpected ?? verificationData.totalExpected,
-    treeSize: finalizeData.treeSize ?? verificationData.treeSize,
-    userMerklePath: finalizeData.userMerklePath ?? verificationData.userMerklePath,
-    userVote: finalizeData.userVote ?? verificationData.userVote,
-    receipt: finalizeData.receipt ?? verificationData.receipt,
-    receiptRaw: finalizeData.receiptRaw ?? verificationData.receiptRaw,
-    receiptEncoded: finalizeData.receiptEncoded ?? verificationData.receiptEncoded,
-    journal: verificationData.journal ?? finalizeData.journal,
-    imageId: finalizeData.imageId ?? verificationData.imageId,
-    proof: finalizeData.proof ?? verificationData.proof,
+    ...mergeFinalizationPresentation(finalizeData, verificationData),
+    ...mergeFinalizationVoteEvidence(finalizeData, verificationData),
     verificationStatus: verificationData.verificationStatus,
     verificationSteps: verificationData.verificationSteps,
     verificationChecks: verificationData.verificationChecks,
@@ -618,6 +585,21 @@ function toIso(timestamp?: number): string | undefined {
   }
 }
 
+const terminalTimestampFields = new Map([
+  ['succeeded', 'completedAtMs'],
+  ['failed', 'failedAtMs'],
+  ['timeout', 'timeoutAtMs'],
+]);
+
+function finalizationTimestamps(state: FinalizationResource | TestFinalizationState): string[] {
+  const timestamps = [`queuedAtMs=${toIso(state.queuedAtMs) ?? 'n/a'}`];
+  if ('startedAtMs' in state && typeof state.startedAtMs === 'number')
+    timestamps.push(`startedAtMs=${toIso(state.startedAtMs) ?? 'n/a'}`);
+  const terminalField = terminalTimestampFields.get(state.status);
+  if (terminalField) timestamps.push(`${terminalField}=${toIso(getNumberProperty(state, terminalField)) ?? 'n/a'}`);
+  return timestamps;
+}
+
 function formatFinalizationDiagnostics(details: TestResult['details'], format: 'table' | 'markdown'): string[] {
   const lines: string[] = [];
   const prefix = format === 'markdown' ? '- ' : '   ';
@@ -630,36 +612,160 @@ function formatFinalizationDiagnostics(details: TestResult['details'], format: '
 
   const latestState = getLatestNonNullState(details.finalizationHistory);
   if (latestState) {
-    const timestamps: string[] = [];
-    timestamps.push(`queuedAtMs=${toIso(latestState.queuedAtMs) ?? 'n/a'}`);
-    if ('startedAtMs' in latestState && typeof latestState.startedAtMs === 'number') {
-      timestamps.push(`startedAtMs=${toIso(latestState.startedAtMs) ?? 'n/a'}`);
-    }
-    if (latestState.status === 'succeeded') {
-      timestamps.push(`completedAtMs=${toIso(latestState.completedAtMs) ?? 'n/a'}`);
-    } else if (latestState.status === 'failed') {
-      const failedAtMs =
-        'failedAtMs' in latestState && typeof latestState.failedAtMs === 'number' ? latestState.failedAtMs : undefined;
-      timestamps.push(`failedAtMs=${toIso(failedAtMs) ?? 'n/a'}`);
-    } else if (latestState.status === 'timeout') {
-      const timeoutAtMs =
-        'timeoutAtMs' in latestState && typeof latestState.timeoutAtMs === 'number'
-          ? latestState.timeoutAtMs
-          : undefined;
-      timestamps.push(`timeoutAtMs=${toIso(timeoutAtMs) ?? 'n/a'}`);
-    }
+    const timestamps = finalizationTimestamps(latestState);
     const joined = timestamps.join(', ');
     lines.push(`${prefix}Finalization state: ${latestState.status.toUpperCase()} (${joined})`);
   }
 
-  const orchestrator = details.finalizationRuntimeDiagnostics?.orchestrator;
-  if (orchestrator) {
-    const status = orchestrator.status ?? 'UNKNOWN';
-    const parts = [`status=${status}`];
-    lines.push(`${prefix}Step Functions: ${parts.join(' · ')}`);
+  return lines;
+}
+
+function formatArtifactReportFields(details: TestResult['details'], prefix: string): string {
+  const fields = [
+    ['Verification status', details.verificationStatus],
+    ['Finalization ID', details.finalizationMode ? undefined : details.finalizationId],
+    ['Verification bundle delivery', details.verificationBundleDelivery],
+    ['Bundle extraction', details.bundleExtractionDir],
+    ['Verification hash', details.verificationHash],
+    ['Verification report hash', details.verificationReportHash],
+    ['Verification report path', details.verificationReportPath],
+  ] as const;
+  return fields
+    .filter(([, value]) => Boolean(value))
+    .map(([label, value]) => `${prefix}${label}: ${value}\n`)
+    .join('');
+}
+
+function summarizeCliResults(results: TestResult[]) {
+  const total = results.length;
+  const passed = results.filter((result) => result.passed).length;
+  return { total, passed, failed: total - passed, duration: results.reduce((sum, result) => sum + result.duration, 0) };
+}
+
+function renderMarkdownCliReport(results: TestResult[]): string {
+  const {
+    total: totalTests,
+    passed: passedTests,
+    failed: failedTests,
+    duration: totalDuration,
+  } = summarizeCliResults(results);
+
+  let report = `# STARK Ballot Simulator CLI Test Report\n\n`;
+  report += `## Summary\n\n`;
+  report += `- Total tests: ${totalTests}\n`;
+  report += `- Passed: ${passedTests}\n`;
+  report += `- Failed: ${failedTests}\n`;
+  report += `- Duration: ${(totalDuration / 1000).toFixed(2)}s\n\n`;
+  report += `## Results\n\n`;
+
+  report += results.map(renderMarkdownCliResult).join('');
+
+  return report;
+}
+
+function renderTableCliReport(results: TestResult[]): string {
+  const {
+    total: totalTests,
+    passed: passedTests,
+    failed: failedTests,
+    duration: totalDuration,
+  } = summarizeCliResults(results);
+
+  let report = '=== STARK Ballot Simulator CLI Test Report ===\n\n';
+  report += `Total tests: ${totalTests}\n`;
+  report += `Passed: ${passedTests}\n`;
+  report += `Failed: ${failedTests}\n`;
+  report += `Duration: ${(totalDuration / 1000).toFixed(2)}s\n\n`;
+
+  report += 'Test Results:\n';
+  report += '─────────────────────────────────────────\n';
+
+  report += results.map(renderTableCliResult).join('');
+
+  return report;
+}
+
+async function throwCliResponseError(response: Response, action: string): Promise<never> {
+  let errorPayload: unknown;
+  try {
+    errorPayload = await response.json();
+  } catch {
+    errorPayload = null;
+  }
+  const errorCode = getApiErrorCode(errorPayload);
+  throw new Error(`Failed to ${action}: ${errorCode ?? 'Unknown error'}`);
+}
+
+async function readInitialFinalization(response: Response): Promise<FinalizationResource> {
+  const payload = await readJsonRecord(response, 'finalization');
+  if (!response.ok) {
+    const errorCode = getApiErrorCode(payload);
+    throw new Error(`Failed to finalize: ${errorCode ?? 'Unknown error'}`);
   }
 
-  return lines;
+  const parsed = FinalizationResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    throw new Error(`Invalid finalization response: ${firstIssue?.message ?? 'schema validation failed'}`);
+  }
+
+  return parsed.data.data;
+}
+
+function assertFinalizationCanComplete(state: FinalizationResource): void {
+  if (state.status === 'failed') {
+    throw new Error(`Finalization failed (code=${state.error.code}, message=${state.error.message})`);
+  }
+  if (state.status === 'timeout') {
+    throw new Error('Finalization timed out before completion');
+  }
+}
+
+function reportRetriableFinalizationError(error: unknown): void {
+  if (!(error instanceof CurrentFinalizationError)) throw error;
+  if (error.status === 404) {
+    const reason = getApiErrorCode(error.responseBody) ?? 'Session not found';
+    throw new Error(`Current finalization endpoint returned 404: ${reason}`);
+  }
+  if (error.status >= 500) {
+    console.warn(`[CLI] Current finalization request failed with ${error.status}, retrying...`);
+    return;
+  }
+  throw new Error(`Current finalization request failed with ${error.status}`);
+}
+
+function recordFinalizationSample(
+  history: FinalizationStatusSample[],
+  nextState: FinalizationResource | null,
+  previousSnapshot: string,
+): string {
+  const runtimeDiagnostics = nextState?.runtimeDiagnostics ?? null;
+  const currentSnapshot = JSON.stringify(runtimeDiagnostics);
+  if (currentSnapshot !== previousSnapshot)
+    console.log('[CLI] Finalization runtime diagnostics updated:', runtimeDiagnostics);
+  history.push({ state: nextState, receivedAt: Date.now(), runtimeDiagnostics });
+  return currentSnapshot;
+}
+
+function admitCliVerificationResource(payload: unknown, finalizationId: string): FinalizeScenarioData {
+  const parsed = VerificationResourceResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`Invalid verification result response: ${issue?.message ?? 'schema validation failed'}`);
+  }
+  const resource = parsed.data.data;
+  if (resource.finalizationId !== finalizationId) {
+    throw new Error(
+      `Verification finalization identity mismatch (expected ${finalizationId}, received ${resource.finalizationId})`,
+    );
+  }
+  if (resource.availability !== 'available') {
+    throw new Error(`Verification result is ${resource.availability}: ${resource.message}`);
+  }
+  if (resource.journal.representation !== 'included') {
+    throw new Error('Verification result omitted the requested journal representation');
+  }
+  return projectVerificationResource(resource);
 }
 
 export class CLITestHelpers {
@@ -704,20 +810,11 @@ export class CLITestHelpers {
       headers: this.getPathSessionAuthHeaders(),
     });
 
-    if (!response.ok) {
-      let errorPayload: unknown;
-      try {
-        errorPayload = await response.json();
-      } catch {
-        errorPayload = null;
-      }
-      const errorCode = getApiErrorCode(errorPayload);
-      throw new Error(`Failed to fetch vote proof: ${errorCode ?? 'Unknown error'}`);
-    }
+    if (!response.ok) await throwCliResponseError(response, 'fetch vote proof');
 
     const payload = await readJsonRecord(response, 'vote proof');
-    const data = getRecordProperty(payload, 'data');
-    const proof = getRecordProperty(data, 'proof');
+    const data = getObjectProperty(payload, 'data');
+    const proof = getObjectProperty(data, 'proof');
     const leafIndex = getNumberProperty(proof, 'leafIndex');
     const merklePath = getStringArrayProperty(proof, 'merklePath');
     const treeSize = getNumberProperty(proof, 'treeSize');
@@ -748,7 +845,7 @@ export class CLITestHelpers {
     }
 
     const payload = await readJsonRecord(response, 'create session');
-    const data = getRecordProperty(payload, 'data');
+    const data = getObjectProperty(payload, 'data');
     const electionId = getStringProperty(data, 'electionId');
     const sessionId = getStringProperty(data, 'sessionId');
     const capabilityToken = getStringProperty(data, 'capabilityToken');
@@ -790,19 +887,10 @@ export class CLITestHelpers {
       ),
     });
 
-    if (!response.ok) {
-      let errorPayload: unknown;
-      try {
-        errorPayload = await response.json();
-      } catch {
-        errorPayload = null;
-      }
-      const errorCode = getApiErrorCode(errorPayload);
-      throw new Error(`Failed to submit vote: ${errorCode ?? 'Unknown error'}`);
-    }
+    if (!response.ok) await throwCliResponseError(response, 'submit vote');
 
     const payload = await readJsonRecord(response, 'submit vote');
-    const data = getRecordProperty(payload, 'data');
+    const data = getObjectProperty(payload, 'data');
     const voteId = getStringProperty(data, 'voteId');
     let leafIndex = getNumberProperty(data, 'leafIndex') ?? getNumberProperty(data, 'bulletinIndex');
     let merklePath = getStringArrayProperty(data, 'merklePath');
@@ -848,7 +936,7 @@ export class CLITestHelpers {
 
         if (response.ok) {
           const payload = await readJsonRecord(response, 'bot progress');
-          const data = getRecordProperty(payload, 'data');
+          const data = getObjectProperty(payload, 'data');
           const botCount = getNumberProperty(data, 'count'); // API returns 'count', not 'botCount'
           if (botCount === undefined) {
             throw new Error('Invalid progress response');
@@ -922,28 +1010,9 @@ export class CLITestHelpers {
         signal: controller.signal,
       });
 
-      const payload = await readJsonRecord(response, 'finalization');
-      if (!response.ok) {
-        const errorCode = getApiErrorCode(payload);
-        throw new Error(`Failed to finalize: ${errorCode ?? 'Unknown error'}`);
-      }
-
-      const parsed = FinalizationResponseSchema.safeParse(payload);
-      if (!parsed.success) {
-        const firstIssue = parsed.error.issues[0];
-        throw new Error(`Invalid finalization response: ${firstIssue?.message ?? 'schema validation failed'}`);
-      }
-
-      const initialResource = parsed.data.data;
+      const initialResource = await readInitialFinalization(response);
       this.logFinalizationTransition(initialResource);
-      if (initialResource.status === 'failed') {
-        throw new Error(
-          `Finalization failed (code=${initialResource.error.code}, message=${initialResource.error.message})`,
-        );
-      }
-      if (initialResource.status === 'timeout') {
-        throw new Error('Finalization timed out before completion');
-      }
+      assertFinalizationCanComplete(initialResource);
 
       const pollResult =
         initialResource.status === 'succeeded'
@@ -1058,32 +1127,12 @@ export class CLITestHelpers {
             authHeaders: this.getPathSessionAuthHeaders(),
           });
         } catch (error) {
-          if (error instanceof CurrentFinalizationError) {
-            if (error.status === 404) {
-              const reason = getApiErrorCode(error.responseBody) ?? 'Session not found';
-              throw new Error(`Current finalization endpoint returned 404: ${reason}`);
-            }
-            if (error.status >= 500) {
-              console.warn(`[CLI] Current finalization request failed with ${error.status}, retrying...`);
-              delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
-              return null;
-            }
-            throw new Error(`Current finalization request failed with ${error.status}`);
-          }
-          throw error;
+          reportRetriableFinalizationError(error);
+          delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
+          return null;
         }
 
-        const runtimeDiagnostics = nextState?.runtimeDiagnostics ?? null;
-        const currentSnapshot = JSON.stringify(runtimeDiagnostics);
-        if (currentSnapshot !== lastRuntimeDiagnosticsSnapshot) {
-          console.log('[CLI] Finalization runtime diagnostics updated:', runtimeDiagnostics);
-          lastRuntimeDiagnosticsSnapshot = currentSnapshot;
-        }
-        history.push({
-          state: nextState,
-          receivedAt: Date.now(),
-          runtimeDiagnostics,
-        });
+        lastRuntimeDiagnosticsSnapshot = recordFinalizationSample(history, nextState, lastRuntimeDiagnosticsSnapshot);
 
         if (!nextState) {
           delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
@@ -1101,18 +1150,10 @@ export class CLITestHelpers {
           lastLoggedStatus = nextState.status;
         }
 
-        switch (nextState.status) {
-          case 'succeeded':
-            return nextState;
-          case 'failed':
-            throw new Error(`Finalization failed (code=${nextState.error.code}, message=${nextState.error.message})`);
-          case 'timeout':
-            throw new Error('Finalization timed out before completion');
-          case 'pending':
-          case 'running':
-            delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
-            return null;
-        }
+        assertFinalizationCanComplete(nextState);
+        if (nextState.status === 'succeeded') return nextState;
+        delayMs = Math.min(delayMs * 1.5, POLL_MAX_DELAY_MS);
+        return null;
       },
       isTerminal: (nextState): nextState is Extract<FinalizationResource, { status: 'succeeded' }> =>
         nextState !== null,
@@ -1159,24 +1200,7 @@ export class CLITestHelpers {
         }
 
         if (response.ok) {
-          const parsed = VerificationResourceResponseSchema.safeParse(payload);
-          if (!parsed.success) {
-            const issue = parsed.error.issues[0];
-            throw new Error(`Invalid verification result response: ${issue?.message ?? 'schema validation failed'}`);
-          }
-          const resource = parsed.data.data;
-          if (resource.finalizationId !== finalizationId) {
-            throw new Error(
-              `Verification finalization identity mismatch (expected ${finalizationId}, received ${resource.finalizationId})`,
-            );
-          }
-          if (resource.availability !== 'available') {
-            throw new Error(`Verification result is ${resource.availability}: ${resource.message}`);
-          }
-          if (resource.journal.representation !== 'included') {
-            throw new Error('Verification result omitted the requested journal representation');
-          }
-          return { data: projectVerificationResource(resource) };
+          return { data: admitCliVerificationResource(payload, finalizationId) };
         }
 
         const reason = getApiErrorCode(payload) ?? response.statusText;
@@ -1240,67 +1264,61 @@ export class CLITestHelpers {
       return this.verifyReceiptStructurally(receipt);
     }
 
-    if (options.verificationBundlePath) {
-      const expectedImageId =
-        options.imageId ??
-        (await resolveExpectedImageId(undefined, {
-          ...omitUndefinedProperties({ explicitImageId: process.env['EXPECTED_IMAGE_ID'] }),
-          ...omitUndefinedProperties({
-            variant: process.env['EXPECTED_IMAGE_ID_VARIANT'],
-          }),
-          loadImageIdMapping: loadPublicImageIdMapping,
-        }));
-      const reportPath = this.buildVerifierReportPath();
+    if (options.verificationBundlePath)
+      return this.verifyBundleWithService(options.verificationBundlePath, options, acceptsDevelopmentEvidence);
 
-      try {
-        const result = await invokeVerifierService({
-          bundlePath: options.verificationBundlePath,
-          expectedImageId,
-          reportPath,
-        });
+    if (options.verificationStatus)
+      return verifyReportedReceiptStatus(options.verificationStatus, acceptsDevelopmentEvidence);
 
-        if (result.status === 'success') {
-          return true;
-        }
+    return this.verifyReceiptStructurally(receipt);
+  }
 
-        if (result.status === 'dev_mode') {
-          if (acceptsDevelopmentEvidence) {
-            console.warn('[STARK Verifier] verifier-service reported dev mode receipt (accepted)');
-            return true;
-          }
+  private async verifyBundleWithService(
+    bundlePath: string,
+    options: Parameters<CLITestHelpers['verifySTARK']>[1],
+    acceptsDevelopmentEvidence: boolean,
+  ): Promise<boolean> {
+    const expectedImageId =
+      options.imageId ??
+      (await resolveExpectedImageId(undefined, {
+        ...omitUndefinedProperties({ explicitImageId: process.env['EXPECTED_IMAGE_ID'] }),
+        ...omitUndefinedProperties({
+          variant: process.env['EXPECTED_IMAGE_ID_VARIANT'],
+        }),
+        loadImageIdMapping: loadPublicImageIdMapping,
+      }));
+    const reportPath = this.buildVerifierReportPath();
 
-          console.warn('[STARK Verifier] verifier-service reported dev mode receipt');
-        } else {
-          console.error(`[STARK Verifier] verifier-service reported ${result.status}`);
-        }
+    try {
+      const result = await invokeVerifierService({
+        bundlePath,
+        expectedImageId,
+        reportPath,
+      });
 
-        return false;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[STARK Verifier] verifier-service invocation failed: ${message}`);
-        return false;
-      } finally {
-        await this.tryRemoveFile(reportPath);
-      }
-    }
-
-    if (options.verificationStatus) {
-      if (options.verificationStatus === 'success') {
+      if (result.status === 'success') {
         return true;
       }
 
-      if (options.verificationStatus === 'dev_mode') {
+      if (result.status === 'dev_mode') {
         if (acceptsDevelopmentEvidence) {
-          console.warn('[STARK Verifier] Dev mode receipt detected by verifier-service (accepted)');
+          console.warn('[STARK Verifier] verifier-service reported dev mode receipt (accepted)');
           return true;
         }
-        console.warn('[STARK Verifier] Dev mode receipt detected by verifier-service');
+
+        console.warn('[STARK Verifier] verifier-service reported dev mode receipt');
+      } else {
+        console.error(`[STARK Verifier] verifier-service reported ${result.status}`);
       }
 
       return false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[STARK Verifier] verifier-service invocation failed: ${message}`);
+      return false;
+    } finally {
+      await this.tryRemoveFile(reportPath);
     }
-
-    return this.verifyReceiptStructurally(receipt);
   }
 
   private buildVerifierReportPath(): string {
@@ -1324,27 +1342,8 @@ export class CLITestHelpers {
         case 'mock':
           console.log('[STARK Verifier] Mock receipt detected');
           return true;
-        case 'modern': {
-          const modern = data as { seal?: string; journal?: string; imageId?: string };
-
-          if (typeof modern.seal !== 'string' || modern.seal.length === 0) {
-            console.error('[STARK Verifier] Modern receipt missing seal string');
-            return false;
-          }
-
-          if (typeof modern.journal !== 'string' || modern.journal.length === 0) {
-            console.error('[STARK Verifier] Modern receipt missing journal string');
-            return false;
-          }
-
-          try {
-            Buffer.from(modern.seal, 'base64');
-          } catch (error) {
-            console.warn('[STARK Verifier] Modern receipt seal is not valid base64', error);
-          }
-
-          return true;
-        }
+        case 'modern':
+          return this.verifyModernReceipt(data);
         case 'unknown':
           console.error('[STARK Verifier] Unknown receipt format');
           return false;
@@ -1353,6 +1352,28 @@ export class CLITestHelpers {
       console.error('[STARK Verifier] Failed to interpret receipt:', error);
       return false;
     }
+  }
+
+  private verifyModernReceipt(data: unknown): boolean {
+    const modern = data as { seal?: string; journal?: string; imageId?: string };
+
+    if (typeof modern.seal !== 'string' || modern.seal.length === 0) {
+      console.error('[STARK Verifier] Modern receipt missing seal string');
+      return false;
+    }
+
+    if (typeof modern.journal !== 'string' || modern.journal.length === 0) {
+      console.error('[STARK Verifier] Modern receipt missing journal string');
+      return false;
+    }
+
+    try {
+      Buffer.from(modern.seal, 'base64');
+    } catch (error) {
+      console.warn('[STARK Verifier] Modern receipt seal is not valid base64', error);
+    }
+
+    return true;
   }
 
   describeReceipt(receipt: unknown): {
@@ -1375,7 +1396,7 @@ export class CLITestHelpers {
       }
     }
 
-    if (!isRecord(parsed)) {
+    if (!isNonNullObject(parsed)) {
       return { kind: 'unknown' };
     }
 
@@ -1384,12 +1405,7 @@ export class CLITestHelpers {
     }
 
     if (typeof parsed['seal'] === 'string' && typeof parsed['journal'] === 'string') {
-      let sealLength: number | undefined;
-      try {
-        sealLength = Buffer.from(parsed['seal'], 'base64').length;
-      } catch {
-        // ignore base64 errors here; verification will handle it
-      }
+      const sealLength = readReceiptSealLength(parsed['seal']);
       return { kind: 'modern', data: parsed, ...omitUndefinedProperties({ sealLength }) };
     }
 
@@ -1416,21 +1432,11 @@ export class CLITestHelpers {
    * Generate test report
    */
   generateReport(results: TestResult[], format: 'json' | 'table' | 'markdown' = 'table'): Promise<string> {
-    const totalTests = results.length;
-    const passedTests = results.filter((r) => r.passed).length;
-    const failedTests = totalTests - passedTests;
-    const totalDuration = results.reduce((sum, r) => sum + r.duration, 0);
-
     if (format === 'json') {
       return Promise.resolve(
         JSON.stringify(
           {
-            summary: {
-              total: totalTests,
-              passed: passedTests,
-              failed: failedTests,
-              duration: totalDuration,
-            },
+            summary: summarizeCliResults(results),
             results,
           },
           null,
@@ -1439,134 +1445,83 @@ export class CLITestHelpers {
       );
     }
 
-    if (format === 'markdown') {
-      let report = `# STARK Ballot Simulator CLI Test Report\n\n`;
-      report += `## Summary\n\n`;
-      report += `- Total tests: ${totalTests}\n`;
-      report += `- Passed: ${passedTests}\n`;
-      report += `- Failed: ${failedTests}\n`;
-      report += `- Duration: ${(totalDuration / 1000).toFixed(2)}s\n\n`;
-      report += `## Results\n\n`;
+    return Promise.resolve(format === 'markdown' ? renderMarkdownCliReport(results) : renderTableCliReport(results));
+  }
+}
 
-      for (const result of results) {
-        const status = result.passed ? 'PASS' : 'FAIL';
-        report += `### ${status} ${result.name}\n\n`;
-        report += `- Duration: ${(result.duration / 1000).toFixed(2)}s\n`;
+function renderCliResultHeading(result: TestResult, format: 'markdown' | 'table'): string {
+  const status = result.passed ? 'PASS' : 'FAIL';
+  const heading = format === 'markdown' ? `### ${status} ${result.name}\n\n` : `${status} ${result.name}\n`;
+  const prefix = format === 'markdown' ? '- ' : '   ';
+  const duration = `${prefix}Duration: ${(result.duration / 1000).toFixed(2)}s\n`;
+  const diagnostics = formatFinalizationDiagnostics(result.details, format)
+    .map((line) => `${line}\n`)
+    .join('');
+  return heading + duration + diagnostics;
+}
 
-        const diagLines = formatFinalizationDiagnostics(result.details, 'markdown');
-        if (diagLines.length > 0) {
-          diagLines.forEach((line) => {
-            report += `${line}\n`;
-          });
-        }
+function renderMarkdownCliResult(result: TestResult): string {
+  let report = renderCliResultHeading(result, 'markdown');
 
-        if (result.details.verifiedTally) {
-          report += `- Verified tally: [${result.details.verifiedTally.join(', ')}]\n`;
-        }
-        if (result.details.verificationStatus) {
-          report += `- Verification status: ${result.details.verificationStatus}\n`;
-        }
-        if (result.details.finalizationId && !result.details.finalizationMode) {
-          report += `- Finalization ID: ${result.details.finalizationId}\n`;
-        }
-        if (result.details.verificationBundleDelivery) {
-          report += `- Verification bundle delivery: ${result.details.verificationBundleDelivery}\n`;
-        }
-        if (result.details.bundleExtractionDir) {
-          report += `- Bundle extraction: ${result.details.bundleExtractionDir}\n`;
-        }
-        if (result.details.verificationHash) {
-          report += `- Verification hash: ${result.details.verificationHash}\n`;
-        }
-        if (result.details.verificationReportHash) {
-          report += `- Verification report hash: ${result.details.verificationReportHash}\n`;
-        }
-        if (result.details.verificationReportPath) {
-          report += `- Verification report path: ${result.details.verificationReportPath}\n`;
-        }
-        if (
-          typeof result.details.missingSlots === 'number' ||
-          typeof result.details.invalidPresentedSlots === 'number' ||
-          typeof result.details.validVotes === 'number' ||
-          typeof result.details.excludedSlots === 'number'
-        ) {
-          report += `- Counts: missingSlots=${result.details.missingSlots ?? 'n/a'}, invalidPresentedSlots=${
-            result.details.invalidPresentedSlots ?? 'n/a'
-          }, validVotes=${result.details.validVotes ?? 'n/a'}, excludedSlots=${
-            result.details.excludedSlots ?? 'n/a'
-          }\n`;
-        }
-        if (result.details.tamperDetected !== undefined) {
-          report += `- Tamper detected: ${result.details.tamperDetected ? 'YES' : 'NO'}\n`;
-        }
-        if (result.details.errors && result.details.errors.length > 0) {
-          report += `- Errors:\n`;
-          result.details.errors.forEach((error) => {
-            report += `  - ${error}\n`;
-          });
-        }
-        report += '\n';
-      }
+  if (result.details.verifiedTally) {
+    report += `- Verified tally: [${result.details.verifiedTally.join(', ')}]\n`;
+  }
+  report += formatArtifactReportFields(result.details, '- ');
 
-      return Promise.resolve(report);
+  const counts = formatCliCountDiagnostics(result.details);
+  if (counts) report += `- ${counts}\n`;
+
+  if (result.details.tamperDetected !== undefined) {
+    report += `- Tamper detected: ${result.details.tamperDetected ? 'YES' : 'NO'}\n`;
+  }
+  if (result.details.errors && result.details.errors.length > 0) {
+    report += `- Errors:\n`;
+    result.details.errors.forEach((error) => {
+      report += `  - ${error}\n`;
+    });
+  }
+  report += '\n';
+  return report;
+}
+
+function renderTableCliResult(result: TestResult): string {
+  let report = renderCliResultHeading(result, 'table');
+
+  if (result.details.tamperDetected !== undefined) {
+    report += `   Tamper detected: ${result.details.tamperDetected ? 'YES' : 'NO'}\n`;
+  }
+  report += formatArtifactReportFields(result.details, '   ');
+
+  if (!result.passed && result.details.errors) {
+    report += `   Errors:\n`;
+    result.details.errors.forEach((error) => {
+      report += `     - ${error}\n`;
+    });
+  }
+  report += '\n';
+  return report;
+}
+
+function verifyReportedReceiptStatus(status: VerificationStatus, acceptsDevelopmentEvidence: boolean): boolean {
+  if (status === 'success') {
+    return true;
+  }
+
+  if (status === 'dev_mode') {
+    if (acceptsDevelopmentEvidence) {
+      console.warn('[STARK Verifier] Dev mode receipt detected by verifier-service (accepted)');
+      return true;
     }
+    console.warn('[STARK Verifier] Dev mode receipt detected by verifier-service');
+  }
 
-    // Default: table format
-    let report = '=== STARK Ballot Simulator CLI Test Report ===\n\n';
-    report += `Total tests: ${totalTests}\n`;
-    report += `Passed: ${passedTests}\n`;
-    report += `Failed: ${failedTests}\n`;
-    report += `Duration: ${(totalDuration / 1000).toFixed(2)}s\n\n`;
+  return false;
+}
 
-    report += 'Test Results:\n';
-    report += '─────────────────────────────────────────\n';
-
-    for (const result of results) {
-      const status = result.passed ? 'PASS' : 'FAIL';
-      report += `${status} ${result.name}\n`;
-      report += `   Duration: ${(result.duration / 1000).toFixed(2)}s\n`;
-
-      const diagLines = formatFinalizationDiagnostics(result.details, 'table');
-      if (diagLines.length > 0) {
-        diagLines.forEach((line) => {
-          report += `${line}\n`;
-        });
-      }
-
-      if (result.details.tamperDetected !== undefined) {
-        report += `   Tamper detected: ${result.details.tamperDetected ? 'YES' : 'NO'}\n`;
-      }
-      if (result.details.verificationStatus) {
-        report += `   Verification status: ${result.details.verificationStatus}\n`;
-      }
-      if (result.details.finalizationId && !result.details.finalizationMode) {
-        report += `   Finalization ID: ${result.details.finalizationId}\n`;
-      }
-      if (result.details.verificationBundleDelivery) {
-        report += `   Verification bundle delivery: ${result.details.verificationBundleDelivery}\n`;
-      }
-      if (result.details.bundleExtractionDir) {
-        report += `   Bundle extraction: ${result.details.bundleExtractionDir}\n`;
-      }
-      if (result.details.verificationHash) {
-        report += `   Verification hash: ${result.details.verificationHash}\n`;
-      }
-      if (result.details.verificationReportHash) {
-        report += `   Verification report hash: ${result.details.verificationReportHash}\n`;
-      }
-      if (result.details.verificationReportPath) {
-        report += `   Verification report path: ${result.details.verificationReportPath}\n`;
-      }
-
-      if (!result.passed && result.details.errors) {
-        report += `   Errors:\n`;
-        result.details.errors.forEach((error) => {
-          report += `     - ${error}\n`;
-        });
-      }
-      report += '\n';
-    }
-
-    return Promise.resolve(report);
+function readReceiptSealLength(seal: string): number | undefined {
+  try {
+    return Buffer.from(seal, 'base64').length;
+  } catch {
+    return undefined;
   }
 }

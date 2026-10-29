@@ -1,12 +1,10 @@
-# 待ち時間と失敗の原因を調べる
+# 監視と障害調査
 
-集計画面が `pending` のままなら、まだ配送されていないのか、計算枠が埋まっているのか、それとも処理が止まったのかを知りたくなります。同じ画面上の状態でも原因は違います。ログと監視は、要求がどこまで進み、どの種類の失敗で止まり、どのデプロイの前後に起きたかを調べるために使います。
+ログと監視は、要求の進捗、失敗の種類、デプロイとの前後関係を調べるために使います。たとえば集計画面が `pending` のままでも、未配送、計算枠の不足、処理の停止など、原因は異なります。
 
-一方、CloudWatch のグラフが平坦でも、投票や集計の正しさは分かりません。利用がなかっただけかもしれません。画面の「Verified」は証拠と必須チェックから決め、ログ保存や通知の成功・失敗で変更しません。
+CloudWatch のグラフが平坦でも、利用がなかった可能性があり、投票や集計の正しさは判断できません。画面の「Verified」は証拠と必須チェックから決め、ログ保存や通知の成功・失敗で変更しません。
 
-<a id="検証プレーンと運用プレーン"></a>
-
-## 投票の検証と運用の観測を分ける
+## 検証結果と運用観測の分離
 
 ```mermaid
 flowchart TB
@@ -16,28 +14,26 @@ flowchart TB
   L --> O["運用者が原因を調査"]
 ```
 
-観測送信の失敗、logger の例外、CloudWatch の一時的な停止は、導出済みの判定を変えません。監視から検証へ判定を戻す経路はありません。表示条件は[検証の判定規則](../verification/gating-logic.md)で決まります。
+画面の判定は[検証の判定規則](../verification/gating-logic.md)で確定し、監視へ一方向に伝えます。観測送信の失敗、logger の例外、CloudWatch の一時的な停止があっても、導出済みの判定は保持します。
 
 ## 観測対象とシグナル
 
-まず、利用者の待ち時間をどの処理が引き受けているかを調べます。
+待ち時間の原因を、処理ごとの観測から調べます。
 
-| 調べる対象     | 使う観測                                | 分かること                                       |
-| -------------- | --------------------------------------- | ------------------------------------------------ |
-| API Gateway    | 要求数、5xx、遅延、アクセスログ         | API への接続で失敗していないか                   |
-| Lambda         | errors、throttles、アプリのイベント     | 処理が失敗したか、開始前に制限されたか           |
-| DynamoDB       | 読取・書込の throttle                   | 状態の保存や取得が制限されていないか             |
-| SQS            | 最古メッセージの経過時間、DLQ 件数      | 作業が滞留しているか、再試行を終えて隔離されたか |
-| Step Functions | failed、timed out、実行履歴             | 一連の集計処理がどこで終了したか                 |
-| Fargate        | タスク終了、vCPU 上限、`prover_summary` | 計算が始まり、どの結果で終わったか               |
-| 検証           | 失敗分類、必須チェックとの矛盾          | 証拠の不一致か、判定処理自体の矛盾か             |
-| デプロイ       | パイプラインの変化、受入記録            | 症状が変更の前後に現れたか                       |
+| 調べる対象      | 使う観測                                | 分かること                                       |
+| --------------- | --------------------------------------- | ------------------------------------------------ |
+| API Gateway     | 要求数、5xx、遅延、アクセスログ         | API への接続で失敗していないか                   |
+| Lambda          | errors、throttles、アプリのイベント     | 処理が失敗したか、開始前に制限されたか           |
+| DynamoDB        | 読取・書込の throttle                   | 状態の保存や取得が制限されていないか             |
+| SQS             | 最古メッセージの経過時間、DLQ 件数      | 作業が滞留しているか、再試行を終えて隔離されたか |
+| Step Functions  | failed、timed out、実行履歴             | 一連の集計処理がどこで終了したか                 |
+| Batch / Fargate | ジョブ終了、vCPU 上限、`prover_summary` | 計算が始まり、どの結果で終わったか               |
+| 検証            | 失敗分類、必須チェックとの矛盾          | 証拠の不一致か、判定処理自体の矛盾か             |
+| デプロイ        | パイプラインの変化、受入記録            | 症状が変更の前後に現れたか                       |
 
-ダッシュボードは調査の入口です。一回の投票操作を追うには、アプリのイベント、AWS の観測、デプロイの記録を照合します。X-Ray / OpenTelemetry の分散トレースやブラウザ RUM は構成していないため、一つの trace で全経路を復元できるわけではありません。
+ダッシュボードで調査対象を確認し、一回の投票操作を追う際は、アプリのイベント、AWS の観測、デプロイの記録を照合します。X-Ray / OpenTelemetry の分散トレースやブラウザ RUM は構成していないため、一つの trace で全経路を復元できるわけではありません。
 
 ## 構造化ログと安全な相関
-
-<a id="producer-ごとの形"></a>
 
 ### 出力元ごとのログ形式
 
@@ -49,14 +45,14 @@ flowchart TB
 
 出力元によって JSON の包み方は違います。
 
-| 出力元                     | 形式                                                                     |
-| -------------------------- | ------------------------------------------------------------------------ |
-| 共通 logger を使う Lambda  | Lambda の JSON envelope の `message` オブジェクト内にアプリの記録を置く  |
-| `image-signature-verifier` | 署名対象や認証情報を含めず、定義済みの結果・所要時間区分を出す           |
-| API Gateway                | request ID、route key、status、latency、integration error のアクセス記録 |
-| Step Functions             | 実行データを含めない処理ログ                                             |
-| ECS prover                 | 開始・終了、結果、失敗分類、所要時間を持つ平坦な JSON                    |
-| operations ledger          | 必要項目へ絞り、再検証した平坦な JSON                                    |
+| 出力元                     | 形式                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| 共通 logger を使う Lambda  | Lambda の JSON envelope の `message` オブジェクト内にアプリの記録を置く                    |
+| `image-signature-verifier` | 署名対象や認証情報を含めず、定義済みの結果・所要時間区分を出す                             |
+| API Gateway                | extended request ID、resource template、status、latency、固定 response type のアクセス記録 |
+| Step Functions             | 実行データを含めない処理ログ                                                               |
+| ECS prover                 | 開始・終了、結果、失敗分類、所要時間を持つ平坦な JSON                                      |
+| operations ledger          | 必要項目へ絞り、再検証した平坦な JSON                                                      |
 
 Lambda の metric filter は `$.message.*` の正確なフィールドを見ます。ECS と台帳には外側の envelope がないので、検索でもこの違いを明示します。
 
@@ -75,9 +71,7 @@ Lambda の metric filter は `$.message.*` の正確なフィールドを見ま�
 
 非同期処理の主な照合キーは `session_id_hash` と `finalization_id` です。IP や保存接頭辞の照合が必要な場合も、実行時参照から解決した salt と用途ごとのドメイン分離を使います。salt の変更をまたいで同じハッシュになるとは仮定しません。
 
-<a id="canonical-event-と-ledger-に記録しない情報"></a>
-
-### 観測イベントと台帳の情報を絞る
+### 観測イベントと台帳の記録制限
 
 観測のために、秘密や個別資源へのアクセス手掛かりを増やさないようにします。アプリの定型イベント、prover の要約、運用台帳では、出力元ごとの検証で次の値を除外します。
 
@@ -89,9 +83,7 @@ Lambda の metric filter は `$.message.*` の正確なフィールドを見ま�
 
 共通 sanitizer は既知の秘密フィールドや値の形式を拒否し、深さとバイト数を制限します。ただし、任意の文章からすべての機密情報を見つける仕組みではありません。出力元が外部エラーを生で渡さず、定義済みの理由・分類へ変換することが必要です。AWS 管理ログや実行履歴に残る資源識別子はアクセスを制限した運用証拠として扱い、このイベントや台帳へコピーしません。
 
-<a id="verification-observation"></a>
-
-## ブラウザの観測を受け取る
+## ブラウザの検証観測
 
 投票時の選択肢と乱数を使う確認の一部は、ブラウザ内で行います。サーバーだけでは、その確認結果まで含む画面の最終判定を観測できません。
 
@@ -101,9 +93,9 @@ Lambda の metric filter は `$.message.*` の正確なフィールドを見ま�
 
 記録後、総合状態とは独立に、必須チェックのうち `success` でない数を数え、`verification_run_summary` を可能なら出力します。この観測は画面判定の記録を補うもので、表示を書き換えたり、検証を再試行させたりする入口ではありません。
 
-## 証拠レベルの読み分け
+## 監視の定義・構成・実測・配送
 
-アラームを定義しただけでは通知できたとは言えません。確認結果は次の四つを分けます。
+監視の確認結果は、ソースの定義から宛先への配送まで、次の四つの段階に分けて記録します。
 
 | 状態       | 確認したこと                                                     |
 | ---------- | ---------------------------------------------------------------- |
@@ -116,17 +108,16 @@ Lambda の metric filter は `$.message.*` の正確なフィールドを見ま�
 
 ## メトリクスと検出レイヤ
 
-<a id="aws-native-metrics"></a>
-
-### AWS が提供する測定値
+### AWS の標準メトリクス
 
 Terraform は、一期間で検出する調査用アラーム、検証判定の矛盾を直接通知するアラーム、異常の持続を確認して通知するアラームを分けて定義します。
 
 | 分類                            | 調査用 | 持続時に運用通知 | 調べる異常                         |
 | ------------------------------- | -----: | ---------------: | ---------------------------------- |
-| DynamoDB read / write throttle  |     10 |                0 | 五つのテーブルの読み書き制限       |
+| DynamoDB read / write throttle  |      8 |                0 | 四つのテーブルの読み書き制限       |
 | SQS DLQ depth                   |      2 |                2 | prover / verification の再試行終了 |
 | Step Functions failed / timeout |      2 |                0 | 集計処理の失敗・時間切れ           |
+| `AWS/Events FailedInvocations`  |      1 |                0 | 定期整合処理の配送失敗             |
 | Lambda errors / throttles       |     12 |                0 | 六つの Lambda の失敗・実行制限     |
 | API Gateway 5xx                 |      1 |                1 | API 接続の失敗                     |
 | work queue age                  |      2 |                2 | 二つの作業キューの滞留             |
@@ -140,9 +131,9 @@ Terraform は、一期間で検出する調査用アラーム、検証判定の�
 | 二つの作業キュー | 最古メッセージ `> 900` 秒                 | 5分 × 3回連続 |
 | API 5xx          | 要求20件以上、5xx が5件以上、5xx 比率5%超 | 5分 × 3回連続 |
 
-<a id="exact-field-metric-filters"></a>
+App 受入れ後の[非同期ステータス配信](terraform.md#受入記録の公開と非同期ステータス配信)では、Bootstrap が管理する専用アラームで、処理の失敗・時間切れと配送失敗キュー（DLQ）の滞留を検出します。上表の App runtime アラームには含めず、配信失敗と App の配備失敗を区別します。
 
-### ログの決まった値から測定する
+### ログの定義済みフィールドによるメトリクス
 
 アプリの判断は、ログの定義済みフィールドから測定値へ変換します。
 
@@ -156,19 +147,15 @@ Terraform は、一期間で検出する調査用アラーム、検証判定の�
 
 session、finalization、request、IP、保存キーは dimension に使いません。秘密を守ると同時に、custom metric の種類が利用数に応じて無制限に増えることも防ぎます。
 
-<a id="dashboard"></a>
-
 ### ダッシュボード
 
 ダッシュボードは直近24時間の API 要求・5xx・p99 遅延、Lambda の errors / throttles、キューの経過時間・DLQ、集計の破棄・終了、検証失敗分類、通常は0である判定矛盾を並べます。さらに28日分の API 成功率と集計受付・終了の件数を表示します。
 
 割合には必ず標本数を添えます。一回成功した100%と、多くの要求が成功した100%を同じ根拠にしないためです。p99 は調査用の表示で、遅延 SLO のアラームは定義していません。
 
-<a id="measurement-only-reliability-view"></a>
+### API 成功率と非同期集計の完了率
 
-### 時間内に終わった作業の割合を測る
-
-28日間の API 指標は API Gateway `Count` を全件、`Count - 5xx` を good、`5xx` を bad とします。認証、capability、origin、レート制限、入力不正などの想定内4xxも non-5xx として good に含むため、これは投票完了率ではありません。`Count = 0` は100%とせず `insufficient_evidence` です。
+28日間の API 指標は API Gateway `Count` を全件、`Count - 5XXError` を good、`5XXError` を bad とします。認証、capability、origin、レート制限、入力不正などの想定内4xxも non-5xx として good に含むため、これは投票完了率ではありません。`Count = 0` は100%とせず `insufficient_evidence` です。
 
 非同期集計は、保存成功後の `finalization_admitted` を起点に、同じ `finalization_id` の受付と最初の確定した終了遷移を重複排除します。完了期限は受付から75分。ログが遅れて届くための猶予を、その後に別の5分置きます。猶予は完了期限を80分へ延ばすものではありません。
 
@@ -193,7 +180,7 @@ outcome == fully_verified
 AND independently_counted_failed_required_checks > 0
 ```
 
-これは票の改ざんを検出したという通知ではありません。「必須チェックが満たされないのに完全検証と記録された」という判定処理自体の矛盾を疑う通知です。証拠の保全と調査を促し、判定は変更しません。
+この通知が示すのは、「必須チェックが満たされないのに完全検証と記録された」という判定処理自体の矛盾の疑いです。票の改ざんを検出した通知とは区別し、証拠の保全と調査に使います。通知によって判定を変更することはありません。
 
 別の `ops-actionable` SNS topic には、上記の持続条件を持つ五つのアラームと、管理対象 CodePipeline の正確な `FAILED` イベントだけを送ります。アラームは EventBridge が対象名と `ALARM` 状態を確認して中継し、パイプライン失敗は別のイベント経路として扱います。
 
@@ -201,9 +188,7 @@ AND independently_counted_failed_required_checks > 0
 
 二つの通知経路のメール購読は独立した任意設定です。それぞれ専用の固定 SSM `SecureString` が契約どおり存在するときだけ構成し、topic、policy、宛先を共有しません。宛先は公開文書、追跡する tfvars、Terraform output、パイプライン証拠、ログに出しません。構成されたこと、受信者の確認、テスト通知の配送は経路ごとに別々に確認します。
 
-<a id="normalized-operations-ledger"></a>
-
-## 運用台帳へ記録する
+## 運用台帳の記録形式
 
 障害とデプロイの前後関係を長い期間で見るため、運用台帳へ四種類のイベントを記録します。EventBridge が必要項目の候補を取り出し、normalizer がイベントごとの正確なキー集合と値を再検証してから保存します。
 
@@ -212,11 +197,13 @@ AND independently_counted_failed_required_checks > 0
 | `event_type`                 | 追加項目                                                                        |
 | ---------------------------- | ------------------------------------------------------------------------------- |
 | `alarm_state_changed`        | なし                                                                            |
-| `ecs_task_stopped`           | `deployment_id`                                                                 |
+| `prover_job_finished`        | `deployment_id`                                                                 |
 | `pipeline_execution_changed` | `pipeline_execution_id`                                                         |
 | `deployment_accepted`        | `deployment_id`、`pipeline_execution_id`、`deployment_mode`、`plan_disposition` |
 
 `pipeline_execution_id` は管理対象のパイプラインと対応する受入イベントの小文字 UUID、`deployment_mode` は `normal` / `rollback`、`plan_disposition` は `changed` / `empty` だけです。キーの欠落・追加や別名を許可しません。
+
+`prover_job_finished` は Batch ジョブの `SUCCEEDED` / `FAILED` を記録し、`resource_name` は `prover-job` に固定します。このジョブ終了の観測は、集計結果の保存や検証成功を示すものではありません。
 
 元イベントや event ID、source SHA、repository / branch、アカウント、ARN、タスク・コンテナ・イメージの詳細、自由文の理由は台帳に残しません。例えばソースの正確な SHA を調べる場合は、台帳の `deployment_id` を受入証拠へ照合します。
 
@@ -231,7 +218,7 @@ EventBridge の配送は重複し得るため、この台帳も exactly-once の
 | Fargate、Step Functions、六つの Lambda、API Gateway | 90日    | 180日        |
 | ECS Container Insights                              | 7日     | 30日         |
 | operations ledger                                   | 365日   | 731日        |
-| Bootstrap の CodeBuild                              | 30日    | 365日        |
+| Bootstrap の CodeBuild（廃止済み経路の保持ログ）    | 30日    | 365日        |
 | App の CodeBuild                                    | 180日   | 365日        |
 | Foundation / image release の CodeBuild             | 365日   | 365日        |
 
@@ -241,4 +228,8 @@ CloudTrail は App / Foundation / Bootstrap の稼働構成には含めず、ア
 
 監視のためにセッション、票、非公開証拠の TTL やライフサイクルを延ばすことはありません。また、定期的な実証明 E2E を実行する CloudWatch Synthetics は構成していないため、監視画面だけで利用者の一連の操作が正常だったとは結論しません。
 
-<!-- source: packages/diagnostics/src/canonicalEvents.ts, packages/diagnostics/src/logger.ts, packages/diagnostics/src/safeLogPayload.ts, apps/api/src/server/http/requestLogging.ts, apps/api/src/server/api/handlers/verificationObservation.ts, apps/api/src/server/api/handlers/verificationObservability.ts, apps/web/src/routes/verify/hooks/useVerificationObservation.ts, scripts/aws/lib/finalization-sli.ts, scripts/aws/observability-query-pack.ts, infra/lambdas, infra/docker/entrypoint.sh, infra/terraform/app/monitoring.tf, infra/terraform/app/observability_detection.tf, infra/terraform/app/ops_ledger.tf, infra/terraform/app/runtime_logs.tf, infra/terraform/app/storage_retention.tf -->
+<!-- source: packages/diagnostics/src/canonicalEvents.ts, packages/diagnostics/src/logger.ts, packages/diagnostics/src/safeLogPayload.ts, apps/api/src/server/http/requestLogging.ts, apps/api/src/server/api/handlers/verificationObservation.ts, apps/api/src/server/api/handlers/verificationObservability.ts, apps/web/src/routes/verify/hooks/useVerificationObservation.ts, scripts/aws/lib/finalization-sli.ts, scripts/aws/observability-query-pack.ts, infra/lambdas, infra/docker/entrypoint.sh, infra/terraform/app/monitoring.tf, infra/terraform/app/observability_detection.tf, infra/terraform/app/finalization_sweep.tf, infra/terraform/app/ops_ledger.tf, infra/terraform/app/runtime_logs.tf, infra/terraform/app/storage_retention.tf, infra/terraform/bootstrap/app_status_delivery.tf, infra/terraform/bootstrap/foundation_bootstrap_authority_inventory.tf -->
+
+REST の metric dimension は `ApiName`/`Stage`、`Count` は `SampleCount`、
+`4XXError`/`5XXError` は `Sum` を使います。source の変更と実際の metric 到着・
+AWS 切り替えは別の証拠です。execution logging と data tracing は無効です。

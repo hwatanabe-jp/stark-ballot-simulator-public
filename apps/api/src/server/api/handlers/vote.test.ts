@@ -23,7 +23,7 @@ import {
   installStaticRuntimeConfigReferenceResolver,
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
-import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getNumberProperty, getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { createHonoApp } from '../routes/hono';
 
 const botVoterMocks = vi.hoisted(() => ({
@@ -63,7 +63,7 @@ function expectUnauthorizedRequestLog(spy: MockInstance<typeof logger.warn>): vo
   expect(spy).toHaveBeenCalledTimes(1);
   expect(call?.[0]).toBe('request completed');
   expect(getStringProperty(fields, 'event')).toBe('http_request');
-  expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(401);
+  expect(getNumberProperty(getObjectProperty(fields, 'http'), 'status')).toBe(401);
 }
 
 function createLocalVoteTestApp() {
@@ -371,7 +371,7 @@ describe('submitVoteHandler', () => {
     expect(response.status).toBe(409);
     const payload = await readJsonRecord(response, 'vote persistence race');
     expect(getApiErrorCode(payload)).toBe(ErrorCode.DUPLICATE_VOTE);
-    expect(getStringProperty(getRecordProperty(payload, 'error'), 'message')).toBe(
+    expect(getStringProperty(getObjectProperty(payload, 'error'), 'message')).toBe(
       'Vote ID already exists. This may be a system error. Please try again.',
     );
   });
@@ -398,7 +398,7 @@ describe('submitVoteHandler', () => {
         includeTurnstileToken: false,
         originVerifyHeader,
       }),
-      { requestContext: { http: { sourceIp: '203.0.113.10' } } },
+      { requestContext: { identity: { sourceIp: '203.0.113.10' } } },
     );
 
     expect(response.status).toBe(200);

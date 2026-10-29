@@ -1,5 +1,5 @@
 import type { Page, Locator } from '@playwright/test';
-import { getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getStringProperty, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { BasePage } from './BasePage';
 
 type VoteChoice = 'A' | 'B' | 'C' | 'D' | 'E';
@@ -28,7 +28,7 @@ export class VotePage extends BasePage {
       return null;
     }
     const payload: unknown = JSON.parse(sessionData);
-    return isRecord(payload) ? payload : null;
+    return isNonNullObject(payload) ? payload : null;
   }
 
   async selectChoice(choice: VoteChoice): Promise<void> {

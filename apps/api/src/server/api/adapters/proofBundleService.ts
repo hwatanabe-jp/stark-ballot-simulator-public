@@ -1,3 +1,4 @@
+import type { BundlePublicationResult } from '@stark-ballot/aws-adapters/finalize/publish-verification-artifacts';
 import type {
   VerifierServiceDevModeReport,
   VerifierServiceFailedReport,
@@ -68,13 +69,6 @@ export interface ProofBundlePersistenceInput {
     receipt: ReceiptWithImageId;
     rawPayload: AdmittedReceiptPayload;
   };
-}
-
-export interface BundlePublicationResult {
-  bundleArchivePath: string;
-  s3BundleKey?: string;
-  s3ReportKey?: string;
-  s3UploadedAtMs?: number;
 }
 
 export interface ApiProofBundleRuntimeOptions {

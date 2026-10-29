@@ -3,7 +3,8 @@
  * Executes S0-S5 scenarios systematically
  */
 
-import { CLITestHelpers, resolveFinalizationCountDiagnostics } from './cli-test-helpers';
+import { formatCliCountDiagnostics } from './cli-report-fields';
+import { CLITestHelpers, resolveFinalizationCountDiagnostics, type FinalizeScenarioData } from './cli-test-helpers';
 import type { ZkVMProofProfile } from '@stark-ballot/node-adapters/zkvm/executor-factory';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -104,13 +105,7 @@ export class ScenarioRunner {
       const finalizeResult = await this.helpers.finalizeWithScenarios(sessionId, scenario);
       metrics.finalizationTime = Date.now() - finalizationStartTime;
 
-      // Extract results
-      const result = finalizeResult.data.result;
       const proof = finalizeResult.data.proof;
-      const debug = finalizeResult.data.debug;
-      const { missingSlots, invalidPresentedSlots, validVotes, excludedSlots } = resolveFinalizationCountDiagnostics(
-        finalizeResult.data,
-      );
 
       // Verify tamper detection accuracy
       const expectedTamper = scenario !== 'S0';
@@ -131,18 +126,7 @@ export class ScenarioRunner {
         tamperDetected: actualTamper,
         duration: Date.now() - startTime,
         errors,
-        details: {
-          ...omitUndefinedProperties({
-            verifiedTally: debug?.verifiedTally ?? (result?.counts ? Object.values(result.counts) : undefined),
-            missingSlots,
-            invalidPresentedSlots,
-            validVotes,
-            excludedSlots,
-            bulletinRoot: result?.bulletinRoot,
-          }),
-          sessionId,
-          voteCommitment: voteResult.commitment,
-        },
+        details: scenarioResultDetails(finalizeResult.data, sessionId, voteResult.commitment),
         metrics,
       };
     } catch (error) {
@@ -221,56 +205,7 @@ export class ScenarioRunner {
     report += '\nDetailed Results:\n';
     report += '─────────────────────────────────────\n';
 
-    for (const result of results) {
-      const status = result.passed ? 'PASS' : 'FAIL';
-      const tamperStatus = result.tamperDetected ? 'tamper detected' : 'no tamper';
-
-      report += `\n${result.scenario}: ${status}`;
-      report += ` (${tamperStatus}, ${result.duration}ms)\n`;
-
-      // Include metrics if available
-      if (result.metrics) {
-        report += `   Performance:\n`;
-        if (result.metrics.sessionCreationTime !== undefined) {
-          report += `     • Session: ${result.metrics.sessionCreationTime}ms\n`;
-        }
-        if (result.metrics.votingTime !== undefined) {
-          report += `     • Voting: ${result.metrics.votingTime}ms\n`;
-        }
-        if (result.metrics.finalizationTime !== undefined) {
-          report += `     • Finalization: ${result.metrics.finalizationTime}ms\n`;
-        }
-      }
-
-      // Include errors
-      if (result.errors.length > 0) {
-        report += `   Errors:\n`;
-        for (const error of result.errors) {
-          report += `     • ${error}\n`;
-        }
-      }
-
-      // Include tally details
-      if (result.details) {
-        if (result.details.verifiedTally) {
-          report += `   Tally:\n`;
-          report += `     • Verified: [${result.details.verifiedTally.join(', ')}]\n`;
-        }
-
-        if (
-          typeof result.details.missingSlots === 'number' ||
-          typeof result.details.invalidPresentedSlots === 'number' ||
-          typeof result.details.validVotes === 'number' ||
-          typeof result.details.excludedSlots === 'number'
-        ) {
-          report += `   Counts: missingSlots=${result.details.missingSlots ?? 'n/a'}, invalidPresentedSlots=${
-            result.details.invalidPresentedSlots ?? 'n/a'
-          }, validVotes=${result.details.validVotes ?? 'n/a'}, excludedSlots=${
-            result.details.excludedSlots ?? 'n/a'
-          }\n`;
-        }
-      }
-    }
+    report += results.map(renderScenarioResult).join('');
 
     report += '\n─────────────────────────────────────\n';
     report += this.generateScenarioLegend();
@@ -321,4 +256,82 @@ Scenario Legend:
   • S5: Random errors
 `;
   }
+}
+
+function scenarioResultDetails(
+  data: FinalizeScenarioData,
+  sessionId: string,
+  voteCommitment: string,
+): NonNullable<ScenarioResult['details']> {
+  const { result, debug } = data;
+  const { missingSlots, invalidPresentedSlots, validVotes, excludedSlots } = resolveFinalizationCountDiagnostics(data);
+  return {
+    ...omitUndefinedProperties({
+      verifiedTally: debug?.verifiedTally ?? (result?.counts ? Object.values(result.counts) : undefined),
+      missingSlots,
+      invalidPresentedSlots,
+      validVotes,
+      excludedSlots,
+      bulletinRoot: result?.bulletinRoot,
+    }),
+    sessionId,
+    voteCommitment,
+  };
+}
+
+function scenarioPerformance(metrics: ScenarioResult['metrics']): string {
+  let report = '';
+  // Include metrics if available
+  if (metrics) {
+    report += `   Performance:\n`;
+    if (metrics.sessionCreationTime !== undefined) {
+      report += `     • Session: ${metrics.sessionCreationTime}ms\n`;
+    }
+    if (metrics.votingTime !== undefined) {
+      report += `     • Voting: ${metrics.votingTime}ms\n`;
+    }
+    if (metrics.finalizationTime !== undefined) {
+      report += `     • Finalization: ${metrics.finalizationTime}ms\n`;
+    }
+  }
+
+  return report;
+}
+
+function scenarioTallyDetails(details: ScenarioResult['details']): string {
+  let report = '';
+  // Include tally details
+  if (details) {
+    if (details.verifiedTally) {
+      report += `   Tally:\n`;
+      report += `     • Verified: [${details.verifiedTally.join(', ')}]\n`;
+    }
+
+    const counts = formatCliCountDiagnostics(details);
+    if (counts) report += `   ${counts}\n`;
+  }
+  return report;
+}
+
+function renderScenarioResult(result: ScenarioResult): string {
+  let report = '';
+  const status = result.passed ? 'PASS' : 'FAIL';
+  const tamperStatus = result.tamperDetected ? 'tamper detected' : 'no tamper';
+
+  report += `\n${result.scenario}: ${status}`;
+  report += ` (${tamperStatus}, ${result.duration}ms)\n`;
+
+  report += scenarioPerformance(result.metrics);
+
+  // Include errors
+  if (result.errors.length > 0) {
+    report += `   Errors:\n`;
+    for (const error of result.errors) {
+      report += `     • ${error}\n`;
+    }
+  }
+
+  report += scenarioTallyDetails(result.details);
+
+  return report;
 }

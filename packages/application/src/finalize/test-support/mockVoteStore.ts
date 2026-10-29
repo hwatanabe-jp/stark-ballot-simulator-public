@@ -101,6 +101,25 @@ export function createMockVoteStore(overrides: Partial<MockVoteStore> = {}): Moc
     return record;
   }
 
+  function rememberSuccessfulFinalizationEvidence(
+    admitted: FinalizationRecord,
+    input: Parameters<MockVoteStore['commitSuccessfulFinalization']>[0],
+  ): void {
+    if (input.verificationResult) {
+      verificationRecords.set(
+        buildScopedKey(admitted.sessionId, admitted.finalizationId),
+        requireVerificationRecord(admitted.sessionId, admitted.finalizationId, input.verificationResult),
+      );
+    }
+    if (input.bitmap.availability === 'available') {
+      bitmapRecords.set(buildScopedKey(admitted.sessionId, admitted.finalizationId), {
+        sessionId: admitted.sessionId,
+        finalizationId: admitted.finalizationId,
+        ...input.bitmap.data,
+      });
+    }
+  }
+
   const baseStore: MockVoteStore = {
     createSession: () => Promise.reject(new Error('createSession not implemented in mock')),
     getSessionIdentity: () => Promise.resolve(null),
@@ -153,19 +172,7 @@ export function createMockVoteStore(overrides: Partial<MockVoteStore> = {}): Moc
         return Promise.reject(new Error('Successful finalization commit was not applied'));
       }
       const successful = committed as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
-      if (input.verificationResult) {
-        verificationRecords.set(
-          buildScopedKey(admitted.sessionId, admitted.finalizationId),
-          requireVerificationRecord(admitted.sessionId, admitted.finalizationId, input.verificationResult),
-        );
-      }
-      if (input.bitmap.availability === 'available') {
-        bitmapRecords.set(buildScopedKey(admitted.sessionId, admitted.finalizationId), {
-          sessionId: admitted.sessionId,
-          finalizationId: admitted.finalizationId,
-          ...input.bitmap.data,
-        });
-      }
+      rememberSuccessfulFinalizationEvidence(admitted, input);
       return Promise.resolve({
         record: successful,
         bitmap: input.bitmap,

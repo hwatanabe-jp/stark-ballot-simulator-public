@@ -16,17 +16,6 @@ pub fn compute_commitment(election_id: &[u8; 16], choice: u8, random: &[u8; 32])
     result
 }
 
-/// Recompute a commitment and compare it with the provided value.
-pub fn verify_commitment(
-    election_id: &[u8; 16],
-    choice: u8,
-    random: &[u8; 32],
-    commitment: &[u8; 32],
-) -> bool {
-    let computed = compute_commitment(election_id, choice, random);
-    computed == *commitment
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,21 +61,5 @@ mod tests {
         ];
 
         assert_eq!(commitment, expected);
-    }
-
-    #[test]
-    fn test_verify_commitment_valid() {
-        let election_id = [4u8; 16];
-        let choice = 4u8;
-        let random = [5u8; 32];
-
-        let commitment = compute_commitment(&election_id, choice, &random);
-
-        assert!(verify_commitment(
-            &election_id,
-            choice,
-            &random,
-            &commitment
-        ));
     }
 }

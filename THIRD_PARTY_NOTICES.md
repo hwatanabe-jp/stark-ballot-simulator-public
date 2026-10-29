@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Documentation revised: 2026-09-11
+Documentation and dependency metadata reviewed: 2026-09-19
 
 The public application repository is published as a sanitized source snapshot.
 The notices below summarize known third-party licenses for that snapshot,
@@ -31,8 +31,6 @@ The public application snapshot includes:
 - Target Lambdas under `infra/lambdas/`: `public-api`, `finalization-writer`,
   `proof-dispatcher`, `verification-worker`, `image-signature-verifier`, and
   `semaphore-janitor`
-- The separate Foundation-owned `ecr-retention` Lambda under
-  `infra/lambdas/ecr-retention/`
 - Lean formal models under `formal/` (current Lake metadata lists no external packages)
 - Allowlisted docs, scripts, and tests
 
@@ -83,8 +81,9 @@ pnpm licenses:regen
 
 The generator requires pnpm, Cargo, jq, and Perl and performs these steps:
 
-1. Run `pnpm licenses list --json --prod` and `pnpm licenses list --json` for
-   the production and all-dependencies reports.
+1. Run `pnpm --recursive licenses list --json --prod` and
+   `pnpm --recursive licenses list --json` for the production and
+   all-dependencies reports across workspace projects.
 2. Run `cargo metadata --format-version 1` against `zkvm/Cargo.toml` and
    `verifier-service/Cargo.toml`.
 3. Replace local absolute paths with `<REPO_ROOT>`, `<CARGO_HOME>`, and

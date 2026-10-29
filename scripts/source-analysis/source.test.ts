@@ -4,6 +4,7 @@ import {
   isNode,
   nodeText,
   parseSource,
+  parseSyntax,
   sourceLine,
   sourcePosition,
   topLevelDeclarations,
@@ -22,9 +23,12 @@ describe('source analysis', () => {
   });
   it('visits shorthand and unaliased import names once but retains distinct alias positions', () => {
     const names: string[] = [];
-    const source = parseSource('example.ts', 'import { value } from "package"; const object = { value };');
+    const source = parseSource(
+      'example.ts',
+      'import { value, source as alias } from "package"; const object = { value };',
+    );
     function visit(node: import('oxc-parser').Node): void {
-      if (node.type === 'Identifier' && node.name === 'value') names.push(nodeText(node));
+      if (node.type === 'Identifier') names.push(nodeText(node));
       forEachChild(node, visit);
     }
     const declaration = source.body[0];
@@ -33,10 +37,25 @@ describe('source analysis', () => {
     if (!specifier) throw new Error('Expected an import binding.');
     expect(nodeText(specifier.local)).toBe('value');
     visit(source);
-    expect(names).toHaveLength(2);
+    expect(names).toEqual(['value', 'source', 'alias', 'object', 'value']);
   });
   it('rejects invalid syntax instead of admitting a partial tree', () => {
     expect(() => parseSource('invalid.ts', 'const broken-name = 1;')).toThrow('Cannot parse invalid.ts');
+    expect(() => moduleSpecifiers('import "valid"; const broken-name = 1;', 'invalid.ts')).toThrow(
+      'Cannot parse invalid.ts',
+    );
+  });
+  it('keeps source context scoped to its indexed tree', () => {
+    const first = parseSource('first.ts', 'const value = "first";');
+    const second = parseSource('second.ts', 'const value = "second";');
+    const firstStatement = first.body[0];
+    const secondStatement = second.body[0];
+    if (!firstStatement || !secondStatement) throw new Error('Expected a statement in each tree.');
+    expect(nodeText(firstStatement)).toBe('const value = "first";');
+    expect(nodeText(secondStatement)).toBe('const value = "second";');
+    expect(() => nodeText(parseSyntax('raw.ts', 'const value = "raw";').program)).toThrow(
+      'Source node has no parsed context',
+    );
   });
   it('extracts imports from JSDoc types without treating examples or ordinary comments as dependencies', () => {
     const source =

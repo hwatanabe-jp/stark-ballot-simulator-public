@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import sessionFixture from '@stark-ballot/web/mock-api/fixtures/json/sessions.post.json';
 import voteFixture from '@stark-ballot/web/mock-api/fixtures/json/sessions.votes.post.json';
@@ -17,10 +18,7 @@ vi.mock('./apiFetch', () => ({
   apiFetch: vi.fn(),
 }));
 
-const SESSION = {
-  sessionId: 'session/one',
-  capabilityToken: 'capability-token',
-};
+const SESSION = admitSessionIdentity({ sessionId: 'session/one', capabilityToken: 'capability-token' });
 const requestMeta = { requestId: 'request-id' } as const;
 const pendingFinalization = {
   finalizationId: 'finalization-1',

@@ -7,6 +7,9 @@ import { isBrowserTurnstileRequiredForAction } from '@stark-ballot/web/component
 import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
 import { RadioGroup } from '@stark-ballot/web/components/ui/RadioGroup';
 import { useTranslation } from '@stark-ballot/web/hooks';
+import type { UseTranslationResult } from '@stark-ballot/web/hooks/useTranslation';
+import type { SessionIdentity } from '@stark-ballot/web/session';
+import type { SessionData } from '@stark-ballot/web/session/types';
 import { generateCommitment } from '@stark-ballot/web/vote/commitment';
 import {
   captureSessionIdentity,
@@ -16,7 +19,7 @@ import {
 import { saveKnowledgeData } from '@stark-ballot/web/knowledge';
 import type { VoteChoice } from '@stark-ballot/web/session/types';
 import { VOTE_CHOICES as VOTE_OPTIONS } from '@stark-ballot/verification/shared/constants';
-import { isValidVoteId } from '@stark-ballot/web/vote/voteIdValidation';
+import { isValidVoteId } from '@stark-ballot/validation/vote-id';
 import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { submitVote } from '@stark-ballot/web/api/votes';
 import { resolveApiClientErrorCode } from '@stark-ballot/web/api/client';
@@ -36,6 +39,139 @@ interface VoteResult {
   commitment: string;
 }
 
+type VoteOpening = { vote: VoteChoice; commitment: string; randomValue: string };
+type VoteSubmissionResponse = Awaited<ReturnType<typeof submitVote>>;
+type VoteRequestOutcome = { kind: 'received'; result: VoteSubmissionResponse } | { kind: 'ignored' };
+
+function requireVoteSubmissionSession(identity: SessionIdentity | null) {
+  if (!identity) {
+    throw new Error('Session not found');
+  }
+  const sessionData = getSessionDataForIdentity(identity);
+  if (!sessionData?.sessionId) {
+    throw new Error('Session not found');
+  }
+  if (!sessionData.capabilityToken) throw new Error('Session not found');
+  if (!sessionData.electionId) {
+    throw new Error('Election ID missing');
+  }
+  return { identity, sessionData };
+}
+
+function savedVoteOpening(session: SessionData | null): VoteOpening | null {
+  return session?.myVote !== undefined
+    ? { vote: session.myVote, commitment: session.myCommit, randomValue: session.myRand }
+    : null;
+}
+
+function validateVoteSubmissionResponse(result: VoteSubmissionResponse, commitment: string): void {
+  const { voteId, bulletinIndex, bulletinRootAtCast } = result;
+  if (
+    result.commitment !== commitment ||
+    !voteId ||
+    !isValidVoteId(voteId) ||
+    bulletinIndex < 0 ||
+    !bulletinRootAtCast ||
+    !isValidHexString(bulletinRootAtCast)
+  ) {
+    throw new Error('Invalid vote response');
+  }
+}
+
+function resolveVoteFailureMessage(error: unknown, t: UseTranslationResult['t']): string {
+  if (error instanceof Error && error.message === 'Network error') return t('errors.network');
+  if (error instanceof Error && error.message.includes('CAPTCHA')) return t('errors.captchaFailed');
+  return t('errors.generic');
+}
+
+interface VoteSubmissionOptions {
+  identity: SessionIdentity | null;
+  pendingOpening: VoteOpening | null;
+  selectedOption: VoteChoice;
+  turnstileToken: string | null;
+  controller: AbortController;
+  onOpening: (opening: VoteOpening) => void;
+  onCaptchaFailure: () => void;
+  onVoteComplete: VoteFormProps['onVoteComplete'];
+}
+
+async function requestVoteOpening(
+  session: SessionData,
+  opening: VoteOpening,
+  options: VoteSubmissionOptions,
+): Promise<VoteRequestOutcome> {
+  const { controller, turnstileToken } = options;
+  try {
+    const result = await submitVote(
+      session,
+      {
+        commitment: opening.commitment,
+        vote: opening.vote,
+        rand: opening.randomValue,
+        ...(turnstileToken ? { turnstileToken } : {}),
+      },
+      { signal: controller.signal },
+    );
+    return { kind: 'received', result };
+  } catch (error) {
+    if (controller.signal.aborted) return { kind: 'ignored' };
+    if (resolveApiClientErrorCode(error) === 'CAPTCHA_FAILED') {
+      options.onCaptchaFailure();
+      return { kind: 'ignored' };
+    }
+    throw error;
+  }
+}
+
+function publishVoteReceipt(identity: SessionIdentity, opening: VoteOpening, result: VoteSubmissionResponse): void {
+  const { voteId, bulletinIndex, bulletinRootAtCast, castAtMs } = result;
+  saveSessionDataForIdentity(identity, { voteId, bulletinIndex, bulletinRootAtCast });
+  saveKnowledgeData(
+    {
+      'user.choice': opening.vote,
+      'user.random': opening.randomValue,
+      'user.commitment': opening.commitment,
+      'user.voteId': voteId,
+      'user.bulletinIndex': bulletinIndex,
+      'user.bulletinRootAtCast': bulletinRootAtCast,
+      ...(typeof castAtMs === 'number' ? { 'user.castAtMs': castAtMs } : {}),
+    },
+    { expectedSessionId: identity.sessionId },
+  );
+}
+
+async function executeVoteSubmission(options: VoteSubmissionOptions): Promise<boolean> {
+  const { identity, sessionData } = requireVoteSubmissionSession(options.identity);
+  // An uncertain response must replay the exact opening, including after reload.
+  const opening = options.pendingOpening ??
+    savedVoteOpening(sessionData) ?? {
+      vote: options.selectedOption,
+      ...(await generateCommitment(options.selectedOption, sessionData.electionId)),
+    };
+  if (options.controller.signal.aborted) return false;
+  const sessionBeforeSubmit = getSessionDataForIdentity(identity);
+  if (!sessionBeforeSubmit) throw new Error('Session not found');
+  saveSessionDataForIdentity(identity, {
+    myVote: opening.vote,
+    myCommit: opening.commitment,
+    myRand: opening.randomValue,
+  });
+  options.onOpening(opening);
+  const outcome = await requestVoteOpening(sessionBeforeSubmit, opening, options);
+  if (outcome.kind === 'ignored' || options.controller.signal.aborted) return false;
+  if (!getSessionDataForIdentity(identity)) throw new Error('Session not found');
+  const result = outcome.result;
+  validateVoteSubmissionResponse(result, opening.commitment);
+  publishVoteReceipt(identity, opening, result);
+  options.onVoteComplete({
+    voteId: result.voteId,
+    bulletinIndex: result.bulletinIndex,
+    bulletinRootAtCast: result.bulletinRootAtCast,
+    commitment: opening.commitment,
+  });
+  return true;
+}
+
 /**
  * Vote form component with option selection, Turnstile verification, and submission
  *
@@ -46,15 +182,11 @@ interface VoteResult {
  * - API submission
  * - Session and knowledge store updates
  */
-export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.ReactElement {
-  const { t } = useTranslation();
+function useVoteSubmission({ onVoteComplete, onError }: VoteFormProps, t: UseTranslationResult['t']) {
   const [mountedSessionIdentity] = useState(() => captureSessionIdentity());
-  const [pendingOpening, setPendingOpening] = useState(() => {
-    const saved = mountedSessionIdentity ? getSessionDataForIdentity(mountedSessionIdentity) : null;
-    return saved?.myVote !== undefined
-      ? { vote: saved.myVote, commitment: saved.myCommit, randomValue: saved.myRand }
-      : null;
-  });
+  const [pendingOpening, setPendingOpening] = useState(() =>
+    savedVoteOpening(mountedSessionIdentity ? getSessionDataForIdentity(mountedSessionIdentity) : null),
+  );
   const [selectedOption, setSelectedOption] = useState<VoteChoice | null>(pendingOpening?.vote ?? null);
   const [turnstileAttempt, setTurnstileAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -76,6 +208,15 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
     [mountedSessionIdentity],
   );
 
+  const finishSubmission = (controller: AbortController, didSucceed: boolean) => {
+    if (submissionControllerRef.current === controller) submissionControllerRef.current = null;
+    if (!didSucceed && !controller.signal.aborted) {
+      setIsSubmitting(false);
+      setTurnstileToken(null);
+      setTurnstileAttempt((attempt) => attempt + 1);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!selectedOption || submissionControllerRef.current) return;
     if (requireVoteTurnstile && !turnstileToken) {
@@ -92,135 +233,62 @@ export function VoteForm({ onVoteComplete, onError }: VoteFormProps): React.Reac
     let didSucceed = false;
 
     try {
-      if (!mountedSessionIdentity) {
-        throw new Error('Session not found');
-      }
-      const sessionData = getSessionDataForIdentity(mountedSessionIdentity);
-      if (!sessionData?.sessionId) {
-        throw new Error('Session not found');
-      }
-      if (!sessionData.capabilityToken) throw new Error('Session not found');
-      if (!sessionData.electionId) {
-        throw new Error('Election ID missing');
-      }
-
-      // An uncertain response must replay the exact opening, including after reload.
-      const opening =
-        pendingOpening ??
-        (sessionData.myVote !== undefined
-          ? { vote: sessionData.myVote, commitment: sessionData.myCommit, randomValue: sessionData.myRand }
-          : { vote: selectedOption, ...(await generateCommitment(selectedOption, sessionData.electionId)) });
-      const { commitment, randomValue } = opening;
-      if (controller.signal.aborted) return;
-      const sessionDataBeforeSubmit = getSessionDataForIdentity(mountedSessionIdentity);
-      if (!sessionDataBeforeSubmit) {
-        throw new Error('Session not found');
-      }
-
-      // Save vote data to session
-      saveSessionDataForIdentity(mountedSessionIdentity, {
-        myVote: opening.vote,
-        myCommit: commitment,
-        myRand: randomValue,
-      });
-
-      setPendingOpening(opening);
-      setSelectedOption(opening.vote);
-
-      // Submit vote to API
-      let result;
-      try {
-        result = await submitVote(
-          sessionDataBeforeSubmit,
-          {
-            commitment,
-            vote: opening.vote,
-            rand: randomValue,
-            ...(turnstileToken ? { turnstileToken } : {}),
-          },
-          { signal: controller.signal },
-        );
-        if (controller.signal.aborted) return;
-        if (!getSessionDataForIdentity(mountedSessionIdentity)) {
-          throw new Error('Session not found');
-        }
-      } catch (requestError) {
-        if (controller.signal.aborted) return;
-        if (resolveApiClientErrorCode(requestError) === 'CAPTCHA_FAILED') {
-          const msg = t('errors.captchaFailed');
-          setError(msg);
-          setTurnstileToken(null);
-          onError?.(msg);
-          return;
-        }
-        throw requestError;
-      }
-
-      const { voteId, bulletinIndex, bulletinRootAtCast, castAtMs } = result;
-
-      // Validate response
-      if (
-        result.commitment !== commitment ||
-        !voteId ||
-        !isValidVoteId(voteId) ||
-        bulletinIndex < 0 ||
-        !bulletinRootAtCast ||
-        !isValidHexString(bulletinRootAtCast)
-      ) {
-        throw new Error('Invalid vote response');
-      }
-
-      // Save vote receipt data
-      saveSessionDataForIdentity(mountedSessionIdentity, {
-        voteId,
-        bulletinIndex,
-        bulletinRootAtCast,
-      });
-
-      // Update knowledge store with vote info (after API success)
-      saveKnowledgeData(
-        {
-          'user.choice': opening.vote,
-          'user.random': randomValue,
-          'user.commitment': commitment,
-          'user.voteId': voteId,
-          'user.bulletinIndex': bulletinIndex,
-          'user.bulletinRootAtCast': bulletinRootAtCast,
-          ...(typeof castAtMs === 'number' ? { 'user.castAtMs': castAtMs } : {}),
+      didSucceed = await executeVoteSubmission({
+        identity: mountedSessionIdentity,
+        pendingOpening,
+        selectedOption,
+        turnstileToken,
+        controller,
+        onOpening: (opening) => {
+          setPendingOpening(opening);
+          setSelectedOption(opening.vote);
         },
-        { expectedSessionId: mountedSessionIdentity.sessionId },
-      );
-
-      // Notify completion
-      onVoteComplete({
-        voteId,
-        bulletinIndex,
-        bulletinRootAtCast,
-        commitment,
+        onCaptchaFailure: () => {
+          const message = t('errors.captchaFailed');
+          setError(message);
+          setTurnstileToken(null);
+          onError?.(message);
+        },
+        onVoteComplete,
       });
-      didSucceed = true;
     } catch (err) {
       if (controller.signal.aborted) return;
-      let errorMessage: string;
-      if (err instanceof Error && err.message === 'Network error') {
-        errorMessage = t('errors.network');
-      } else if (err instanceof Error && err.message.includes('CAPTCHA')) {
-        errorMessage = t('errors.captchaFailed');
-      } else {
-        errorMessage = t('errors.generic');
-      }
+      const errorMessage = resolveVoteFailureMessage(err, t);
       setError(errorMessage);
       onError?.(errorMessage);
     } finally {
-      if (submissionControllerRef.current === controller) submissionControllerRef.current = null;
-      if (!didSucceed && !controller.signal.aborted) {
-        setIsSubmitting(false);
-        setTurnstileToken(null);
-        setTurnstileAttempt((attempt) => attempt + 1);
-      }
+      finishSubmission(controller, didSucceed);
     }
   };
 
+  return {
+    selectedOption,
+    pendingOpening,
+    isSubmitting,
+    requireVoteTurnstile,
+    turnstileAttempt,
+    setTurnstileToken,
+    turnstileToken,
+    error,
+    handleOptionChange,
+    handleSubmit,
+  };
+}
+
+export function VoteForm(props: VoteFormProps): React.ReactElement {
+  const { t } = useTranslation();
+  const {
+    selectedOption,
+    pendingOpening,
+    isSubmitting,
+    requireVoteTurnstile,
+    turnstileAttempt,
+    setTurnstileToken,
+    turnstileToken,
+    error,
+    handleOptionChange,
+    handleSubmit,
+  } = useVoteSubmission(props, t);
   const getOptionLabel = (option: VoteChoice): string => {
     return t('pages.vote.optionLabel', { option });
   };

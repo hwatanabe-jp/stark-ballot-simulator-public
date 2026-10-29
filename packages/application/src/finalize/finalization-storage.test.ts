@@ -366,6 +366,10 @@ describe('parseVerificationResult', () => {
 });
 
 describe('parseFinalizationState', () => {
+  it.each(['constructor', 'toString', '__proto__', 'unknown'])('rejects unsupported state %s', (status) => {
+    expect(parseFinalizationState({ status, finalizationId: 'exec-1', queuedAtMs: 1 })).toBeUndefined();
+  });
+
   it('rejects unsupported top-level keys at the pure state boundary', () => {
     expect(
       parseFinalizationState({

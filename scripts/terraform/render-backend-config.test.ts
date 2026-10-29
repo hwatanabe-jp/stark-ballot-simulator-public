@@ -43,33 +43,6 @@ function withTempDir(run: (dir: string) => void): void {
 }
 
 describe('render-backend-config.sh', () => {
-  it('renders a local backend config without logging the bucket name', () => {
-    withTempDir((dir) => {
-      const envFile = path.join(dir, '.env.local');
-      const outputFile = path.join(dir, 'backend.local.hcl');
-      writeFileSync(
-        envFile,
-        ['TERRAFORM_STATE_BUCKET=example-terraform-state', 'TERRAFORM_AWS_REGION=ap-northeast-1'].join('\n'),
-      );
-
-      const result = spawnSync('bash', [SCRIPT_PATH, '--env-file', envFile, '--output', outputFile], {
-        encoding: 'utf8',
-        env: terraformBackendTestEnv(),
-      });
-
-      expect(result.status).toBe(0);
-      expect(result.stdout).not.toContain('example-terraform-state');
-      expect(result.stderr).toBe('');
-
-      const rendered = readFileSync(outputFile, 'utf8');
-      expect(rendered).toContain('bucket       = "example-terraform-state"');
-      expect(rendered).toContain('key          = "terraform.tfstate"');
-      expect(rendered).toContain('region       = "ap-northeast-1"');
-      expect(rendered).toContain('use_lockfile = true');
-      expect(rendered).toContain('encrypt      = true');
-    });
-  });
-
   it('renders an account-aware target account backend key when state identity is supplied', () => {
     withTempDir((dir) => {
       const envFile = path.join(dir, '.env.local');
@@ -212,26 +185,32 @@ describe('render-backend-config.sh', () => {
       const outputFile = path.join(dir, 'backend.local.hcl');
       writeFileSync(
         envFile,
-        ['TERRAFORM_STATE_BUCKET=envfile-terraform-state', 'TERRAFORM_AWS_REGION=ap-northeast-1'].join('\n'),
+        [
+          'TERRAFORM_STATE_BUCKET=wrong-state',
+          'TERRAFORM_AWS_REGION=us-east-1',
+          'TERRAFORM_ACCOUNT_ALIAS=stark-dev',
+          'TERRAFORM_DEPLOYMENT_ENVIRONMENT=develop',
+          'TERRAFORM_STATE_SCOPE=bootstrap',
+        ].join('\n'),
       );
 
       const result = spawnSync('bash', [SCRIPT_PATH, '--env-file', envFile, '--output', outputFile], {
         encoding: 'utf8',
         env: terraformBackendTestEnv({
-          TERRAFORM_STATE_BUCKET: 'shell-terraform-state',
-          TERRAFORM_AWS_REGION: 'us-east-1',
+          TERRAFORM_STATE_BUCKET: REVIEWED_STATE_BUCKET,
+          TERRAFORM_AWS_REGION: 'ap-northeast-1',
         }),
       });
 
       expect(result.status).toBe(0);
       const rendered = readFileSync(outputFile, 'utf8');
-      expect(rendered).toContain('bucket       = "shell-terraform-state"');
-      expect(rendered).toContain('region       = "us-east-1"');
+      expect(rendered).toContain(`bucket       = "${REVIEWED_STATE_BUCKET}"`);
+      expect(rendered).toContain('region       = "ap-northeast-1"');
       expect(rendered).not.toContain('envfile-terraform-state');
     });
   });
 
-  it('fails clearly when the state bucket is missing', () => {
+  it('rejects missing target identity rather than rendering an unscoped backend', () => {
     withTempDir((dir) => {
       const envFile = path.join(dir, '.env.local');
       writeFileSync(envFile, 'TERRAFORM_AWS_REGION=ap-northeast-1\n');
@@ -242,8 +221,8 @@ describe('render-backend-config.sh', () => {
       });
 
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Missing required Terraform backend values');
-      expect(result.stderr).toContain('TERRAFORM_STATE_BUCKET');
+      expect(result.stderr).toContain('requires all state identity values');
+      expect(result.stderr).toContain('TERRAFORM_STATE_SCOPE');
     });
   });
 

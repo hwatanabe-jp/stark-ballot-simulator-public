@@ -8,9 +8,9 @@ import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primi
 import {
   getArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
@@ -78,7 +78,7 @@ function toVerificationStatus(value: unknown): VerificationStatus | undefined {
 }
 
 function buildCountsFromTally(values: Record<string, unknown>): Record<VoteChoice, number> | null {
-  const counts = getRecordProperty(values, 'counts');
+  const counts = getObjectProperty(values, 'counts');
   if (!counts) {
     return null;
   }
@@ -96,7 +96,7 @@ function buildCountsFromTally(values: Record<string, unknown>): Record<VoteChoic
 }
 
 function resolvePayloadScenarioTamperCount(value: Record<string, unknown>): number {
-  const tamperSummary = getRecordProperty(value, 'tamperSummary');
+  const tamperSummary = getObjectProperty(value, 'tamperSummary');
   return resolveScenarioTamperCount(
     omitUndefinedProperties({
       ignoredVotes: getNumberProperty(tamperSummary, 'ignoredVotes'),
@@ -111,7 +111,7 @@ function resolveTallySnapshot(
 ): ClientFinalizationSnapshot['tally'] | null {
   // Browser-local snapshots are an explicit current-contract boundary.
   // Require a concrete claimed tally instead of reconstructing one from the journal.
-  const tally = getRecordProperty(value, 'tally');
+  const tally = getObjectProperty(value, 'tally');
   if (!tally) {
     return null;
   }
@@ -136,7 +136,7 @@ function resolveTallySnapshot(
 }
 
 function resolveReceiptPublication(value: Record<string, unknown>): ClientFinalizationReceiptPublication | undefined {
-  const receiptPublication = getRecordProperty(value, 'receiptPublication');
+  const receiptPublication = getObjectProperty(value, 'receiptPublication');
   const receiptHash = getStringProperty(receiptPublication, 'receiptHash');
   const boardIndex = getNumberProperty(receiptPublication, 'boardIndex');
   if (!receiptHash || typeof boardIndex !== 'number') {
@@ -152,7 +152,7 @@ function resolveReceiptPublication(value: Record<string, unknown>): ClientFinali
 }
 
 function resolveTamperSummary(value: Record<string, unknown>): ClientFinalizationTamperSummary | undefined {
-  const tamperSummary = getRecordProperty(value, 'tamperSummary');
+  const tamperSummary = getObjectProperty(value, 'tamperSummary');
   const ignoredVotes = getNumberProperty(tamperSummary, 'ignoredVotes');
   const recountedVotes = getNumberProperty(tamperSummary, 'recountedVotes');
   const userRecountedTo = getStringProperty(tamperSummary, 'userRecountedTo');
@@ -239,7 +239,7 @@ export function resolveClientFinalizationVerificationStatus(
  * Unsupported or stale payloads are rejected instead of being reinterpreted.
  */
 export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinalizationSnapshot | null {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return null;
   }
 
@@ -248,7 +248,7 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
   if (!finalizationId) {
     return null;
   }
-  const journalValue = getRecordProperty(sanitized, 'journal');
+  const journalValue = getObjectProperty(sanitized, 'journal');
   if (!isSupportedZkVMJournal(journalValue)) {
     return null;
   }
@@ -266,7 +266,7 @@ export function resolveCanonicalFinalizationPayload(value: unknown): ClientFinal
 
   const verificationStatus =
     toVerificationStatus(getStringProperty(sanitized, 'verificationStatus')) ??
-    toVerificationStatus(getStringProperty(getRecordProperty(sanitized, 'verificationResult'), 'status'));
+    toVerificationStatus(getStringProperty(getObjectProperty(sanitized, 'verificationResult'), 'status'));
   const receiptPublication = resolveReceiptPublication(sanitized);
   const scenarios = resolveScenarios(sanitized);
   const verificationResult = resolveVerificationResult(sanitized, verificationStatus);

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 
-export function generateRandomBytes32(): string {
+function generateRandomBytes32(): string {
   return `0x${randomBytes(32).toString('hex')}`;
 }
 

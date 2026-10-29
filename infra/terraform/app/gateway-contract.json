@@ -1,0 +1,743 @@
+{
+  "resources": {
+    "/api": {
+      "parent": "/",
+      "part": "api",
+      "depth": 1
+    },
+    "/api/sessions": {
+      "parent": "/api",
+      "part": "sessions",
+      "depth": 2
+    },
+    "/api/sessions/{sessionId}": {
+      "parent": "/api/sessions",
+      "part": "{sessionId}",
+      "depth": 3
+    },
+    "/api/sessions/{sessionId}/progress": {
+      "parent": "/api/sessions/{sessionId}",
+      "part": "progress",
+      "depth": 4
+    },
+    "/api/sessions/{sessionId}/finalizations": {
+      "parent": "/api/sessions/{sessionId}",
+      "part": "finalizations",
+      "depth": 4
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}": {
+      "parent": "/api/sessions/{sessionId}/finalizations",
+      "part": "{finalizationId}",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}",
+      "part": "verification",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current": {
+      "parent": "/api/sessions/{sessionId}/finalizations",
+      "part": "current",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}",
+      "part": "artifacts",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts",
+      "part": "bundle",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts",
+      "part": "report",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/bulletin": {
+      "parent": "/api/sessions/{sessionId}",
+      "part": "bulletin",
+      "depth": 4
+    },
+    "/api/sessions/{sessionId}/bulletin/consistency-proof": {
+      "parent": "/api/sessions/{sessionId}/bulletin",
+      "part": "consistency-proof",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/votes": {
+      "parent": "/api/sessions/{sessionId}",
+      "part": "votes",
+      "depth": 4
+    },
+    "/api/sessions/{sessionId}/votes/{voteId}": {
+      "parent": "/api/sessions/{sessionId}/votes",
+      "part": "{voteId}",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof": {
+      "parent": "/api/sessions/{sessionId}/votes/{voteId}",
+      "part": "inclusion-proof",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current",
+      "part": "bitmap-proofs",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs",
+      "part": "{kind}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}",
+      "part": "{voteIndex}",
+      "depth": 8
+    },
+    "/api/sessions/{sessionId}/bulletin/sth": {
+      "parent": "/api/sessions/{sessionId}/bulletin",
+      "part": "sth",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/finalizations/current/input-commitment": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current",
+      "part": "input-commitment",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}",
+      "part": "cancel",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+      "part": "observations",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/verification": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current",
+      "part": "verification",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current/artifacts": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current",
+      "part": "artifacts",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current/artifacts/bundle": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/artifacts",
+      "part": "bundle",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/artifacts/report": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/artifacts",
+      "part": "report",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/cancel": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current",
+      "part": "cancel",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current/verification/observations": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/verification",
+      "part": "observations",
+      "depth": 7
+    },
+    "/api/{proxy+}": {
+      "parent": "/api",
+      "part": "{proxy+}",
+      "depth": 2
+    },
+    "/api/sessions/{sessionId}/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}",
+      "part": "{proxy+}",
+      "depth": 4
+    },
+    "/api/sessions/{sessionId}/progress/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/progress",
+      "part": "{proxy+}",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}",
+      "part": "{proxy+}",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current",
+      "part": "{proxy+}",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle",
+      "part": "{proxy+}",
+      "depth": 8
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report",
+      "part": "{proxy+}",
+      "depth": 8
+    },
+    "/api/sessions/{sessionId}/bulletin/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/bulletin",
+      "part": "{proxy+}",
+      "depth": 5
+    },
+    "/api/sessions/{sessionId}/bulletin/consistency-proof/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/bulletin/consistency-proof",
+      "part": "{proxy+}",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/votes/{voteId}/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/votes/{voteId}",
+      "part": "{proxy+}",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}",
+      "part": "{proxy+}",
+      "depth": 9
+    },
+    "/api/sessions/{sessionId}/bulletin/sth/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/bulletin/sth",
+      "part": "{proxy+}",
+      "depth": 6
+    },
+    "/api/sessions/{sessionId}/finalizations/current/input-commitment/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/input-commitment",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations",
+      "part": "{proxy+}",
+      "depth": 8
+    },
+    "/api/sessions/{sessionId}/finalizations/current/verification/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/verification",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/artifacts/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/artifacts",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/artifacts/bundle/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/artifacts/bundle",
+      "part": "{proxy+}",
+      "depth": 8
+    },
+    "/api/sessions/{sessionId}/finalizations/current/artifacts/report/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/artifacts/report",
+      "part": "{proxy+}",
+      "depth": 8
+    },
+    "/api/sessions/{sessionId}/finalizations/current/cancel/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/cancel",
+      "part": "{proxy+}",
+      "depth": 7
+    },
+    "/api/sessions/{sessionId}/finalizations/current/verification/observations/{proxy+}": {
+      "parent": "/api/sessions/{sessionId}/finalizations/current/verification/observations",
+      "part": "{proxy+}",
+      "depth": 8
+    }
+  },
+  "methods": {
+    "GET /api/sessions/{sessionId}/progress": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/progress",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/{finalizationId}/verification": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/current": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/current",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/bulletin": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/bulletin",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/bulletin/consistency-proof": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/bulletin/consistency-proof",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/votes/{voteId}/inclusion-proof": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/bulletin/sth": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/bulletin/sth",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/current/input-commitment": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/current/input-commitment",
+      "model": null
+    },
+    "POST /api/sessions": {
+      "method": "POST",
+      "path": "/api/sessions",
+      "model": null
+    },
+    "POST /api/sessions/{sessionId}/votes": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/votes",
+      "model": "VoteRequest"
+    },
+    "POST /api/sessions/{sessionId}/finalizations": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations",
+      "model": "FinalizationCreateRequest"
+    },
+    "POST /api/sessions/{sessionId}/finalizations/{finalizationId}/cancel": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel",
+      "model": "FinalizationCancelRequest"
+    },
+    "POST /api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations",
+      "model": "VerificationObservationRequest"
+    },
+    "POST /api/sessions/{sessionId}/finalizations/{finalizationId}/verification": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+      "model": "VerificationRunRequest"
+    },
+    "GET /api/sessions/{sessionId}/finalizations/current/verification": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/current/artifacts/bundle": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/bundle",
+      "model": null
+    },
+    "GET /api/sessions/{sessionId}/finalizations/current/artifacts/report": {
+      "method": "GET",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/report",
+      "model": null
+    },
+    "POST /api/sessions/{sessionId}/finalizations/current/cancel": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations/current/cancel",
+      "model": "FinalizationCancelRequest"
+    },
+    "POST /api/sessions/{sessionId}/finalizations/current/verification/observations": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification/observations",
+      "model": "VerificationObservationRequest"
+    },
+    "POST /api/sessions/{sessionId}/finalizations/current/verification": {
+      "method": "POST",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification",
+      "model": "VerificationRunRequest"
+    },
+    "ANY /api": {
+      "method": "ANY",
+      "path": "/api",
+      "model": null
+    },
+    "ANY /api/sessions": {
+      "method": "ANY",
+      "path": "/api/sessions",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/bulletin": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/bulletin",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/bulletin/consistency-proof": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/bulletin/consistency-proof",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/bulletin/consistency-proof/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/bulletin/consistency-proof/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/bulletin/sth": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/bulletin/sth",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/bulletin/sth/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/bulletin/sth/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/bulletin/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/bulletin/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/artifacts": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/artifacts/bundle": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/bundle",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/artifacts/bundle/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/bundle/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/artifacts/report": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/report",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/artifacts/report/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/report/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/artifacts/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/artifacts/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/bitmap-proofs": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/bitmap-proofs/{kind}/{voteIndex}/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/cancel": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/cancel",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/cancel/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/cancel/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/input-commitment": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/input-commitment",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/input-commitment/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/input-commitment/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/verification": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/verification/observations": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification/observations",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/verification/observations/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification/observations/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/verification/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/verification/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/current/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/current/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/bundle/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/report/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/artifacts/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/cancel": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/cancel/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/cancel/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/verification": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/observations/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/verification/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/verification/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/finalizations/{finalizationId}/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/finalizations/{finalizationId}/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/progress": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/progress",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/progress/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/progress/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/votes": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/votes",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/votes/{voteId}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/votes/{voteId}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/votes/{voteId}/inclusion-proof": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/votes/{voteId}/inclusion-proof/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/votes/{voteId}/inclusion-proof/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/votes/{voteId}/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/votes/{voteId}/{proxy+}",
+      "model": null
+    },
+    "ANY /api/sessions/{sessionId}/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/sessions/{sessionId}/{proxy+}",
+      "model": null
+    },
+    "ANY /api/{proxy+}": {
+      "method": "ANY",
+      "path": "/api/{proxy+}",
+      "model": null
+    }
+  },
+  "models": {
+    "VoteRequest": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "type": "object",
+      "properties": {
+        "commitment": {
+          "type": "string",
+          "pattern": "^(?:0x)?[0-9A-Fa-f]{64}$"
+        },
+        "rand": {
+          "type": "string",
+          "pattern": "^(?:0x)?[0-9A-Fa-f]{64}$"
+        },
+        "turnstileToken": {
+          "type": "string"
+        },
+        "vote": {
+          "type": "string",
+          "enum": ["A", "B", "C", "D", "E"]
+        }
+      },
+      "additionalProperties": false,
+      "required": ["commitment", "rand", "vote"]
+    },
+    "FinalizationCreateRequest": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "type": "object",
+      "properties": {
+        "scenarioId": {
+          "type": "string",
+          "enum": ["S0", "S1", "S2", "S3", "S4", "S5"]
+        },
+        "turnstileToken": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["scenarioId"]
+    },
+    "FinalizationCancelRequest": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VerificationObservationRequest": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "type": "object",
+      "properties": {
+        "castChecks": {
+          "type": "object",
+          "properties": {
+            "cast_choice_range": {
+              "type": "string",
+              "enum": ["success", "failed", "not_run"]
+            },
+            "cast_commitment_match": {
+              "type": "string",
+              "enum": ["success", "failed", "not_run"]
+            },
+            "cast_random_format": {
+              "type": "string",
+              "enum": ["success", "failed", "not_run"]
+            },
+            "cast_receipt_present": {
+              "type": "string",
+              "enum": ["success", "failed", "not_run"]
+            }
+          },
+          "additionalProperties": false,
+          "required": ["cast_choice_range", "cast_commitment_match", "cast_random_format", "cast_receipt_present"]
+        }
+      },
+      "additionalProperties": false,
+      "required": ["castChecks"]
+    },
+    "VerificationRunRequest": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "honoConstraints": [
+    "VoteRequest.turnstileToken: minLength 1 UTF-16 code units (Hono only)",
+    "FinalizationCreateRequest.turnstileToken: minLength 1 UTF-16 code units (Hono only)",
+    "FinalizationCancelRequest.reason: maxLength 256 UTF-16 code units (Hono only)"
+  ]
+}

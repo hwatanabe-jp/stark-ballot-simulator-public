@@ -1,28 +1,53 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hasExactOwnKeys,
+  hasOnlyAllowedKeys,
+  isNonNegativeInteger,
+  isNonNegativeSafeInteger,
   getArrayProperty,
   getBooleanArrayProperty,
   getNumberArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringArrayProperty,
   getStringProperty,
   isNumberArray,
-  isRecord,
-  requireRecord,
+  isNonNullObject,
+  requireNonNullObject,
 } from './unknown-value-guards';
 
 describe('unknown-value guards', () => {
-  it('treats non-null objects, including arrays, as records', () => {
-    expect(isRecord({})).toBe(true);
-    expect(isRecord([])).toBe(true);
-    expect(isRecord(['entry'])).toBe(true);
+  it('distinguishes optional allowed fields from exact own enumerable fields', () => {
+    const allowed = new Set(['required', 'optional']);
+    const value = { required: 1 };
+    Object.setPrototypeOf(value, { optional: 2 });
+    expect(hasOnlyAllowedKeys(value, allowed)).toBe(true);
+    expect(hasExactOwnKeys(value, allowed)).toBe(false);
+    expect(hasExactOwnKeys(value, ['required', 'optional'])).toBe(false);
+    expect(hasExactOwnKeys({ required: 1, optional: 2 }, ['optional', 'required'])).toBe(true);
+    expect(hasExactOwnKeys({ required: 1, optional: 2 }, ['required', 'required'])).toBe(false);
+    expect(hasOnlyAllowedKeys({ required: 1, unexpected: 2 }, allowed)).toBe(false);
+  });
 
-    expect(isRecord(null)).toBe(false);
-    expect(isRecord(undefined)).toBe(false);
-    expect(isRecord('record')).toBe(false);
-    expect(isRecord(1)).toBe(false);
-    expect(isRecord(true)).toBe(false);
+  it('preserves integer contracts that admit values beyond the safe-integer bound', () => {
+    const value = Number.MAX_SAFE_INTEGER + 1;
+    expect(isNonNegativeInteger(value)).toBe(true);
+    expect(isNonNegativeSafeInteger(value)).toBe(false);
+    for (const invalid of [-1, 0.5, Number.NaN, Infinity, '1', null]) {
+      expect(isNonNegativeInteger(invalid)).toBe(false);
+    }
+  });
+
+  it('accepts non-null objects, including arrays', () => {
+    expect(isNonNullObject({})).toBe(true);
+    expect(isNonNullObject([])).toBe(true);
+    expect(isNonNullObject(['entry'])).toBe(true);
+
+    expect(isNonNullObject(null)).toBe(false);
+    expect(isNonNullObject(undefined)).toBe(false);
+    expect(isNonNullObject('record')).toBe(false);
+    expect(isNonNullObject(1)).toBe(false);
+    expect(isNonNullObject(true)).toBe(false);
   });
 
   it('reads inherited properties without requiring an own property', () => {
@@ -39,7 +64,7 @@ describe('unknown-value guards', () => {
 
     expect(getStringProperty(value, 'stringValue')).toBe('inherited');
     expect(getNumberProperty(value, 'numberValue')).toBe(42);
-    expect(getRecordProperty(value, 'recordValue')).toEqual({ nested: true });
+    expect(getObjectProperty(value, 'recordValue')).toEqual({ nested: true });
     expect(getArrayProperty(value, 'arrayValue')).toEqual(['mixed', 1]);
     expect(getStringArrayProperty(value, 'stringArrayValue')).toEqual(['A', 'B']);
     expect(getNumberArrayProperty(value, 'numberArrayValue')).toEqual([1, 2]);
@@ -89,10 +114,10 @@ describe('unknown-value guards', () => {
     expect(getBooleanArrayProperty(value, 'empty')).toBe(empty);
   });
 
-  it('treats arrays as record-valued properties', () => {
+  it('accepts arrays as object-valued properties', () => {
     const arrayValue = ['entry'];
 
-    expect(getRecordProperty({ arrayValue }, 'arrayValue')).toBe(arrayValue);
+    expect(getObjectProperty({ arrayValue }, 'arrayValue')).toBe(arrayValue);
   });
 
   it('returns undefined for missing, explicitly undefined, and wrong-type properties', () => {
@@ -119,7 +144,7 @@ describe('unknown-value guards', () => {
     for (const value of [missing, undefinedProperties, wrongTypes]) {
       expect(getStringProperty(value, 'stringValue')).toBeUndefined();
       expect(getNumberProperty(value, 'numberValue')).toBeUndefined();
-      expect(getRecordProperty(value, 'recordValue')).toBeUndefined();
+      expect(getObjectProperty(value, 'recordValue')).toBeUndefined();
       expect(getArrayProperty(value, 'arrayValue')).toBeUndefined();
       expect(getStringArrayProperty(value, 'stringArrayValue')).toBeUndefined();
       expect(getNumberArrayProperty(value, 'numberArrayValue')).toBeUndefined();
@@ -127,23 +152,25 @@ describe('unknown-value guards', () => {
     }
   });
 
-  it('returns undefined properties when the containing value is not a record', () => {
+  it('returns undefined properties when the containing value is not a non-null object', () => {
     expect(getStringProperty(null, 'value')).toBeUndefined();
     expect(getNumberProperty(undefined, 'value')).toBeUndefined();
-    expect(getRecordProperty('value', 'value')).toBeUndefined();
+    expect(getObjectProperty('value', 'value')).toBeUndefined();
     expect(getArrayProperty(1, 'value')).toBeUndefined();
     expect(getStringArrayProperty(false, 'value')).toBeUndefined();
     expect(getNumberArrayProperty(null, 'value')).toBeUndefined();
     expect(getBooleanArrayProperty(undefined, 'value')).toBeUndefined();
   });
 
-  it('requires records with the exact existing error messages', () => {
+  it('requires non-null objects with the exact existing error messages', () => {
     const record = { value: true };
     const arrayRecord = ['value'];
 
-    expect(requireRecord(record)).toBe(record);
-    expect(requireRecord(arrayRecord, 'array')).toBe(arrayRecord);
-    expect(() => requireRecord(null)).toThrow('Expected value to be a record');
-    expect(() => requireRecord(undefined, 'response payload')).toThrow('Expected response payload to be a record');
+    expect(requireNonNullObject(record)).toBe(record);
+    expect(requireNonNullObject(arrayRecord, 'array')).toBe(arrayRecord);
+    expect(() => requireNonNullObject(null)).toThrow('Expected value to be a record');
+    expect(() => requireNonNullObject(undefined, 'response payload')).toThrow(
+      'Expected response payload to be a record',
+    );
   });
 });

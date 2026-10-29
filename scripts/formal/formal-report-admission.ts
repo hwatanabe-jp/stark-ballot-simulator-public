@@ -1,3 +1,4 @@
+import { requireRecord, requireExactKeys, requireString } from '../validation/manifest-admission';
 export interface FormalReportTheorem {
   readonly name: string;
   readonly source: string;
@@ -20,28 +21,6 @@ export interface FormalReport {
   readonly formalAuditArtifact: string;
   readonly assumptions: readonly string[];
   readonly nonClaims: readonly string[];
-}
-
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
-  const actual = Object.keys(record).sort();
-  const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
-    throw new Error(`${label} must contain exactly: ${expected.join(', ')}`);
-  }
-}
-
-function requireString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`${label} must be a nonempty string`);
-  }
-  return value;
 }
 
 function requireStringArray(value: unknown, label: string): string[] {

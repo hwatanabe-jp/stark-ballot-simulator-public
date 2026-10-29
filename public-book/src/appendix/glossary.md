@@ -1,6 +1,6 @@
 # 用語集
 
-本文で使う言葉を、証拠や処理との関係から引けるようにまとめています。
+Public Specs で使用する用語と、関連する証拠・処理を定義します。
 
 ## 暗号プリミティブ
 
@@ -96,7 +96,7 @@ RISC Zero の開発モードで作る、production STARK の暗号学的保証�
 
 ### ジャーナル契約（Journal Contract）
 
-ゲストが出すフィールドと意味を定める仕様です。現行は `methodVersion=14`。バージョンだけでプログラムを信用せず、レシート検証では期待 Image ID も指定します。
+ゲストが出力するフィールドと意味を定める仕様です。現行は `methodVersion=14` です。バージョンだけではプログラムを識別できないため、レシート検証では期待 Image ID も指定します。
 
 ### レシートラッパー JSON
 
@@ -234,13 +234,13 @@ Certificate Transparency の仕様です。このデモは、その Merkle ツ�
 
 要求を処理するローカルプロセスからホストを起動し、結果を待つ方式です。使うレシートの種類は実行プロファイルによって異なります。
 
-### Prover semaphore
+### プローバーの同時実行枠
 
-同時に証明を生成するジョブ数を制限する仕組みです。DynamoDB に利用中の枠を記録し、通常は Step Functions が解放します。残った枠は専用の清掃処理が終了確認後に回収します。[非同期プローバー](../aws/async-prover.md)。
+AWS Batch が管理する、証明生成ジョブの共有枠です。総量は2で、各 attempt が1枠を使います。Batch は計算が停止して attempt が終了すると枠を戻します。取消要求やアプリの完了通知だけでは枠は戻りません。[非同期プローバー](../aws/async-prover.md)。
 
 ### Quiesced phase
 
-DynamoDB の復旧・切替の途中で、新規セッションと非同期キューの処理を停止する状態です。[復旧時の段階](../aws/terraform.md#dynamodb-recovery-selection)。
+DynamoDB の復旧・切替の途中で、新規セッションと非同期キューの処理を停止する状態です。[復旧時の段階](../aws/terraform.md#dynamodb-復旧先の切替)。
 
 ### Develop operator gate
 
@@ -248,11 +248,11 @@ DynamoDB の復旧・切替の途中で、新規セッションと非同期キ�
 
 ### Saved-plan lane
 
-Terraform が作成して保存した計画を承認し、その同じ計画を適用する変更経路です。通常変更とロールバックで承認条件を定めます。[計画と承認](../aws/terraform.md)。
+Terraform が作成して保存した計画を承認し、その同じ計画を適用する変更経路です。適用後は smoke を確認して受け入れます。修正時も、新しいソースと計画をレビューします。[計画と承認](../aws/terraform.md)。
 
 ### Release authority
 
-どのビルド済みイメージやアプリ成果物を採用できるかを決める、検査済みの記録と、それを選ぶポインターです。[イメージの選択](../aws/image-signing.md)と[受入記録](../aws/terraform.md)を参照できます。
+採用できるビルド済みイメージやアプリ成果物を定める、検査済みの記録と、それを選ぶポインターです。[イメージの選択](../aws/image-signing.md)と[受入記録](../aws/terraform.md)で定義します。
 
 ### イメージ署名検証（Image Signing）
 
@@ -302,4 +302,4 @@ S3 で ZIP と同じ集計用の接頭辞の下に保存する、ZIP 外のフ�
 
 ハッシュに使うタグとバイト列は、[投票コミットメント](../protocol/commitment.md)、[入力コミットメント](../protocol/input-commitment.md)、[掲示板](../protocol/ct-merkle.md)で定義します。
 
-<!-- source: packages/zkvm-contract/src/zkvm/types.ts, packages/merkle/src/rfc6962-merkle-tree.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/consistency-verifier.ts, packages/verification/src/verification/sth-verifier.ts, packages/verification/src/verification/verification-bundle.ts, apps/api/src/server/api/handlers/bitmapProof.ts, packages/zkvm-contract/src/zkvm/bitmap.ts, packages/domain/src/shared/constants.ts, packages/domain/src/types/server.ts, packages/domain/src/types/voteStore.ts, zkvm/methods/guest/src/main.rs -->
+<!-- source: packages/zkvm-contract/src/zkvm/types.ts, packages/merkle/src/rfc6962-merkle-tree.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/consistency-verifier.ts, packages/verification/src/verification/sth-verifier.ts, packages/verification/src/verification/verification-bundle.ts, apps/api/src/server/api/handlers/bitmapProof.ts, packages/zkvm-contract/src/zkvm/bitmap.ts, packages/domain/src/shared/constants.ts, packages/domain/src/types/sessionRecords.ts, packages/domain/src/types/voteStore.ts, zkvm/methods/guest/src/main.rs, infra/terraform/app/prover_batch.tf, infra/terraform/app/variables.tf -->

@@ -4,7 +4,7 @@ import { resolveRuntimeConfigReference } from '@stark-ballot/runtime-config/env/
 const CIPHER_PREFIX = 'enc:v1';
 const IV_BYTES = 12;
 const AUTH_TAG_BYTES = 16;
-export const TEST_FALLBACK_VOTE_SECRET_KEY_HEX = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+const TEST_FALLBACK_VOTE_SECRET_KEY_HEX = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 function isHex64(value: string): boolean {
   return /^[0-9a-fA-F]{64}$/.test(value);
@@ -86,13 +86,17 @@ function resolveVoteSecretKey(): Buffer {
   throw new Error('VOTE_SECRET_ENCRYPTION_KEY must be set to a valid 32-byte key (hex or base64).');
 }
 
+function hasCipherFrame(parts: readonly string[]): boolean {
+  return parts.length === 5 && parts[0] === 'enc' && parts[1] === 'v1';
+}
+
+function hasHexCipherFields(iv: string, tag: string, ciphertext: string): boolean {
+  return /^[0-9a-fA-F]+$/.test(iv) && /^[0-9a-fA-F]+$/.test(tag) && /^[0-9a-fA-F]*$/.test(ciphertext);
+}
+
 function parseCipherPayload(value: string): { iv: Buffer; tag: Buffer; ciphertext: Buffer } | null {
   const parts = value.split(':');
-  if (parts.length !== 5) {
-    return null;
-  }
-
-  if (parts[0] !== 'enc' || parts[1] !== 'v1') {
+  if (!hasCipherFrame(parts)) {
     return null;
   }
 
@@ -103,7 +107,7 @@ function parseCipherPayload(value: string): { iv: Buffer; tag: Buffer; ciphertex
     return null;
   }
 
-  if (!/^[0-9a-fA-F]+$/.test(iv) || !/^[0-9a-fA-F]+$/.test(tag) || !/^[0-9a-fA-F]*$/.test(ciphertext)) {
+  if (!hasHexCipherFields(iv, tag, ciphertext)) {
     return null;
   }
 

@@ -4,14 +4,12 @@ This directory preserves the decisions and execution plans that shaped the
 current zkVM contract. Status notes and commit references are useful provenance,
 but they describe the rollout at the time each record was written.
 
-They are not runtime source of truth. For current behavior, prefer code and
-tests plus:
-
-- `docs/verification/README.md`
-- `zkvm/README.md`
-
-Treat `docs/zkvm/final-design.md` as design
-intent and historical rationale, not as the active runtime contract.
+For current behavior, start with code and tests plus the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+[The design record](../final-design.md) supplies design intent and historical
+rationale. In the records below, “current” refers to the corresponding rollout.
 
 ## Shared Principles
 
@@ -74,6 +72,9 @@ intent and historical rationale, not as the active runtime contract.
 
 ## Current-State Reading Note
 
+The sequence below explains how the historical records superseded one another.
+Use the current contracts linked above for today's runtime behavior.
+
 - 01-05 remain the decision records for the implemented rollout.
 - Even so, some completion-state wording in 03 and 04 now understates
   compatibility residue that still survives in the codebase, especially
@@ -130,10 +131,9 @@ baseline, not normalized as steady-state compatibility.
 Property-based testing is a cross-cutting evidence strategy in this
 directory, not an optional afterthought.
 
-The reason is simple: the strongest guarantees in this cleanup program
-do not come only from prose ownership rules. They come from keeping the
-intentionally canonical implementations under generative pressure that
-can expose edge cases humans are unlikely to enumerate by hand.
+The cleanup program used generated cases to exercise canonical implementations
+and expose edge cases beyond hand-written examples. This complements the
+ownership rules recorded in prose.
 
 That evidence position lives primarily in
 [Canonical zkVM Path and Legacy Cleanup Plan](./04-canonical-zkvm-path-and-legacy-cleanup-plan.md),

@@ -38,116 +38,7 @@ export class ScenarioProcessor {
     const changes: ScenarioChange[] = [];
 
     for (const scenario of scenarios) {
-      switch (scenario) {
-        case 'S1':
-          // Ignore user vote
-          {
-            const userVote = modifiedVotes.get(userVoteIndex);
-            if (!userVote) {
-              break;
-            }
-            modifiedVotes.delete(userVoteIndex);
-            changes.push({
-              scenario: 'S1',
-              voteIndex: userVoteIndex,
-              action: 'IGNORED',
-              originalVote: userVote.vote,
-            });
-          }
-          break;
-
-        case 'S2':
-          // Recount user vote
-          {
-            if (!options.targetChoice) {
-              break;
-            }
-            const userVote = modifiedVotes.get(userVoteIndex);
-            if (!userVote) {
-              break;
-            }
-            const originalVote = userVote.vote;
-            const updatedVote: TVote = { ...userVote, vote: options.targetChoice };
-            modifiedVotes.set(userVoteIndex, updatedVote);
-            changes.push({
-              scenario: 'S2',
-              voteIndex: userVoteIndex,
-              action: 'RECOUNTED',
-              originalVote,
-              newVote: options.targetChoice,
-            });
-          }
-          break;
-
-        case 'S3':
-          // Ignore specific bot vote
-          {
-            const targetBotId = options.targetBotId;
-            if (typeof targetBotId !== 'number') {
-              break;
-            }
-            const botVote = modifiedVotes.get(targetBotId);
-            if (!botVote) {
-              break;
-            }
-            modifiedVotes.delete(targetBotId);
-            changes.push({
-              scenario: 'S3',
-              voteIndex: targetBotId,
-              action: 'IGNORED',
-              originalVote: botVote.vote,
-            });
-          }
-          break;
-
-        case 'S4':
-          // Recount bot vote
-          {
-            const targetBotId = options.targetBotId;
-            if (typeof targetBotId !== 'number' || !options.targetChoice) {
-              break;
-            }
-            const botVote = modifiedVotes.get(targetBotId);
-            if (!botVote) {
-              break;
-            }
-            const originalVote = botVote.vote;
-            const updatedVote: TVote = { ...botVote, vote: options.targetChoice };
-            modifiedVotes.set(targetBotId, updatedVote);
-            changes.push({
-              scenario: 'S4',
-              voteIndex: targetBotId,
-              action: 'RECOUNTED',
-              originalVote,
-              newVote: options.targetChoice,
-            });
-          }
-          break;
-
-        case 'S5': {
-          // Random exclusion-focused error injection.
-          const random = options.random ?? Math.random;
-          const voteIndices = Array.from(modifiedVotes.keys());
-          if (voteIndices.length > 0) {
-            const randomIndex = voteIndices[Math.floor(random() * voteIndices.length)];
-            if (randomIndex === undefined) {
-              break;
-            }
-            const vote = modifiedVotes.get(randomIndex);
-            if (!vote) {
-              break;
-            }
-            modifiedVotes.delete(randomIndex);
-            changes.push({
-              scenario: 'S5',
-              voteIndex: randomIndex,
-              action: 'IGNORED',
-              originalVote: vote.vote,
-            });
-          }
-          break;
-        }
-      }
+      applyScenarioChange({ modifiedVotes, changes }, scenario, userVoteIndex, options);
     }
 
     return {
@@ -174,4 +65,67 @@ export class ScenarioProcessor {
 
     return counts;
   }
+}
+
+function applyScenarioChange<TVote extends ScenarioVoteRecord>(
+  result: ScenarioResult<TVote>,
+  scenario: string,
+  userVoteIndex: number,
+  options: ScenarioOptions,
+): void {
+  switch (scenario) {
+    case 'S1':
+      ignoreScenarioVote(result, scenario, userVoteIndex);
+      break;
+    case 'S2':
+      recountScenarioVote(result, scenario, userVoteIndex, options.targetChoice);
+      break;
+    case 'S3':
+      if (typeof options.targetBotId === 'number') ignoreScenarioVote(result, scenario, options.targetBotId);
+      break;
+    case 'S4':
+      if (typeof options.targetBotId === 'number')
+        recountScenarioVote(result, scenario, options.targetBotId, options.targetChoice);
+      break;
+    case 'S5':
+      ignoreRandomScenarioVote(result, options.random ?? Math.random);
+      break;
+  }
+}
+
+function ignoreScenarioVote<TVote extends ScenarioVoteRecord>(
+  result: ScenarioResult<TVote>,
+  scenario: string,
+  voteIndex: number,
+): void {
+  const vote = result.modifiedVotes.get(voteIndex);
+  if (!vote) return;
+  result.modifiedVotes.delete(voteIndex);
+  result.changes.push({ scenario, voteIndex, action: 'IGNORED', originalVote: vote.vote });
+}
+
+function recountScenarioVote<TVote extends ScenarioVoteRecord>(
+  result: ScenarioResult<TVote>,
+  scenario: string,
+  voteIndex: number,
+  targetChoice: VoteChoice | undefined,
+): void {
+  if (!targetChoice) return;
+  const vote = result.modifiedVotes.get(voteIndex);
+  if (!vote) return;
+  const originalVote = vote.vote;
+  const updatedVote: TVote = { ...vote, vote: targetChoice };
+  result.modifiedVotes.set(voteIndex, updatedVote);
+  result.changes.push({ scenario, voteIndex, action: 'RECOUNTED', originalVote, newVote: targetChoice });
+}
+
+function ignoreRandomScenarioVote<TVote extends ScenarioVoteRecord>(
+  result: ScenarioResult<TVote>,
+  random: () => number,
+): void {
+  const voteIndices = Array.from(result.modifiedVotes.keys());
+  if (voteIndices.length === 0) return;
+  const randomIndex = voteIndices[Math.floor(random() * voteIndices.length)];
+  if (randomIndex === undefined) return;
+  ignoreScenarioVote(result, 'S5', randomIndex);
 }

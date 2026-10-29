@@ -59,7 +59,7 @@ export interface BuildZkVMInputOptions {
  * Convert vote choice to number
  * A -> 0, B -> 1, C -> 2, D -> 3, E -> 4
  */
-export function choiceToNumber(choice: VoteChoice): number {
+function choiceToNumber(choice: VoteChoice): number {
   const mapping: Record<VoteChoice, number> = {
     A: 0,
     B: 1,
@@ -144,23 +144,7 @@ function getLatestPersistedSTHSnapshot(
   if (!latestSnapshot) {
     return undefined;
   }
-  const bulletin = voting.bulletin;
-
-  const bulletinSize = typeof bulletin.getSize === 'function' ? bulletin.getSize() : undefined;
-  if (bulletinSize === undefined || bulletinSize <= 0) {
-    return latestSnapshot;
-  }
-
-  try {
-    const bulletinRoot = normalizeHexOrZero(bulletin.getCurrentRoot());
-    if (bulletinSize === latestSnapshot.treeSize && bulletinRoot === normalizeHexOrZero(latestSnapshot.root)) {
-      return latestSnapshot;
-    }
-  } catch {
-    return undefined;
-  }
-
-  return undefined;
+  return resolvePersistedBulletinSnapshot(voting.bulletin, latestSnapshot);
 }
 
 /**
@@ -378,16 +362,7 @@ export function validateCanonicalZkVMInput(input: ZkVMInput): { valid: boolean; 
         errors.push(`Invalid vote[${i}].random: must be 32 bytes hex`);
       }
 
-      try {
-        const voteIndex = asVoteIndex(vote.index);
-        if (seenIndices.has(voteIndex)) {
-          errors.push(`Duplicate vote index: ${vote.index}`);
-        } else {
-          seenIndices.add(voteIndex);
-        }
-      } catch {
-        errors.push(`Invalid vote[${i}].index: must be non-negative`);
-      }
+      observeCanonicalVoteIndex(vote, i, seenIndices, errors);
 
       if (!Array.isArray(vote.merklePath)) {
         errors.push(`Invalid vote[${i}].merklePath: must be an array`);
@@ -399,4 +374,43 @@ export function validateCanonicalZkVMInput(input: ZkVMInput): { valid: boolean; 
     valid: errors.length === 0,
     errors,
   };
+}
+
+function resolvePersistedBulletinSnapshot(
+  bulletin: SessionVotingRecord['bulletin'],
+  latestSnapshot: { root: string; treeSize: number; timestamp: number },
+): { root: string; treeSize: number; timestamp: number } | undefined {
+  const bulletinSize = typeof bulletin.getSize === 'function' ? bulletin.getSize() : undefined;
+  if (bulletinSize === undefined || bulletinSize <= 0) {
+    return latestSnapshot;
+  }
+
+  try {
+    const bulletinRoot = normalizeHexOrZero(bulletin.getCurrentRoot());
+    if (bulletinSize === latestSnapshot.treeSize && bulletinRoot === normalizeHexOrZero(latestSnapshot.root)) {
+      return latestSnapshot;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function observeCanonicalVoteIndex(
+  vote: VoteWithProof,
+  i: number,
+  seenIndices: Set<VoteIndex>,
+  errors: string[],
+): void {
+  try {
+    const voteIndex = asVoteIndex(vote.index);
+    if (seenIndices.has(voteIndex)) {
+      errors.push(`Duplicate vote index: ${vote.index}`);
+    } else {
+      seenIndices.add(voteIndex);
+    }
+  } catch {
+    errors.push(`Invalid vote[${i}].index: must be non-negative`);
+  }
 }

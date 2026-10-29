@@ -1,3 +1,4 @@
+import type { ApiSessionIdentity } from '../api/client';
 import type { ClientFinalizationSnapshot } from '@stark-ballot/web/finalize/client-finalization-result';
 import type { ServerIssuedSessionIdentity, SessionData } from './types';
 
@@ -5,6 +6,14 @@ function assertSessionEvidence(
   identity: ServerIssuedSessionIdentity,
   finalizeResult: ClientFinalizationSnapshot,
 ): void {
+  const apiIdentity: ApiSessionIdentity = identity;
+  const swapped: ApiSessionIdentity = {
+    // @ts-expect-error A capability cannot be used in the session path.
+    sessionId: identity.capabilityToken,
+    // @ts-expect-error A session ID cannot be sent as a capability.
+    capabilityToken: identity.sessionId,
+  };
+  void [apiIdentity, swapped];
   const base = { ...identity, phase: 'voting' as const, lastActivity: 0, expiresAt: 1 };
   const opening = { myVote: 'A' as const, myCommit: 'commitment', myRand: 'random' };
   const receipt = { voteId: 'vote-id', bulletinIndex: 0, bulletinRootAtCast: 'root' };

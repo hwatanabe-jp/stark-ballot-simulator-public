@@ -1,45 +1,37 @@
 locals {
   foundation_app_status_key                    = local.deployment_shared_names.appDeploymentStatusKey
   foundation_app_status_publisher_project_name = local.deployment_shared_names.appDeploymentStatusPublisherProject
-  foundation_app_status_publisher_project_arn  = "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${local.foundation_app_status_publisher_project_name}"
   foundation_app_status_publisher_role_name    = local.deployment_shared_names.appDeploymentStatusPublisherRole
   foundation_app_status_publisher_role_arn     = "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_app_status_publisher_role_name}"
   foundation_app_status_object_arn             = "${local.app_retained_artifact_bucket_arn}/${local.foundation_app_status_key}"
   foundation_app_status_acceptance_pointer_object_arn = (
-    "${local.app_retained_artifact_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPointerKey}"
+    "${local.app_retained_artifact_bucket_arn}/deployment/${local.deployment_target.targetKey}/app/checkpoint.json"
   )
-  foundation_app_status_acceptance_records_object_arn = (
-    "${local.app_retained_artifact_bucket_arn}/${local.deployment_shared_names.acceptedDeploymentPrefix}/acceptances/*"
-  )
-  foundation_app_status_execution_artifact_bucket_arn = (
-    "arn:aws:s3:::${local.app_lane_authority.names.artifactBucket}"
-  )
-  foundation_app_status_publisher_env_variables = jsonencode([
-    {
-      name  = "APP_STATUS_SOURCE_SHA"
-      value = "#{AppSource.CommitId}"
-      type  = "PLAINTEXT"
-    },
-  ])
+
 }
 
 resource "aws_iam_role" "app_deployment_status_publisher" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   name                 = local.foundation_app_status_publisher_role_name
-  assume_role_policy   = data.aws_iam_policy_document.codebuild_assume_role[0].json
+  assume_role_policy   = data.aws_iam_policy_document.codebuild_assume_role["app_deployment_status_publisher"].json
   permissions_boundary = aws_iam_policy.app_deploy_permissions_boundary[0].arn
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
+
 }
 
 data "aws_iam_policy_document" "app_deployment_status_publisher" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
+  # Direct GitHub source authentication differs from a CodePipeline clone reference.
+  statement {
+    sid       = "ReadStatusSourceConnection"
+    actions   = ["codeconnections:GetConnection", "codeconnections:GetConnectionToken"]
+    resources = [aws_codeconnections_connection.source[0].arn]
+  }
 
   statement {
     sid    = "AssertAppStatusPublisherIdentity"
@@ -49,12 +41,6 @@ data "aws_iam_policy_document" "app_deployment_status_publisher" {
     resources = ["*"]
   }
 
-  statement {
-    sid       = "ReadExactAppStatusProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [local.foundation_app_status_publisher_project_arn]
-  }
 
   statement {
     sid    = "WriteAppStatusPublisherLogs"
@@ -70,17 +56,6 @@ data "aws_iam_policy_document" "app_deployment_status_publisher" {
   }
 
   statement {
-    sid    = "ReadAppStatusSourceArtifact"
-    effect = "Allow"
-
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-    ]
-    resources = ["${local.foundation_app_status_execution_artifact_bucket_arn}/*"]
-  }
-
-  statement {
     sid    = "ReadExactAppAcceptanceHistory"
     effect = "Allow"
 
@@ -90,7 +65,6 @@ data "aws_iam_policy_document" "app_deployment_status_publisher" {
     ]
     resources = [
       local.foundation_app_status_acceptance_pointer_object_arn,
-      local.foundation_app_status_acceptance_records_object_arn,
     ]
   }
 
@@ -104,6 +78,38 @@ data "aws_iam_policy_document" "app_deployment_status_publisher" {
       "s3:PutObject",
     ]
     resources = [local.foundation_app_status_object_arn]
+  }
+
+  statement {
+    sid       = "ObserveExactAppCheckpointVersion"
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.app_retained_artifact_bucket_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:prefix"
+      values   = ["deployment/${local.deployment_target.targetKey}/app/checkpoint.json"]
+    }
+    condition {
+      test     = "NumericEquals"
+      variable = "s3:max-keys"
+      values   = ["1"]
+    }
+  }
+
+  statement {
+    sid       = "ObserveExactCurrentStatusVersion"
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.app_retained_artifact_bucket_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:prefix"
+      values   = [local.foundation_app_status_key]
+    }
+    condition {
+      test     = "NumericEquals"
+      variable = "s3:max-keys"
+      values   = ["1"]
+    }
   }
 
   statement {
@@ -153,7 +159,6 @@ data "aws_iam_policy_document" "app_deployment_status_publisher" {
       variable = "kms:EncryptionContext:aws:s3:arn"
       values = [
         local.app_retained_artifact_bucket_arn,
-        local.foundation_app_status_execution_artifact_bucket_arn,
       ]
     }
   }
@@ -180,14 +185,21 @@ check "app_deployment_status_publisher_policy_size" {
 }
 
 resource "aws_codebuild_project" "app_deployment_status_publisher" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  lifecycle {
+    # The provider suppresses clearing an old pipeline artifact name. Source
+    # identity changes recreate this stateless project and retain its logs.
+    replace_triggered_by = [terraform_data.development_app_pipeline_identity_guard]
+  }
+
+  concurrent_build_limit = 1
+  count                  = local.app_pipeline_enabled ? 1 : 0
 
   name          = local.foundation_app_status_publisher_project_name
   service_role  = aws_iam_role.app_deployment_status_publisher[0].arn
   build_timeout = 5
 
   artifacts {
-    type = "CODEPIPELINE"
+    type = "NO_ARTIFACTS"
   }
 
   environment {
@@ -206,8 +218,13 @@ resource "aws_codebuild_project" "app_deployment_status_publisher" {
   }
 
   source {
-    type      = "CODEPIPELINE"
+    type      = "GITHUB"
+    location  = "https://github.com/${local.deployment_target.repository}.git"
     buildspec = "infra/terraform/bootstrap/buildspec-app-publish-current-status.yml"
+    auth {
+      type     = "CODECONNECTIONS"
+      resource = aws_codeconnections_connection.source[0].arn
+    }
   }
 
   tags = merge(local.common_tags, {

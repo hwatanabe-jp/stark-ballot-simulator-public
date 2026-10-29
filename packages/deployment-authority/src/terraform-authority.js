@@ -1,21 +1,10 @@
+import { admitArrayOwnMetadata } from './descriptor-snapshot.js';
 /**
  * Pure Terraform authority validators shared by accepted deployment lanes.
  */
 
 /**
  * @typedef {'bootstrap' | 'foundation' | 'app'} TerraformRoot
- */
-
-/**
- * @typedef {'ssm-parameter' | 'secrets-manager-secret'} TerraformSecretReferenceSource
- */
-
-/**
- * @typedef {{
-    readonly inputName: string;
-    readonly source: TerraformSecretReferenceSource;
-    readonly reference: string;
-}} TerraformSecretReference
  */
 
 /**
@@ -46,45 +35,12 @@
 
 /**
  * @typedef {{
-    readonly deploymentMode?: 'normal' | 'rollback';
+    readonly deploymentMode?: 'normal';
     readonly stateBucketName?: string;
     readonly stateKmsAlias?: string;
     readonly stateKmsKeyArn?: string;
     readonly terraformVersion?: string;
 }} TerraformInputIdentityOptions
- */
-
-/**
- * @typedef {'terraformPlanProject' | 'appSignaturePreflightPlanProject'} CodeBuildRuntimeProjectKey
- */
-
-/**
- * @typedef {{
-    readonly projectKey: CodeBuildRuntimeProjectKey;
-}} CodeBuildRuntimeEvidenceOptions
- */
-
-/**
- * @typedef {{
-    readonly evidenceType: 'codebuild-runtime';
-    readonly targetKey: import('./index.js').DeploymentTargetKey;
-    readonly lane: TerraformRoot;
-    readonly stateIdentity: string;
-    readonly sourceSha: string;
-    readonly project: {
-        readonly key: CodeBuildRuntimeProjectKey;
-        readonly name: string;
-        readonly arn: string;
-        readonly buildId: string;
-    };
-    readonly runtime: {
-        readonly configuredImage: string;
-        readonly observedImage: string;
-        readonly computeType: 'BUILD_GENERAL1_SMALL';
-        readonly environmentType: 'LINUX_CONTAINER';
-        readonly privilegedMode: false;
-    };
-}} CodeBuildRuntimeEvidence
  */
 
 /**
@@ -109,11 +65,9 @@ import {
   isPlainRecord,
   parseSha256,
   requireExactKeys,
-  requireGroupedLowercaseUuid,
   requireString,
 } from './internal.js';
 import { parseDeploymentLaneContext, resolveAllowedDeploymentTarget, resolveDeploymentLaneAuthority } from './index.js';
-import { isManagedCodeBuildImageIdentifier } from './source-path-build-authority.js';
 
 const TERRAFORM_VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
 const AWS_PROVIDER_ADDRESS = 'registry.terraform.io/hashicorp/aws';
@@ -122,23 +76,6 @@ const S3_BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/u;
 const KMS_KEY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const NONSECRET_INPUT_KEYS = ['evidenceType', 'files', 'root', 'secretValuesIncluded'];
 const NONSECRET_INPUT_FILE_KEYS = ['contentBase64', 'path', 'sha256'];
-const CODEBUILD_RUNTIME_KEYS = [
-  'evidenceType',
-  'lane',
-  'project',
-  'runtime',
-  'sourceSha',
-  'stateIdentity',
-  'targetKey',
-];
-const CODEBUILD_RUNTIME_PROJECT_KEYS = ['arn', 'buildId', 'key', 'name'];
-const CODEBUILD_RUNTIME_CONFIGURATION_KEYS = [
-  'computeType',
-  'configuredImage',
-  'environmentType',
-  'observedImage',
-  'privilegedMode',
-];
 const TERRAFORM_IDENTITY_KEYS = ['platform', 'provider_selections', 'terraform_outdated', 'terraform_version'];
 const TERRAFORM_BACKEND_AUTHORITY_KEYS = ['backendKey', 'bucketName', 'kmsKeyArn', 'region'];
 const MAX_NONSECRET_INPUT_BYTES = 1024 * 1024;
@@ -156,7 +93,6 @@ const BOOTSTRAP_INPUT_KEYS = [
   'enable_development_pipeline',
   'github_full_repository_id',
   'project_name',
-  'protected_production_aws_account_id',
   'source_branch',
   'state_backend_key',
   'state_bucket_name',
@@ -189,19 +125,13 @@ const APP_INPUT_KEYS = [
   'expected_image_id',
   'fargate_vcpu_alarm_threshold',
   'image_id_mapping_evidence',
-  'image_signature_preflight_prover_image_uri',
   'image_signature_status_attempt_timeout_ms',
   'image_signature_status_max_attempts',
   'image_signature_status_retry_delay_ms',
-  'image_signature_verifier_base_prover_image_uri',
   'image_signature_verifier_handler_deadline_ms',
   'image_signature_verifier_lambda_timeout_seconds',
   'image_signature_verifier_permissions_boundary_arn',
   'image_signature_verifier_process_timeout_ms',
-  'image_signature_verifier_reconciliation_desired_json',
-  'image_signature_verifier_reconciliation_desired_sha256',
-  'image_signature_verifier_reconciled_function_version',
-  'image_signature_verifier_selected_authority',
   'image_signature_verifier_step_timeout_seconds',
   'lambda_artifacts',
   'lambda_runtime',
@@ -224,8 +154,8 @@ const APP_INPUT_KEYS = [
   'verifier_service_bin_path',
   'vote_duplicate_detector_ttl_seconds',
 ];
-const RECOVERY_INPUT_KEYS = ['dynamodb_recovery_activation', 'dynamodb_recovery_phase'];
-const APP_STORED_INPUT_KEYS = [...APP_INPUT_KEYS, ...RECOVERY_INPUT_KEYS].sort();
+
+const APP_STORED_INPUT_KEYS = [...APP_INPUT_KEYS].sort();
 const LAMBDA_ARTIFACT_NAMES = [
   'finalization_writer',
   'image_signature_verifier',
@@ -254,47 +184,6 @@ const IMAGE_ID_MAPPING_INPUT_KEYS = [
   'mapping_sha256',
   'variant',
 ];
-const RECOVERY_ACTIVATION_KEYS = [
-  'account_alias',
-  'account_id',
-  'deployment_environment',
-  'kms_key_arn',
-  'manifest_sha256',
-  'manifest_type',
-  'recovery_id',
-  'recovery_point',
-  'region',
-  'sessions',
-  'validation_status',
-  'votes',
-];
-const RECOVERY_SESSIONS_KEYS = ['key_schema', 'source_table_arn', 'table_arn', 'table_name'];
-const RECOVERY_VOTES_KEYS = ['key_schema', 'source_table_arn', 'table_arn', 'table_name', 'vote_id_index_schema'];
-const SELECTED_VERIFIER_AUTHORITY_KEYS = [
-  'architecture',
-  'environment_sha256',
-  'execution_role_arn',
-  'execution_role_assume_policy_sha256',
-  'execution_role_permissions_boundary_arn',
-  'execution_role_permissions_boundary_policy_sha256',
-  'execution_role_policy_sha256',
-  'function_arn',
-  'function_configuration_sha256',
-  'function_version',
-  'package',
-  'preflight_alias_arn',
-  'runtime',
-  'runtime_alias_arn',
-  'timeout_seconds',
-];
-const SELECTED_VERIFIER_PACKAGE_KEYS = [
-  'asset_manifest_sha256',
-  's3_bucket',
-  's3_key',
-  's3_object_version',
-  'source_code_hash',
-  'trust_root_sha256',
-];
 
 /**
  * @param {unknown} value
@@ -321,39 +210,6 @@ function parseRoot(value) {
     throw new Error('Terraform baseline root must be bootstrap, foundation, or app.');
   }
   return value;
-}
-
-/**
- * @param {TerraformRoot} rootValue
- * @param {unknown} contextValue
- * @returns {readonly TerraformSecretReference[]}
- */
-export function buildTerraformBaselineSecretReferences(rootValue, contextValue) {
-  const root = parseRoot(rootValue);
-  const context = parseDeploymentLaneContext(contextValue);
-  if (context.root.lane !== root || context.root.scope !== root) {
-    throw new Error('Terraform baseline secret-reference context does not match its root.');
-  }
-  if (root !== 'app') {
-    return deepFreeze([]);
-  }
-  return deepFreeze([
-    {
-      inputName: 'api_origin_verify_header',
-      source: 'secrets-manager-secret',
-      reference: `${context.names.runtimeSecretReferencePrefix}/expected-origin-verify-header`,
-    },
-    {
-      inputName: 'verification_invariant_email',
-      source: 'ssm-parameter',
-      reference: `/${context.project.stateNamespace}/observability/invariant-email/endpoint`,
-    },
-    {
-      inputName: 'ops_actionable_email',
-      source: 'ssm-parameter',
-      reference: `/${context.project.stateNamespace}/observability/ops-actionable-email/endpoint`,
-    },
-  ]);
 }
 
 /**
@@ -404,25 +260,19 @@ function parseChecksum(value, label) {
  * @returns {unknown[]}
  */
 function parseDenseArray(value, label) {
-  if (!Array.isArray(value)) {
-    throw new Error(`${label} must be an array.`);
-  }
-  const ownKeys = Reflect.ownKeys(value);
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-  if (
-    lengthDescriptor === undefined ||
-    !Object.hasOwn(lengthDescriptor, 'value') ||
-    ownKeys.length !== value.length + 1
-  ) {
-    throw new Error(`${label} must be a dense array.`);
-  }
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+  const { array, ownKeys } = admitArrayOwnMetadata(
+    value,
+    `${label} must be an array.`,
+    `${label} must be a dense array.`,
+  );
+  if (ownKeys.length !== array.length + 1) throw new Error(`${label} must be a dense array.`);
+  for (let index = 0; index < array.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(array, String(index));
     if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
       throw new Error(`${label} must be a dense array.`);
     }
   }
-  return value;
+  return array;
 }
 
 /**
@@ -440,22 +290,7 @@ function parseNonsecretInputFile(value) {
     throw new Error('Terraform baseline nonsecret input path is invalid.');
   }
   const sha256 = parseChecksum(record['sha256'], 'Terraform baseline nonsecret input SHA-256');
-  if (
-    typeof record['contentBase64'] !== 'string' ||
-    record['contentBase64'].length === 0 ||
-    !CANONICAL_BASE64_PATTERN.test(record['contentBase64'])
-  ) {
-    throw new Error('Terraform baseline nonsecret input content is invalid.');
-  }
-  const body = Buffer.from(record['contentBase64'], 'base64');
-  if (
-    body.length === 0 ||
-    body.length > MAX_NONSECRET_INPUT_BYTES ||
-    body.includes(0) ||
-    body.toString('base64') !== record['contentBase64']
-  ) {
-    throw new Error('Terraform baseline nonsecret input content is invalid.');
-  }
+  const { body, contentBase64 } = decodeNonsecretInputBytes(record['contentBase64']);
   if (createHash('sha256').update(body).digest('hex') !== sha256) {
     throw new Error('Terraform baseline nonsecret input content hash is invalid.');
   }
@@ -468,7 +303,7 @@ function parseNonsecretInputFile(value) {
   return {
     path: record['path'],
     sha256,
-    contentBase64: record['contentBase64'],
+    contentBase64,
     body: decodedBody,
   };
 }
@@ -525,10 +360,7 @@ function validateBootstrapInputValues(value) {
       requireStringArray(value[key], `Bootstrap Terraform baseline ${key}`);
     } else if (key.startsWith('enable_')) {
       requireValueType(value[key], 'boolean', `Bootstrap Terraform baseline ${key}`);
-    } else if (
-      key === 'development_app_cloudfront_acm_certificate_arn' ||
-      key === 'protected_production_aws_account_id'
-    ) {
+    } else if (key === 'development_app_cloudfront_acm_certificate_arn') {
       requireValueType(value[key], 'string', `Bootstrap Terraform baseline ${key}`, { nullable: true });
     } else {
       requireValueType(value[key], 'string', `Bootstrap Terraform baseline ${key}`);
@@ -556,12 +388,7 @@ function validateLambdaArtifacts(value) {
       LAMBDA_ARTIFACT_KEYS,
       `App Terraform baseline lambda_artifacts.${name}`,
     );
-    for (const key of LAMBDA_ARTIFACT_KEYS) {
-      const nullable = key === 'asset_manifest_sha256' || key === 'trust_root_sha256';
-      requireValueType(artifact[key], 'string', `App Terraform baseline lambda_artifacts.${name}.${key}`, {
-        nullable,
-      });
-    }
+    validateLambdaArtifactFieldTypes(artifact, name);
     if (
       name === 'image_signature_verifier' &&
       (artifact['asset_manifest_sha256'] === null || artifact['trust_root_sha256'] === null)
@@ -611,65 +438,6 @@ function projectSavedPlanLambdaArtifacts(value) {
 }
 
 /**
- * @param {unknown} value
- */
-function validateRecoveryActivation(value) {
-  if (value === null) {
-    return;
-  }
-  const activation = exactKeys(value, RECOVERY_ACTIVATION_KEYS, 'App Terraform baseline recovery activation');
-  for (const key of RECOVERY_ACTIVATION_KEYS.filter((key) => key !== 'sessions' && key !== 'votes')) {
-    requireValueType(activation[key], 'string', `App Terraform baseline recovery activation ${key}`);
-  }
-  const sessions = exactKeys(
-    activation['sessions'],
-    RECOVERY_SESSIONS_KEYS,
-    'App Terraform baseline recovery sessions',
-  );
-  const votes = exactKeys(activation['votes'], RECOVERY_VOTES_KEYS, 'App Terraform baseline recovery votes');
-  /** @type {Array<[string, Record<string, unknown>]>} */
-  const recoveryRecords = [
-    ['sessions', sessions],
-    ['votes', votes],
-  ];
-  for (const [label, record] of recoveryRecords) {
-    for (const [key, entry] of Object.entries(record)) {
-      requireValueType(entry, 'string', `App Terraform baseline recovery ${label}.${key}`);
-    }
-  }
-}
-
-/**
- * @param {unknown} value
- */
-function validateSelectedVerifierAuthority(value) {
-  if (value === null) {
-    return;
-  }
-  const authority = exactKeys(
-    value,
-    SELECTED_VERIFIER_AUTHORITY_KEYS,
-    'App Terraform baseline selected verifier authority',
-  );
-  for (const key of SELECTED_VERIFIER_AUTHORITY_KEYS.filter((key) => key !== 'package' && key !== 'timeout_seconds')) {
-    requireValueType(authority[key], 'string', `App Terraform baseline selected verifier authority ${key}`);
-  }
-  requireValueType(
-    authority['timeout_seconds'],
-    'number',
-    'App Terraform baseline selected verifier authority timeout_seconds',
-  );
-  const packageValue = exactKeys(
-    authority['package'],
-    SELECTED_VERIFIER_PACKAGE_KEYS,
-    'App Terraform baseline selected verifier package',
-  );
-  for (const [key, entry] of Object.entries(packageValue)) {
-    requireValueType(entry, 'string', `App Terraform baseline selected verifier package ${key}`);
-  }
-}
-
-/**
  * @param {Record<string, unknown>} value
  */
 function validateAppInputValues(value) {
@@ -699,12 +467,6 @@ function validateAppInputValues(value) {
         ...booleanKeys,
         ...numberKeys,
         'image_id_mapping_evidence',
-        'image_signature_preflight_prover_image_uri',
-        'image_signature_verifier_base_prover_image_uri',
-        'image_signature_verifier_reconciliation_desired_json',
-        'image_signature_verifier_reconciliation_desired_sha256',
-        'image_signature_verifier_reconciled_function_version',
-        'image_signature_verifier_selected_authority',
         'lambda_artifacts',
         'prover_security_group_ids',
         'prover_subnet_ids',
@@ -713,14 +475,7 @@ function validateAppInputValues(value) {
   for (const key of stringKeys) {
     requireValueType(value[key], 'string', `App Terraform baseline ${key}`);
   }
-  for (const key of [
-    'cloudfront_acm_certificate_arn',
-    'image_signature_preflight_prover_image_uri',
-    'image_signature_verifier_base_prover_image_uri',
-    'image_signature_verifier_reconciliation_desired_json',
-    'image_signature_verifier_reconciliation_desired_sha256',
-    'image_signature_verifier_reconciled_function_version',
-  ]) {
+  for (const key of ['cloudfront_acm_certificate_arn']) {
     requireValueType(value[key], 'string', `App Terraform baseline ${key}`, { nullable: true });
   }
   for (const key of booleanKeys) {
@@ -744,40 +499,6 @@ function validateAppInputValues(value) {
     );
   }
   validateLambdaArtifacts(value['lambda_artifacts']);
-  const desiredJson = value['image_signature_verifier_reconciliation_desired_json'];
-  const desiredSha256 = value['image_signature_verifier_reconciliation_desired_sha256'];
-  const reconciledFunctionVersion = value['image_signature_verifier_reconciled_function_version'];
-  if (
-    [desiredJson, desiredSha256, reconciledFunctionVersion].every((entry) => entry === null) === false &&
-    [desiredJson, desiredSha256, reconciledFunctionVersion].every((entry) => typeof entry === 'string') === false
-  ) {
-    throw new Error('App Terraform baseline verifier reconciliation authority must be wholly null or present.');
-  }
-  if (typeof desiredJson === 'string') {
-    if (
-      Buffer.byteLength(desiredJson, 'utf8') > 256 * 1024 ||
-      createHash('sha256').update(desiredJson).digest('hex') !== desiredSha256
-    ) {
-      throw new Error('App Terraform baseline verifier reconciliation desired JSON hash is invalid.');
-    }
-    try {
-      const parsed = JSON.parse(desiredJson);
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        throw new Error('not a record');
-      }
-    } catch {
-      throw new Error('App Terraform baseline verifier reconciliation desired JSON is invalid.');
-    }
-    parseSha256(desiredSha256, 'App Terraform baseline verifier reconciliation desired SHA-256');
-    requireString(
-      reconciledFunctionVersion,
-      'App Terraform baseline verifier reconciled FunctionVersion',
-      /^[1-9][0-9]*$/u,
-    );
-  }
-  validateSelectedVerifierAuthority(value['image_signature_verifier_selected_authority']);
-  validateRecoveryActivation(value['dynamodb_recovery_activation']);
-  requireValueType(value['dynamodb_recovery_phase'], 'string', 'App Terraform baseline dynamodb_recovery_phase');
 }
 
 /**
@@ -946,7 +667,7 @@ function validateTargetPublicHostnameInputs(hostname, certificate, context) {
  * @param {unknown} certificate
  * @param {unknown} contextValue
  */
-export function validateBootstrapOperatorInputIdentity(principals, hostname, certificate, contextValue) {
+function validateBootstrapOperatorInputIdentity(principals, hostname, certificate, contextValue) {
   const context = parseDeploymentLaneContext(contextValue);
   if (context.root.lane !== 'bootstrap') throw new Error('Bootstrap operator inputs require the Bootstrap lane.');
   const principalPattern = new RegExp(
@@ -995,237 +716,9 @@ export function validateTerraformBaselineInputIdentity(value, contextValue, opti
     assertInputIdentity(variables[name], expected, `Terraform baseline input ${name}`);
   }
 
-  if (inputs.root === 'bootstrap') {
-    validateBootstrapOperatorInputIdentity(
-      variables['backend_principal_arns'],
-      variables['development_app_public_hostname'],
-      variables['development_app_cloudfront_acm_certificate_arn'],
-      context,
-    );
-    assertInputIdentity(
-      variables['control_source_sha'],
-      context.source.requestedControlSourceSha,
-      'Bootstrap Terraform baseline control source',
-    );
-    assertInputIdentity(
-      variables['github_full_repository_id'],
-      context.source.repository,
-      'Bootstrap Terraform baseline repository',
-    );
-    assertInputIdentity(
-      variables['source_branch'],
-      context.source.branch,
-      'Bootstrap Terraform baseline source branch',
-    );
-    for (const name of [
-      'enable_development_pipeline',
-      'enable_development_foundation_pipeline',
-      'enable_development_app_pipeline',
-    ]) {
-      assertInputIdentity(variables[name], true, `Bootstrap Terraform baseline input ${name}`);
-    }
-    if (
-      typeof variables['terraform_version'] !== 'string' ||
-      !TERRAFORM_VERSION_PATTERN.test(variables['terraform_version'])
-    ) {
-      throw new Error('Bootstrap Terraform baseline Terraform version is invalid.');
-    }
-    if (options.terraformVersion !== undefined) {
-      assertInputIdentity(
-        variables['terraform_version'],
-        options.terraformVersion,
-        'Bootstrap Terraform baseline Terraform version',
-      );
-    }
-    if (options.stateBucketName !== undefined) {
-      assertInputIdentity(
-        variables['state_bucket_name'],
-        options.stateBucketName,
-        'Bootstrap Terraform baseline state bucket',
-      );
-    }
-    if (options.stateKmsAlias !== undefined) {
-      assertInputIdentity(
-        variables['state_kms_alias'],
-        options.stateKmsAlias,
-        'Bootstrap Terraform baseline state KMS alias',
-      );
-    }
-    if (options.stateKmsKeyArn !== undefined) {
-      const keyId =
-        typeof options.stateKmsKeyArn === 'string'
-          ? options.stateKmsKeyArn.match(/^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key\/([0-9a-f-]{36})$/u)?.[1]
-          : undefined;
-      if (keyId === undefined) {
-        throw new Error('Terraform baseline state KMS key ARN is invalid.');
-      }
-      assertInputIdentity(variables['state_kms_key_id'], keyId, 'Bootstrap Terraform baseline state KMS key');
-    }
-  } else if (inputs.root === 'app') {
-    validateTargetPublicHostnameInputs(
-      variables['public_hostname'],
-      variables['cloudfront_acm_certificate_arn'],
-      context,
-    );
-    if (
-      context.target.environmentId === 'main' &&
-      !['external-dns-acm', 'foundation-owned-dns-acm'].includes(String(variables['public_hostname_disposition']))
-    ) {
-      throw new Error('Production App must use its explicit public hostname and ACM certificate.');
-    }
-    if (context.target.environmentId === 'main') {
-      const origin = variables['verifier_public_base_url'];
-      const hostname = /** @type {string} */ (variables['public_hostname']);
-      if (
-        typeof origin !== 'string' ||
-        origin.toLowerCase().replace(/\/$/u, '') !== `https://${hostname.toLowerCase()}`
-      ) {
-        throw new Error('Production App public origin must match its configured public hostname.');
-      }
-    }
-    assertInputIdentity(
-      variables['app_source_sha'],
-      context.source.selectedApplicationSourceSha,
-      'App Terraform baseline selected source',
-    );
-    if (variables['deploy_mode'] !== 'normal' && variables['deploy_mode'] !== 'rollback') {
-      throw new Error('App Terraform baseline deployment mode is invalid.');
-    }
-    if (options.deploymentMode !== undefined) {
-      assertInputIdentity(variables['deploy_mode'], options.deploymentMode, 'App Terraform baseline deployment mode');
-    }
-    if (typeof variables['deployment_id'] !== 'string' || !/^dep_[0-9a-f]{32}$/u.test(variables['deployment_id'])) {
-      throw new Error('App Terraform baseline deployment ID is invalid.');
-    }
-    assertInputIdentity(
-      variables['develop_operator_gate_enabled'],
-      context.target.environmentId === 'develop',
-      'App Terraform baseline develop operator gate',
-    );
-    assertInputIdentity(
-      variables['image_signature_verifier_permissions_boundary_arn'],
-      `arn:${context.target.partition}:iam::${context.target.accountId}:policy/${context.names.signatureVerifierPermissionsBoundary}`,
-      'App Terraform baseline verifier permissions boundary',
-    );
-    const activation = variables['dynamodb_recovery_activation'];
-    if (activation !== null) {
-      if (!isPlainRecord(activation)) {
-        throw new Error('App Terraform baseline recovery activation is invalid.');
-      }
-      for (const [name, expected] of Object.entries({
-        account_alias: context.target.accountLabel,
-        account_id: context.target.accountId,
-        deployment_environment: context.target.environmentId,
-        region: context.target.region,
-      })) {
-        assertInputIdentity(activation[name], expected, `App Terraform baseline recovery ${name}`);
-      }
-    }
-  }
+  if (inputs.root === 'bootstrap') validateBootstrapBaselineIdentity(variables, context, options);
+  else if (inputs.root === 'app') validateAppBaselineIdentity(variables, context, options);
   return inputs;
-}
-
-/**
- * @param {unknown} value
- * @param {unknown} expectedProjectName
- * @returns {string}
- */
-export function validateCodeBuildBuildId(value, expectedProjectName) {
-  if (
-    typeof value !== 'string' ||
-    typeof expectedProjectName !== 'string' ||
-    expectedProjectName.length === 0 ||
-    value.length > 512 ||
-    !value.startsWith(`${expectedProjectName}:`)
-  ) {
-    throw new Error('CodeBuild build ID does not match its exact project authority.');
-  }
-  const attemptId = value.slice(expectedProjectName.length + 1);
-  try {
-    requireGroupedLowercaseUuid(attemptId, 'CodeBuild build attempt ID');
-  } catch (error) {
-    throw new Error('CodeBuild build ID does not match its exact project authority.', { cause: error });
-  }
-  return value;
-}
-
-/**
- * @param {unknown} value
- * @param {unknown} contextValue
- * @param {CodeBuildRuntimeEvidenceOptions} [options]
- * @returns {CodeBuildRuntimeEvidence}
- */
-export function validateCodeBuildRuntimeEvidence(value, contextValue, options = undefined) {
-  const context = parseDeploymentLaneContext(contextValue);
-  const target = resolveAllowedDeploymentTarget(`${context.target.accountLabel}/${context.target.environmentId}`);
-  const lane = parseRoot(context.root.lane);
-  const projectKeyValue =
-    options === undefined
-      ? 'terraformPlanProject'
-      : exactKeys(options, ['projectKey'], 'CodeBuild runtime authority options')['projectKey'];
-  if (
-    (projectKeyValue !== 'terraformPlanProject' && projectKeyValue !== 'appSignaturePreflightPlanProject') ||
-    (projectKeyValue === 'appSignaturePreflightPlanProject' && lane !== 'app')
-  ) {
-    throw new Error('CodeBuild runtime project authority is invalid.');
-  }
-  const projectKey = projectKeyValue;
-  const record = exactKeys(value, CODEBUILD_RUNTIME_KEYS, 'CodeBuild runtime evidence');
-  const project = exactKeys(record['project'], CODEBUILD_RUNTIME_PROJECT_KEYS, 'CodeBuild runtime project');
-  const runtime = exactKeys(record['runtime'], CODEBUILD_RUNTIME_CONFIGURATION_KEYS, 'CodeBuild runtime configuration');
-  const expectedProjectName = context.names[projectKey];
-  const expectedProjectArn = `arn:${context.target.partition}:codebuild:${context.target.region}:${context.target.accountId}:project/${expectedProjectName}`;
-  let buildId;
-  try {
-    buildId = validateCodeBuildBuildId(project['buildId'], expectedProjectName);
-  } catch (error) {
-    throw new Error('CodeBuild runtime evidence does not match the Terraform Plan project authority.', {
-      cause: error,
-    });
-  }
-  if (
-    record['evidenceType'] !== 'codebuild-runtime' ||
-    record['targetKey'] !== target.targetKey ||
-    record['lane'] !== context.root['lane'] ||
-    record['stateIdentity'] !== context.root['stateIdentity'] ||
-    record['sourceSha'] !== context.source.frameworkSourceSha ||
-    project['key'] !== projectKey ||
-    project['name'] !== expectedProjectName ||
-    project['arn'] !== expectedProjectArn
-  ) {
-    throw new Error('CodeBuild runtime evidence does not match the Terraform Plan project authority.');
-  }
-  if (
-    typeof runtime['configuredImage'] !== 'string' ||
-    !isManagedCodeBuildImageIdentifier(runtime['configuredImage']) ||
-    typeof runtime['observedImage'] !== 'string' ||
-    !isManagedCodeBuildImageIdentifier(runtime['observedImage']) ||
-    runtime['computeType'] !== 'BUILD_GENERAL1_SMALL' ||
-    runtime['environmentType'] !== 'LINUX_CONTAINER' ||
-    runtime['privilegedMode'] !== false
-  ) {
-    throw new Error('CodeBuild runtime evidence does not match the admitted Terraform Plan runtime.');
-  }
-  return deepFreeze({
-    evidenceType: 'codebuild-runtime',
-    targetKey: target.targetKey,
-    lane,
-    stateIdentity: context.root.stateIdentity,
-    sourceSha: context.source.frameworkSourceSha,
-    project: {
-      key: projectKey,
-      name: expectedProjectName,
-      arn: expectedProjectArn,
-      buildId,
-    },
-    runtime: {
-      configuredImage: runtime['configuredImage'],
-      observedImage: runtime['observedImage'],
-      computeType: 'BUILD_GENERAL1_SMALL',
-      environmentType: 'LINUX_CONTAINER',
-      privilegedMode: false,
-    },
-  });
 }
 
 /**
@@ -1307,4 +800,240 @@ export function validateTerraformBaselineProviderLock(body, terraformIdentity) {
     throw new Error('Terraform baseline provider lock does not use the exact generated AWS provider shape.');
   }
   return bytes;
+}
+
+/**
+ * Bind reviewed nonsecret operator settings to the exact source/target. The
+ * source controls these settings; changing them receives the ordinary full
+ * Terraform plan and approval, independent of any previous acceptance shape.
+ * @param {unknown} contextValue
+ * @param {unknown} configurationValue
+ */
+export function buildBootstrapConfiguredInputs(contextValue, configurationValue) {
+  const context = parseDeploymentLaneContext(contextValue);
+  if (context.root.lane !== 'bootstrap') throw new Error('Bootstrap configuration requires the Bootstrap root.');
+  const config = exactKeys(
+    configurationValue,
+    ['backendPrincipalRolePaths', 'cloudfrontCertificateId', 'publicHostname', 'stateKmsKeyId'],
+    'Bootstrap operator configuration',
+  );
+  const hostname = config['publicHostname'];
+  if (
+    typeof hostname !== 'string' ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/u.test(
+      hostname,
+    )
+  )
+    throw new Error('Bootstrap public hostname is invalid.');
+  const rolePaths = config['backendPrincipalRolePaths'];
+  if (
+    !Array.isArray(rolePaths) ||
+    rolePaths.length === 0 ||
+    new Set(rolePaths).size !== rolePaths.length ||
+    rolePaths.some((role) => typeof role !== 'string' || !/^[A-Za-z0-9+=,.@_/-]+$/u.test(role))
+  )
+    throw new Error('Bootstrap backend principal role paths are invalid.');
+  const keyId = config['stateKmsKeyId'];
+  const certificateId = config['cloudfrontCertificateId'];
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+  if (
+    typeof keyId !== 'string' ||
+    !uuid.test(keyId) ||
+    (certificateId !== null && (typeof certificateId !== 'string' || !uuid.test(certificateId)))
+  )
+    throw new Error('Bootstrap KMS key and certificate identities are invalid.');
+  const target = context.target;
+  const values = {
+    account_alias: target.accountLabel,
+    aws_account_id: target.accountId,
+    aws_region: target.region,
+    backend_principal_arns: rolePaths.map((role) => `arn:${target.partition}:iam::${target.accountId}:role/${role}`),
+    control_source_sha: context.source.requestedControlSourceSha,
+    deployment_environment: target.environmentId,
+    development_app_cloudfront_acm_certificate_arn:
+      certificateId === null
+        ? null
+        : `arn:${target.partition}:acm:us-east-1:${target.accountId}:certificate/${certificateId}`,
+    development_app_public_hostname: config['publicHostname'],
+    enable_development_app_pipeline: true,
+    enable_development_foundation_pipeline: true,
+    enable_development_pipeline: true,
+    github_full_repository_id: context.source.repository,
+    project_name: context.project.projectId,
+    source_branch: context.source.branch,
+    state_backend_key: context.root.backendKey,
+    state_bucket_name: context.names.terraformStateBucket,
+    state_kms_alias: context.names.terraformStateKmsAlias,
+    state_kms_key_id: keyId,
+    state_scope: context.root.scope,
+    terraform_version: '1.17.0',
+  };
+  return validateTerraformBaselineInputIdentity(
+    buildTerraformBaselineNonsecretInputs('bootstrap', {
+      variables: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { value }])),
+    }),
+    context,
+    {
+      stateBucketName: context.names.terraformStateBucket,
+      stateKmsAlias: context.names.terraformStateKmsAlias,
+      terraformVersion: '1.17.0',
+    },
+  );
+}
+
+/** @typedef {ReturnType<typeof parseDeploymentLaneContext>} DeploymentContext */
+/** @param {Record<string, unknown>} variables @param {DeploymentContext} context @param {TerraformInputIdentityOptions} options */
+function validateBootstrapBaselineIdentity(variables, context, options) {
+  validateBootstrapOperatorInputIdentity(
+    variables['backend_principal_arns'],
+    variables['development_app_public_hostname'],
+    variables['development_app_cloudfront_acm_certificate_arn'],
+    context,
+  );
+  assertInputIdentity(
+    variables['control_source_sha'],
+    context.source.requestedControlSourceSha,
+    'Bootstrap Terraform baseline control source',
+  );
+  assertInputIdentity(
+    variables['github_full_repository_id'],
+    context.source.repository,
+    'Bootstrap Terraform baseline repository',
+  );
+  assertInputIdentity(variables['source_branch'], context.source.branch, 'Bootstrap Terraform baseline source branch');
+  for (const name of [
+    'enable_development_pipeline',
+    'enable_development_foundation_pipeline',
+    'enable_development_app_pipeline',
+  ]) {
+    assertInputIdentity(variables[name], true, `Bootstrap Terraform baseline input ${name}`);
+  }
+  if (
+    typeof variables['terraform_version'] !== 'string' ||
+    !TERRAFORM_VERSION_PATTERN.test(variables['terraform_version'])
+  ) {
+    throw new Error('Bootstrap Terraform baseline Terraform version is invalid.');
+  }
+  validateBootstrapExpectedInputs(variables, options);
+}
+/** @param {Record<string, unknown>} variables @param {TerraformInputIdentityOptions} options */
+function validateBootstrapExpectedInputs(variables, options) {
+  if (options.terraformVersion !== undefined) {
+    assertInputIdentity(
+      variables['terraform_version'],
+      options.terraformVersion,
+      'Bootstrap Terraform baseline Terraform version',
+    );
+  }
+  if (options.stateBucketName !== undefined) {
+    assertInputIdentity(
+      variables['state_bucket_name'],
+      options.stateBucketName,
+      'Bootstrap Terraform baseline state bucket',
+    );
+  }
+  if (options.stateKmsAlias !== undefined) {
+    assertInputIdentity(
+      variables['state_kms_alias'],
+      options.stateKmsAlias,
+      'Bootstrap Terraform baseline state KMS alias',
+    );
+  }
+  validateBootstrapExpectedKmsKey(variables, options.stateKmsKeyArn);
+}
+/** @param {Record<string, unknown>} variables @param {string|undefined} keyArn */
+function validateBootstrapExpectedKmsKey(variables, keyArn) {
+  if (keyArn !== undefined) {
+    const keyId =
+      typeof keyArn === 'string'
+        ? keyArn.match(/^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key\/([0-9a-f-]{36})$/u)?.[1]
+        : undefined;
+    if (keyId === undefined) {
+      throw new Error('Terraform baseline state KMS key ARN is invalid.');
+    }
+    assertInputIdentity(variables['state_kms_key_id'], keyId, 'Bootstrap Terraform baseline state KMS key');
+  }
+}
+/** @param {Record<string, unknown>} variables @param {DeploymentContext} context @param {TerraformInputIdentityOptions} options */
+function validateAppBaselineIdentity(variables, context, options) {
+  validateTargetPublicHostnameInputs(
+    variables['public_hostname'],
+    variables['cloudfront_acm_certificate_arn'],
+    context,
+  );
+  validateProductionAppOrigin(variables, context);
+  assertInputIdentity(
+    variables['app_source_sha'],
+    context.source.selectedApplicationSourceSha,
+    'App Terraform baseline selected source',
+  );
+  if (variables['deploy_mode'] !== 'normal') {
+    throw new Error('App Terraform baseline deployment mode is invalid.');
+  }
+  if (options.deploymentMode !== undefined) {
+    assertInputIdentity(variables['deploy_mode'], options.deploymentMode, 'App Terraform baseline deployment mode');
+  }
+  if (typeof variables['deployment_id'] !== 'string' || !/^dep_[0-9a-f]{32}$/u.test(variables['deployment_id'])) {
+    throw new Error('App Terraform baseline deployment ID is invalid.');
+  }
+  assertInputIdentity(
+    variables['develop_operator_gate_enabled'],
+    context.target.environmentId === 'develop',
+    'App Terraform baseline develop operator gate',
+  );
+  assertInputIdentity(
+    variables['image_signature_verifier_permissions_boundary_arn'],
+    `arn:${context.target.partition}:iam::${context.target.accountId}:policy/${context.names.signatureVerifierPermissionsBoundary}`,
+    'App Terraform baseline verifier permissions boundary',
+  );
+}
+/** @param {Record<string, unknown>} variables @param {DeploymentContext} context */
+function validateProductionAppOrigin(variables, context) {
+  if (
+    context.target.environmentId === 'main' &&
+    !['external-dns-acm', 'foundation-owned-dns-acm'].includes(String(variables['public_hostname_disposition']))
+  ) {
+    throw new Error('Production App must use its explicit public hostname and ACM certificate.');
+  }
+  if (context.target.environmentId === 'main') {
+    const origin = variables['verifier_public_base_url'];
+    const hostname = /** @type {string} */ (variables['public_hostname']);
+    if (
+      typeof origin !== 'string' ||
+      origin.toLowerCase().replace(/\/$/u, '') !== `https://${hostname.toLowerCase()}`
+    ) {
+      throw new Error('Production App public origin must match its configured public hostname.');
+    }
+  }
+}
+
+/** @param {unknown} contentBase64 */
+function decodeNonsecretInputBytes(contentBase64) {
+  if (
+    typeof contentBase64 !== 'string' ||
+    contentBase64.length === 0 ||
+    !CANONICAL_BASE64_PATTERN.test(contentBase64)
+  ) {
+    throw new Error('Terraform baseline nonsecret input content is invalid.');
+  }
+  const body = Buffer.from(contentBase64, 'base64');
+  if (
+    body.length === 0 ||
+    body.length > MAX_NONSECRET_INPUT_BYTES ||
+    body.includes(0) ||
+    body.toString('base64') !== contentBase64
+  ) {
+    throw new Error('Terraform baseline nonsecret input content is invalid.');
+  }
+  return { body, contentBase64 };
+}
+
+/** @param {Record<string,unknown>} artifact @param {string} name */
+function validateLambdaArtifactFieldTypes(artifact, name) {
+  for (const key of LAMBDA_ARTIFACT_KEYS) {
+    const nullable = key === 'asset_manifest_sha256' || key === 'trust_root_sha256';
+    requireValueType(artifact[key], 'string', `App Terraform baseline lambda_artifacts.${name}.${key}`, {
+      nullable,
+    });
+  }
 }

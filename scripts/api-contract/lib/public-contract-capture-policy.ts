@@ -1,3 +1,4 @@
+import { normalizeJsonKeys as stableNormalize } from '../../validation/canonical-json';
 import type * as ESTree from 'oxc-parser';
 import {
   forEachChild,
@@ -17,7 +18,6 @@ import type { BaselineApiRouteContract } from '../typed-route-baseline-projectio
 import {
   computePublicContractHash,
   PUBLIC_CONTRACT_COMPARATOR_TYPE,
-  stableNormalize,
   stableStringify,
   type MountedBehaviorCoverageEntry,
   type MountedBehaviorProbeSnapshot,
@@ -26,7 +26,7 @@ import {
   type SchemaSemanticSnapshot,
 } from './public-contract-policy';
 
-export const DETERMINISTIC_PUBLIC_CONTRACT_CAPTURED_AT = '1970-01-01T00:00:00.000Z';
+const DETERMINISTIC_PUBLIC_CONTRACT_CAPTURED_AT = '1970-01-01T00:00:00.000Z';
 const SCHEMA_INDEX_RELATIVE_PATH = 'packages/api-contract/src/schemas/index.ts';
 
 export interface ParsedRouteRegistration {
@@ -75,21 +75,25 @@ export function normalizeRouteContracts(
     .sort((left, right) => `${left.method} ${left.path}`.localeCompare(`${right.method} ${right.path}`));
 }
 
+function typedRouteArgument(node: ESTree.CallExpression): ESTree.Node | undefined {
+  const routeArgumentIndex =
+    staticText(node.callee) === 'mountRoute'
+      ? 3
+      : staticText(node.callee) === 'mountArtifactRoute' ||
+          staticText(node.callee) === 'defineRouteHandler' ||
+          staticText(node.callee) === 'defineRawRouteHandler'
+        ? 0
+        : undefined;
+  return routeArgumentIndex === undefined ? undefined : node.arguments[routeArgumentIndex];
+}
+
 export function parseTypedMountedRouteKeys(honoSource: string): string[] {
-  const sourceFile = parseSource('apps/api/src/server/api/routes/hono.ts', honoSource);
+  const sourceFile = parseSource('apps/api/src/server/api/routes/honoBindings.ts', honoSource);
   const routeKeys: string[] = [];
 
   function visit(node: ESTree.Node): void {
     if (isNode(node, 'CallExpression') && isNode(node.callee, 'Identifier')) {
-      const routeArgumentIndex =
-        staticText(node.callee) === 'mountRoute'
-          ? 3
-          : staticText(node.callee) === 'mountArtifactRoute' ||
-              staticText(node.callee) === 'defineRouteHandler' ||
-              staticText(node.callee) === 'defineRawRouteHandler'
-            ? 0
-            : undefined;
-      const routeArgument = routeArgumentIndex === undefined ? undefined : node.arguments[routeArgumentIndex];
+      const routeArgument = typedRouteArgument(node);
       if (
         routeArgument &&
         isStaticMember(routeArgument) &&
@@ -182,7 +186,7 @@ export function buildMountedRoutes(
   });
 }
 
-export function exportedSchemaDeclarations(module: SchemaSourceModule): Array<{
+function exportedSchemaDeclarations(module: SchemaSourceModule): Array<{
   name: string;
   source: string;
 }> {

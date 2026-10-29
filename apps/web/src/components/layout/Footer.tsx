@@ -11,7 +11,7 @@ const PUBLIC_REPOSITORY_URL = 'https://github.com/hwatanabe-jp/stark-ballot-simu
 
 export function Footer(): React.ReactElement {
   const { t } = useTranslation();
-  const currentYear = new Date().getFullYear();
+  const [currentYear] = React.useState(() => new Date().getFullYear());
   const hasActiveSession = useHasActiveSession({ fallback: true });
 
   return (

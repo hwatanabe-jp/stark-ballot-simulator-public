@@ -456,13 +456,6 @@ describe('FileMockSessionStore exact records', () => {
     consumeSnapshotWarnings(1);
   });
 
-  it('fails closed when addBotVotes is called before the user vote exists', async () => {
-    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).resolves.toEqual({
-      ok: false,
-      error: { code: 'USER_NOT_VOTED' },
-    });
-  });
-
   it('fails closed when persisted participation points at a non-canonical user index', async () => {
     await store.addVote(sessionId, buildVote('A', 'a'));
     await mutateSnapshot((snapshot) => {
@@ -1220,10 +1213,6 @@ describe('FileMockSessionStore exact records', () => {
     );
     expect(await readSnapshot()).toEqual(before);
     consumeSnapshotWarnings(3);
-  });
-
-  it('does not expose generic finalization metadata updates', () => {
-    expect('updateFinalizationArtifactMetadata' in store).toBe(false);
   });
 
   it('does not expose generic session updates', () => {

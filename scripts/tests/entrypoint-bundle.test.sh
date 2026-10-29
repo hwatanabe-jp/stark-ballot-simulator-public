@@ -2,6 +2,11 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+if ! timeout --version | grep -q '^timeout (GNU coreutils) '; then
+  echo "The prover entrypoint harness requires GNU Coreutils timeout, as in the Amazon Linux prover image." >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENTRYPOINT_PATH="${ROOT_DIR}/infra/docker/entrypoint.sh"
 SEMANTIC_CONTRACT_PATH="${ROOT_DIR}/zkvm/contract-core/src/current-zkvm-semantic-contract.json"
@@ -146,6 +151,62 @@ fi
 grep -q "target-aws-async is required for S3-backed async prover execution" "$profile_error"
 
 RUNTIME_PROFILE=local-proof-production validate_production_proof_mode
+
+# Batch start admission must follow queue wait and precede all proof/data work.
+(
+  export INPUT_S3_BUCKET=private-input-canary
+  export AWS_REGION=ap-northeast-1 AWS_BATCH_JOB_ID=job-fixture
+  export PROVER_START_ADMISSION_FUNCTION=fixture-finalizer
+  export FINALIZATION_ID=01J00000000000000000000000
+  export PROVER_EXECUTION_ARN=arn:aws:states:ap-northeast-1:123456789012:execution:fixture:01J00000000000000000000000
+  export PROVER_START_PAYLOAD='{"sessionId":"private-session-canary","finalizationId":"01J00000000000000000000000","queuedAtMs":1720000000000}'
+  admission_calls="${tmp_dir}/admission-calls"
+  admission_request="${tmp_dir}/admission-request.json"
+  mock_response='{"status":"success","sessionId":"private-session-canary","state":{"finalizationId":"01J00000000000000000000000","status":"running"}}'
+  mock_metadata='{"StatusCode":200}'
+  mock_exit=0
+  aws() {
+    [[ "$1 $2" == 'lambda invoke' ]] || { echo 'Unexpected AWS data operation' >&2; return 90; }
+    printf 'invoke\n' >>"$admission_calls"
+    local args=("$@") request_path=''
+    for arg in "${args[@]}"; do
+      if [[ "$arg" == fileb://* ]]; then request_path="${arg#fileb://}"; fi
+    done
+    cp "$request_path" "$admission_request"
+    printf '%s' "$mock_response" >"${args[${#args[@]}-1]}"
+    printf '%s' "$mock_metadata"
+    return "$mock_exit"
+  }
+  admit_batch_prover_start
+  jq -e '.status == "RUNNING" and .payload.sessionId == "private-session-canary" and .payload.queuedAtMs == 1720000000000 and (.startedAtIso | endswith("Z"))' "$admission_request" >/dev/null
+  for scenario in cancelled superseded missing malformed function_error transport_error invalid_payload missing_config; do
+    (
+      case "$scenario" in
+        cancelled) mock_response="$(printf '%s' "$mock_response" | jq '.state.status = "failed"')" ;;
+        superseded) mock_response="$(printf '%s' "$mock_response" | jq '.state.finalizationId = "another-finalization"')" ;;
+        missing) mock_response='{"status":"success","sessionId":"private-session-canary"}' ;;
+        malformed) mock_response='not-json-private-canary' ;;
+        function_error) mock_metadata='{"StatusCode":200,"FunctionError":"Unhandled"}' ;;
+        transport_error) mock_exit=1 ;;
+        invalid_payload) PROVER_START_PAYLOAD='{}' ;;
+        missing_config) unset PROVER_START_ADMISSION_FUNCTION ;;
+      esac
+      # Invoke the real main so rejection is checked before any later hooks.
+      main
+    ) >"${tmp_dir}/admission-${scenario}.log" 2>&1 && {
+      echo "Batch start must reject $scenario" >&2
+      exit 1
+    }
+    grep -q 'Batch prover start' "${tmp_dir}/admission-${scenario}.log"
+    if grep -Eq 'private-.*canary|Unexpected AWS data operation|prover_summary|failure-marker' "${tmp_dir}/admission-${scenario}.log"; then
+      echo "Rejected Batch start leaked input or proceeded to proof/data work: $scenario" >&2
+      exit 1
+    fi
+  done
+  before_local="$(wc -l <"$admission_calls")"
+  INPUT_S3_BUCKET='' admit_batch_prover_start
+  [[ "$(wc -l <"$admission_calls")" == "$before_local" ]]
+)
 
 aws_log="${tmp_dir}/aws-args.txt"
 aws() {
@@ -818,9 +879,9 @@ signal_probe="${tmp_dir}/signal-probe.sh"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'printf "%s\n" "$$" >"$PROBE_STARTED_PATH"' \
   'trap '\''printf "TERM\n" >"$PROBE_SIGNAL_PATH"; if [[ "${PROBE_IGNORE_SIGNAL:-0}" != "1" ]]; then exit 143; fi'\'' TERM' \
   'trap '\''printf "INT\n" >"$PROBE_SIGNAL_PATH"; exit 130'\'' INT' \
+  'printf "%s\n" "$$" >"$PROBE_STARTED_PATH"' \
   'while :; do sleep 0.1; done' \
   >"$signal_probe"
 chmod +x "$signal_probe"
@@ -876,8 +937,11 @@ environment.update(
 )
 
 with open(log_path, "w", encoding="utf-8") as log_handle:
+    # CI launchers may ignore INT. Deliberately inherit that disposition here;
+    # the isolated probe must restore it before Bash installs its traps.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     process = subprocess.Popen(
-        ["bash", entrypoint],
+        ["env", "--default-signal=INT,QUIT,TERM", "bash", entrypoint],
         env=environment,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
@@ -1255,14 +1319,16 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle)
 PY
 
+drifted_close_statement_log="${tmp_dir}/drifted-close-statement.log"
 if validate_public_audit_artifacts \
   "$journal_path" \
   "${output_dir}/public-input.json" \
   "${output_dir}/election-manifest.json" \
-  "$drifted_close_statement_path"; then
+  "$drifted_close_statement_path" >"$drifted_close_statement_log" 2>&1; then
   echo "validate_public_audit_artifacts should fail on drifted close statement"
   exit 1
 fi
+grep -q "close-statement drifted from proof authority" "$drifted_close_statement_log"
 
 duplicate_index_journal_path="${tmp_dir}/duplicate-index-journal.json"
 duplicate_index_public_input_path="${tmp_dir}/duplicate-index-public-input.json"
@@ -1336,31 +1402,36 @@ with open(missing_seen_path, "w", encoding="utf-8") as handle:
     json.dump(missing_seen, handle)
 PY
 
-if convert_output_to_journal "$input_json" "$legacy_output_json" "${tmp_dir}/legacy-journal.json"; then
+invalid_output_log="${tmp_dir}/invalid-output.log"
+if convert_output_to_journal "$input_json" "$legacy_output_json" "${tmp_dir}/legacy-journal.json" >"$invalid_output_log" 2>&1; then
   echo "convert_output_to_journal should reject legacy snake_case output"
   exit 1
 fi
+grep -q 'unknown field `election_id`' "$invalid_output_log"
 
 if convert_output_to_journal \
   "$input_json" \
   "$unsupported_version_output_json" \
-  "${tmp_dir}/unsupported-journal.json"; then
+  "${tmp_dir}/unsupported-journal.json" >"$invalid_output_log" 2>&1; then
   echo "convert_output_to_journal should reject unsupported methodVersion output"
   exit 1
 fi
+grep -q "unsupported methodVersion" "$invalid_output_log"
 
 if convert_output_to_journal \
   "$input_json" \
   "$missing_seen_bitmap_output_json" \
-  "${tmp_dir}/missing-seen-journal.json"; then
+  "${tmp_dir}/missing-seen-journal.json" >"$invalid_output_log" 2>&1; then
   echo "convert_output_to_journal should reject output without seenBitmapRoot"
   exit 1
 fi
+grep -q 'missing field `seenBitmapRoot`' "$invalid_output_log"
 
-if build_public_input "$input_json" "$legacy_output_json" "${tmp_dir}/legacy-public-input.json"; then
+if build_public_input "$input_json" "$legacy_output_json" "${tmp_dir}/legacy-public-input.json" >"$invalid_output_log" 2>&1; then
   echo "build_public_input should reject legacy snake_case output"
   exit 1
 fi
+grep -q 'unknown field `election_id`' "$invalid_output_log"
 
 timeout_probe="${tmp_dir}/timeout-probe.sh"
 printf '%s\n' \

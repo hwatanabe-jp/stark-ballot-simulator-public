@@ -15,6 +15,11 @@ resource "terraform_data" "skeletal_app_lane" {
 
   lifecycle {
     precondition {
+      condition     = !local.application_quiesced || var.deployment_environment == "develop"
+      error_message = "Application maintenance admission is develop-only."
+    }
+
+    precondition {
       condition     = local.deployment_target_inputs_exact
       error_message = "App inputs must match the exact reviewed caller target and lane configuration."
     }
@@ -51,23 +56,8 @@ resource "terraform_data" "skeletal_app_lane" {
       error_message = "Public session creation requires main with server-side Turnstile or a configured develop operator-gate key group."
     }
 
-    precondition {
-      condition     = var.dynamodb_recovery_activation == null ? true : var.dynamodb_recovery_activation.kms_key_arn == aws_kms_key.app_data.arn
-      error_message = "dynamodb_recovery_activation must retain the Terraform-owned app-data KMS key."
-    }
-
-    precondition {
-      condition = (
-        var.dynamodb_recovery_phase == "primary_active"
-        ? var.dynamodb_recovery_activation == null
-        : var.dynamodb_recovery_activation != null
-      )
-      error_message = "primary_active requires a null dynamodb_recovery_activation; every transition phase requires one validated manifest."
-    }
   }
 }
-
-
 
 check "target_public_session_turnstile_gate" {
   assert {

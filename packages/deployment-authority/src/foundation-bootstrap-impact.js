@@ -1,5 +1,5 @@
-import { snapshotDataTree, snapshotExactRecord } from './descriptor-snapshot.js';
-import { deepFreeze, requireString } from './internal.js';
+import { hasDenseArrayOwnKeys, deepFreeze, requireString } from './internal.js';
+import { copyArrayDataEntries, snapshotDataTree, snapshotExactRecord } from './descriptor-snapshot.js';
 
 const INPUT_KEYS = ['changedAddresses', 'outputChanges'];
 const CHANGED_ADDRESS_KEYS = [
@@ -72,22 +72,8 @@ function denseArray(value, label) {
   if (!Array.isArray(value) || value.length > MAX_CHANGES) {
     throw new Error(`${label} must be a bounded dense array.`);
   }
-  const entries = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-      throw new Error(`${label} must be a bounded dense array.`);
-    }
-    entries.push(descriptor.value);
-  }
-  if (
-    Reflect.ownKeys(value).length !== value.length + 1 ||
-    Reflect.ownKeys(value).some(
-      (key) =>
-        typeof key !== 'string' ||
-        (key !== 'length' && (!/^(?:0|[1-9][0-9]*)$/u.test(key) || Number(key) >= value.length)),
-    )
-  ) {
+  const entries = copyArrayDataEntries(value, value.length, `${label} must be a bounded dense array.`);
+  if (!hasDenseArrayOwnKeys(Reflect.ownKeys(value), value.length)) {
     throw new Error(`${label} must be a bounded dense array.`);
   }
   return entries;
@@ -123,7 +109,7 @@ function unindexedAddress(address) {
  * @param {unknown} value
  * @returns {boolean}
  */
-export function isFoundationBootstrapResourceAddress(value) {
+function isFoundationBootstrapResourceAddress(value) {
   if (
     typeof value !== 'string' ||
     Buffer.byteLength(value, 'utf8') > MAX_ADDRESS_BYTES ||
@@ -144,28 +130,7 @@ export function isFoundationBootstrapResourceAddress(value) {
   if (resourceType === undefined || resourceName === undefined) {
     return false;
   }
-  if (FOUNDATION_SHARED_RESOURCE_ADDRESSES.has(`${resourceType}.${resourceName}`)) {
-    return true;
-  }
-  if (FOUNDATION_APP_STATUS_RESOURCE_NAMES.has(resourceName)) {
-    return true;
-  }
-  if (resourceName.includes('foundation')) {
-    return true;
-  }
-  if (
-    resourceName.startsWith('terraform_drift_runner') ||
-    /^(?:terraform_drift_app|terraform_drift_bootstrap)$/u.test(resourceName)
-  ) {
-    return true;
-  }
-  if (
-    FOUNDATION_STATE_RESOURCE_NAMES.has(resourceName) &&
-    (resourceName !== 'state' || FOUNDATION_STATE_RESOURCE_TYPES.has(resourceType))
-  ) {
-    return true;
-  }
-  return FOUNDATION_CAPABILITY_RESOURCE_NAME_PREFIXES.some((prefix) => resourceName.startsWith(prefix));
+  return isFoundationResourceIdentity(resourceType, resourceName);
 }
 
 /** @param {unknown} value @param {string} label @returns {string[]} */
@@ -267,4 +232,30 @@ export function classifyFoundationBootstrapImpact(value) {
     changedAddresses: changedAddresses.sort(),
     changedOutputNames: outputNames.filter((name) => FOUNDATION_OUTPUT_NAMES.has(name)).sort(),
   });
+}
+
+/** @param {string} resourceType @param {string} resourceName */
+function isFoundationResourceIdentity(resourceType, resourceName) {
+  if (FOUNDATION_SHARED_RESOURCE_ADDRESSES.has(`${resourceType}.${resourceName}`)) {
+    return true;
+  }
+  if (FOUNDATION_APP_STATUS_RESOURCE_NAMES.has(resourceName)) {
+    return true;
+  }
+  if (resourceName.includes('foundation')) {
+    return true;
+  }
+  if (
+    resourceName.startsWith('terraform_drift_runner') ||
+    /^(?:terraform_drift_app|terraform_drift_bootstrap)$/u.test(resourceName)
+  ) {
+    return true;
+  }
+  if (
+    FOUNDATION_STATE_RESOURCE_NAMES.has(resourceName) &&
+    (resourceName !== 'state' || FOUNDATION_STATE_RESOURCE_TYPES.has(resourceType))
+  ) {
+    return true;
+  }
+  return FOUNDATION_CAPABILITY_RESOURCE_NAME_PREFIXES.some((prefix) => resourceName.startsWith(prefix));
 }

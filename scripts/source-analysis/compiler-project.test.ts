@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { loadCompilerProject } from './compiler-project';
 
 describe('compiler project ownership', () => {
-  it('resolves inherited options and file membership relative to the owning project', () => {
+  it('resolves inherited options and file membership relative to the owning project', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'compiler-project-'));
     try {
       mkdirSync(path.join(root, 'source'));
@@ -16,14 +16,14 @@ describe('compiler project ownership', () => {
       );
       writeFileSync(path.join(root, 'source/included.ts'), 'export {};');
       writeFileSync(path.join(root, 'source/excluded.ts'), 'export {};');
-      const project = loadCompilerProject(path.join(root, 'tsconfig.json'));
+      const project = await loadCompilerProject(path.join(root, 'tsconfig.json'));
       expect(project.options).toMatchObject({ strict: true, noEmit: true });
       expect(project.fileNames).toEqual([path.join(root, 'source/included.ts')]);
       writeFileSync(
         path.join(root, 'tsconfig.json'),
         JSON.stringify({ extends: './missing.json', files: ['source/included.ts'] }),
       );
-      expect(() => loadCompilerProject(path.join(root, 'tsconfig.json'))).toThrow();
+      await expect(loadCompilerProject(path.join(root, 'tsconfig.json'))).rejects.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

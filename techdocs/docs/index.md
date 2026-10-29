@@ -1,14 +1,16 @@
 # STARK Ballot Simulator
 
-STARK Ballot Simulator is a portfolio/demo application for end-to-end
-verifiable voting. Its public catalog describes the source components and API
+STARK Ballot Simulator is an educational demo and portfolio application for
+end-to-end verifiable voting. Its public catalog describes the source components and API
 without exposing deployment accounts, resource coordinates, or internal
 runbooks.
 
-Use these starting points:
+## Documentation
 
+- [System overview](https://specs.stark-ballot-sim.hwatanabe.dev/overview.html)
+  for the verification stages and their execution responsibilities.
 - [Public Specs](https://specs.stark-ballot-sim.hwatanabe.dev/) for the
-  normative protocol and verification model.
+  normative protocol, verification conditions, public evidence formats, and AWS architecture.
 - [Local quick start](https://github.com/hwatanabe-jp/stark-ballot-simulator-public#local-quick-start)
   for the mock development flow.
 - [Generated OpenAPI reference](https://github.com/hwatanabe-jp/stark-ballot-simulator-public/blob/main/openapi/stark-ballot-api.openapi.json)

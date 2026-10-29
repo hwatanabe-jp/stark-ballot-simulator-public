@@ -1,15 +1,6 @@
-import type { ApiError, ErrorCode, ErrorDetails } from '@stark-ballot/api-contract/errors/apiErrors';
-import { handleApiErrorResult, toApiErrorResult } from '@stark-ballot/api-contract/errors/errorPayload';
+import { handleApiErrorResult } from '@stark-ballot/api-contract/errors/errorPayload';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { resolvePublicRequestId } from './publicRequestId';
-
-/**
- * Create a standardized JSON error response.
- */
-export function errorResponse(error: ApiError | ErrorCode, details?: ErrorDetails): Response {
-  const result = toApiErrorResult(error, resolvePublicRequestId(), details);
-  return Response.json(result.payload, { status: result.status });
-}
 
 /**
  * Handle unexpected errors and convert to a standardized JSON response.

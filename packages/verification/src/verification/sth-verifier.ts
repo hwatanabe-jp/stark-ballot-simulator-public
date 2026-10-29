@@ -54,37 +54,18 @@ export function verifySthConsensus(
   const expectedRoot = normalizeHexString(journal.bulletinRoot);
   const expectedTreeSize = journal.treeSize;
   let matchingSources = 0;
-  let comparableSources = 0;
 
   for (const record of records) {
-    comparableSources += 1;
-    const normalizedDigest = normalizeHexString(record.sthDigest);
-    const normalizedRoot = record.bulletinRoot ? normalizeHexString(record.bulletinRoot) : undefined;
-
-    const digestMatches = normalizedDigest === expectedDigest;
-    const rootMatches = normalizedRoot ? normalizedRoot === expectedRoot : true;
-    const treeSizeMatches = typeof record.treeSize === 'number' ? record.treeSize === expectedTreeSize : true;
-
-    if (digestMatches && rootMatches && treeSizeMatches) {
+    const mismatchReasons = sthMismatchReasons(record, { expectedDigest, expectedRoot, expectedTreeSize });
+    if (mismatchReasons.length === 0) {
       matchingSources += 1;
       continue;
-    }
-
-    const mismatchReasons: string[] = [];
-    if (!digestMatches) {
-      mismatchReasons.push('digest mismatch');
-    }
-    if (!rootMatches) {
-      mismatchReasons.push('root mismatch');
-    }
-    if (!treeSizeMatches) {
-      mismatchReasons.push('tree size mismatch');
     }
     errors.push(`STH mismatch from ${record.source ?? 'unknown source'} (${mismatchReasons.join(', ')})`);
   }
 
   const minMatches = resolveMinMatches(options.minMatchingSources);
-  const consensus = comparableSources > 0 && matchingSources === comparableSources;
+  const consensus = records.length > 0 && matchingSources === records.length;
   const verified = matchingSources >= minMatches && consensus;
 
   if (!verified && matchingSources < minMatches) {
@@ -98,4 +79,29 @@ export function verifySthConsensus(
     matchingSources,
     errors,
   };
+}
+
+function sthMismatchReasons(
+  record: AdmittedSthRecord,
+  expected: { expectedDigest: string; expectedRoot: string; expectedTreeSize: number },
+): string[] {
+  const { expectedDigest, expectedRoot, expectedTreeSize } = expected;
+  const normalizedDigest = normalizeHexString(record.sthDigest);
+  const normalizedRoot = record.bulletinRoot ? normalizeHexString(record.bulletinRoot) : undefined;
+
+  const digestMatches = normalizedDigest === expectedDigest;
+  const rootMatches = normalizedRoot ? normalizedRoot === expectedRoot : true;
+  const treeSizeMatches = typeof record.treeSize === 'number' ? record.treeSize === expectedTreeSize : true;
+
+  const mismatchReasons: string[] = [];
+  if (!digestMatches) {
+    mismatchReasons.push('digest mismatch');
+  }
+  if (!rootMatches) {
+    mismatchReasons.push('root mismatch');
+  }
+  if (!treeSizeMatches) {
+    mismatchReasons.push('tree size mismatch');
+  }
+  return mismatchReasons;
 }

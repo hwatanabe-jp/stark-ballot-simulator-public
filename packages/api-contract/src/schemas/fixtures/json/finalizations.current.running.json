@@ -15,11 +15,6 @@
         "source": "derived",
         "percent": 12,
         "updatedAtMs": 1730000009000
-      },
-      "orchestrator": {
-        "status": "RUNNING",
-        "startTimeMs": 1730000005000,
-        "stopTimeMs": null
       }
     }
   },

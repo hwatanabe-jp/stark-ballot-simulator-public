@@ -20,8 +20,6 @@ import {
 } from '@stark-ballot/verification/public-audit-artifact-consistency';
 import { admitFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
 
-export type { PublicAuditArtifactConsistencyIssue };
-
 interface PublicAuditArtifactResolution {
   publicInputArtifact?: Extract<
     FinalizationPublicAuditArtifactsState,
@@ -39,38 +37,6 @@ function buildCountsRecord(verifiedTally: number[]): Record<(typeof VOTE_CHOICES
     record[choice] = Number.isFinite(value) ? (value ?? 0) : 0;
   }
   return record;
-}
-
-function resolveUsableTally(
-  tally: FinalizationResultAuthority['tally'] | undefined,
-  fallback: FinalizationResultAuthority['tally'],
-): FinalizationResultAuthority['tally'] {
-  // Keep a structurally valid claimed tally for presentation flows like S2/S4,
-  // while fail-closed verification still compares it against the canonical journal.
-  if (!tally || typeof tally !== 'object') {
-    return fallback;
-  }
-
-  const counts = (tally as { counts?: Partial<Record<(typeof VOTE_CHOICES)[number], unknown>> }).counts;
-  if (!counts || typeof counts !== 'object') {
-    return fallback;
-  }
-
-  for (const choice of VOTE_CHOICES) {
-    const value = counts[choice];
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      return fallback;
-    }
-  }
-
-  if (typeof tally.totalVotes !== 'number' || !Number.isFinite(tally.totalVotes)) {
-    return fallback;
-  }
-  if (typeof tally.tamperedCount !== 'number' || !Number.isFinite(tally.tamperedCount)) {
-    return fallback;
-  }
-
-  return tally;
 }
 
 function buildTamperSummary(
@@ -164,7 +130,7 @@ export function buildFinalizationResultFromJournal(options: {
   return applyScenarioContext(baseResult, scenarioContext);
 }
 
-export function canonicalizeFinalizationResult(
+function canonicalizeFinalizationResult(
   result: unknown,
   scenarioContext?: FinalizationScenarioContext | null,
 ): FinalizationResultAuthority | undefined {
@@ -174,17 +140,7 @@ export function canonicalizeFinalizationResult(
   }
 
   const journal = toPublicZkvmJournal(candidate.journal);
-  const storedPublicAudit = candidate.artifacts.publicAudit;
-  const artifactResolution = resolveConsistentPublicAuditArtifacts(
-    omitUndefinedProperties({
-      journal,
-      publicInputArtifact:
-        storedPublicAudit.availability === 'available' ? storedPublicAudit.publicInputArtifact : undefined,
-      electionManifest: storedPublicAudit.availability === 'available' ? storedPublicAudit.electionManifest : undefined,
-      closeStatement: storedPublicAudit.availability === 'available' ? storedPublicAudit.closeStatement : undefined,
-      hasLocalPublicInputAuthority: true,
-    }),
-  );
+  const artifactResolution = resolveStoredPublicAuditArtifacts(journal, candidate.artifacts.publicAudit);
   if (artifactResolution.issues.length > 0) {
     return undefined;
   }
@@ -209,7 +165,7 @@ export function canonicalizeFinalizationResult(
   const storedScenarioTamperCount = resolveScenarioTamperCount(candidate.tamperSummary);
 
   const canonical: FinalizationResultAuthority = omitUndefinedProperties({
-    tally: resolveUsableTally(candidate.tally, derived.tally),
+    tally: candidate.tally,
     imageId: candidate.imageId,
     tamperDetected:
       Boolean(candidate.tamperDetected) ||
@@ -269,7 +225,7 @@ export function hasConsistentPublicAuditArtifacts(
   );
 }
 
-export function resolveConsistentPublicAuditArtifacts(input: {
+function resolveConsistentPublicAuditArtifacts(input: {
   journal: ZkVMJournal;
   publicInputArtifact?: Extract<
     FinalizationPublicAuditArtifactsState,
@@ -288,4 +244,19 @@ export function resolveConsistentPublicAuditArtifacts(input: {
       hasLocalPublicInputAuthority: Boolean(input.hasLocalPublicInputAuthority),
     }),
   );
+}
+
+function resolveStoredPublicAuditArtifacts(
+  journal: ZkVMJournal,
+  stored: FinalizationPublicAuditArtifactsState,
+): PublicAuditArtifactResolution {
+  const artifacts =
+    stored.availability === 'available'
+      ? {
+          publicInputArtifact: stored.publicInputArtifact,
+          electionManifest: stored.electionManifest,
+          closeStatement: stored.closeStatement,
+        }
+      : {};
+  return resolveConsistentPublicAuditArtifacts({ journal, ...artifacts, hasLocalPublicInputAuthority: true });
 }

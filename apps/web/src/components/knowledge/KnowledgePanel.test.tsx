@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgePanel } from './KnowledgePanel';
@@ -150,8 +151,7 @@ describe('KnowledgePanel', () => {
 
   it('re-admits cross-tab session changes and preserves the replacement snapshot', () => {
     const identity = {
-      sessionId: 'session-a',
-      capabilityToken: 'capability-a',
+      ...admitSessionIdentity({ sessionId: 'session-a', capabilityToken: 'capability-a' }),
       electionId: '123e4567-e89b-42d3-a456-426614174000',
       electionConfigHash: hash,
       logId: hash,
@@ -185,8 +185,7 @@ describe('KnowledgePanel', () => {
   it('clears mounted panel and inline evidence when the same tab clears its session', async () => {
     const electionId = '123e4567-e89b-42d3-a456-426614174000';
     initializeSession({
-      sessionId: 'session-a',
-      capabilityToken: 'capability-a',
+      ...admitSessionIdentity({ sessionId: 'session-a', capabilityToken: 'capability-a' }),
       electionId,
       electionConfigHash: hash,
       logId: hash,
@@ -211,8 +210,7 @@ describe('KnowledgePanel', () => {
   it('defers admission-triggered snapshot removal without recursive updates during render', async () => {
     const electionId = '123e4567-e89b-42d3-a456-426614174000';
     initializeSession({
-      sessionId: 'session-a',
-      capabilityToken: 'capability-a',
+      ...admitSessionIdentity({ sessionId: 'session-a', capabilityToken: 'capability-a' }),
       electionId,
       electionConfigHash: hash,
       logId: hash,

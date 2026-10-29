@@ -53,6 +53,15 @@ afterEach(() => {
           to: 'pending',
         }),
       );
+    } else if (testName?.endsWith('preserves succeeded authority when reconciliation loses to a writer')) {
+      expect(warnLog).toHaveBeenCalledOnce();
+      expect(warnLog).toHaveBeenCalledWith(
+        'finalize_state_update_rejected',
+        expect.objectContaining({
+          finalization_id: 'contract-reconcile',
+          to: 'failed',
+        }),
+      );
     } else {
       expect(warnLog).not.toHaveBeenCalled();
     }

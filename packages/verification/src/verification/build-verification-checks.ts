@@ -1,6 +1,7 @@
 import {
   VERIFICATION_CHECK_DEFINITIONS,
   type VerificationCheck,
+  type VerificationCheckDefinition,
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
 import { evaluateChecks, type EvaluateChecksOptions } from '@stark-ballot/verification/check-evaluator';
@@ -46,35 +47,54 @@ export function buildVerificationChecksFromResults(
   const usesDevModeEvidence =
     input.verifierOutcome?.status === 'dev_mode' || input.verifierOutcome?.report?.dev_mode_receipt === true;
 
-  return VERIFICATION_CHECK_DEFINITIONS.map((definition) => {
-    const evidence = usesDevModeEvidence && definition.evidence === 'zk' ? 'demo' : definition.evidence;
+  return VERIFICATION_CHECK_DEFINITIONS.map((definition) =>
+    projectVerificationCheck(definition, checks, castSource, usesDevModeEvidence),
+  );
+}
 
-    if (castSource === 'client' && definition.category === 'cast_as_intended') {
-      return {
-        id: definition.id,
-        status: 'not_run',
-        evidence,
-        inputs: [...definition.inputs],
-      };
-    }
+function projectVerificationCheck(
+  definition: VerificationCheckDefinition,
+  checks: ReadonlyMap<VerificationCheckId, CheckResult>,
+  castSource: CastSource,
+  usesDevModeEvidence: boolean,
+): VerificationCheck {
+  const evidence = usesDevModeEvidence && definition.evidence === 'zk' ? 'demo' : definition.evidence;
 
-    const derivedResult = definition.derivedFrom ? checks.get(definition.derivedFrom) : undefined;
-    const result = derivedResult ?? checks.get(definition.id);
-    const directResult = checks.get(definition.id);
-    const noteKey =
-      directResult?.status === 'not_run' || directResult?.status === 'failed' ? directResult.noteKey : undefined;
-    const status = result?.status ?? 'not_run';
-    const baseCheck = {
+  if (castSource === 'client' && definition.category === 'cast_as_intended') {
+    return {
       id: definition.id,
+      status: 'not_run',
       evidence,
       inputs: [...definition.inputs],
-      ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
     };
-    if (noteKey && (status === 'not_run' || status === 'failed')) {
-      return { ...baseCheck, status, noteKey };
-    }
-    return { ...baseCheck, status };
-  });
+  }
+
+  return projectEvaluatedVerificationCheck(definition, checks, evidence);
+}
+
+function projectEvaluatedVerificationCheck(
+  definition: VerificationCheckDefinition,
+  checks: ReadonlyMap<VerificationCheckId, CheckResult>,
+  evidence: VerificationCheck['evidence'],
+): VerificationCheck {
+  const derivedResult = definition.derivedFrom ? checks.get(definition.derivedFrom) : undefined;
+  const result = derivedResult ?? checks.get(definition.id);
+  const noteKey = resolveCheckNote(checks.get(definition.id));
+  const status = result?.status ?? 'not_run';
+  const baseCheck = {
+    id: definition.id,
+    evidence,
+    inputs: [...definition.inputs],
+    ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+  };
+  if (noteKey && (status === 'not_run' || status === 'failed')) {
+    return { ...baseCheck, status, noteKey };
+  }
+  return { ...baseCheck, status };
+}
+
+function resolveCheckNote(result: CheckResult | undefined): VerificationCheck['noteKey'] {
+  return result?.status === 'not_run' || result?.status === 'failed' ? result.noteKey : undefined;
 }
 
 /**

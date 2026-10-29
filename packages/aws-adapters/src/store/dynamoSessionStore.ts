@@ -1,3 +1,31 @@
+import { evaluateStoredVoteCommand, type PreparedVoteWrite } from './session-vote-writes';
+import {
+  projectSucceededRuntimeMetadata,
+  attachAwsSuccessMetadata,
+  type AdmittedAwsSuccessInput,
+} from '../finalize/finalizationRuntimeStore';
+import { SessionCommandStore, type VerificationWriteMode } from './session-command-store';
+import { assertNoPrematureCommitArtifacts } from './successfulFinalizationReplay';
+import { matchItemRevision } from './dynamo-write-conditions';
+import {
+  buildSuccessfulFinalizationTransaction,
+  type SuccessfulFinalizationWrite,
+} from './successful-finalization-transaction';
+import {
+  cloneSessionIdentity as cloneIdentity,
+  cloneSessionVoting,
+  createDefaultSessionRecords,
+  cloneRuntimeMetadata,
+} from './session-records';
+import { isNonArrayObject as isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { assertSuccessfulFinalizationReplay } from './successfulFinalizationReplay';
+import {
+  prepareAwsSuccessfulCommit,
+  AWS_RUNNING_PAYLOAD_KEYS,
+  AWS_FAILED_PAYLOAD_KEYS,
+  AWS_TIMED_OUT_PAYLOAD_KEYS,
+} from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
+import { assertAllowedFinalizationPayloadKeys } from '@stark-ballot/application/finalize/finalization-store';
 import {
   type IdentityItem,
   type PersistedVotingRecord,
@@ -12,8 +40,6 @@ import {
   type RuntimeMetadataItem,
   type DeliveryMetadataItem,
   type ReceiptItem,
-  type ReceiptCounterItem,
-  isRecord,
   isExpiredItem,
   normalizeStrictHex32,
   identityKey,
@@ -71,9 +97,9 @@ import {
   finalizationRecordCodec,
   type FinalizationRecord,
 } from '@stark-ballot/application/finalize/finalization-record';
-import { finalizationBitmapDataCodec } from '@stark-ballot/application/finalize/finalization-storage';
 import {
-  parseVerificationResultRecord,
+  isTerminalVerificationStatus,
+  createVerificationResultRecord,
   type VerificationResultRecord,
   type VerificationResultStore,
 } from '@stark-ballot/application/finalize/finalization-result-store';
@@ -81,25 +107,19 @@ import {
   buildFinalizationCommand,
   requestedFinalizationStatus,
   type FinalizationBitmapRecord,
-  type FinalizationFailedPayload,
   type FinalizationQueuedPayload,
-  type FinalizationRunningPayload,
   type FinalizationStore,
   type SuccessfulFinalizationCommitInput,
   type SuccessfulFinalizationCommitResult,
-  type FinalizationSucceededPayload,
-  type FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
+import { admitPersistedFinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-bitmap-admission';
 import {
-  admitFinalizationBitmapDisposition,
-  admitPersistedFinalizationBitmapData,
-} from '@stark-ballot/application/finalize/finalization-bitmap-admission';
-import {
-  admitSuccessfulFinalizationReceipt,
+  isSuccessfulFinalizationRecord,
+  type SuccessfulFinalizationRecord,
   admitSuccessfulFinalizationCommitRecord,
   assertSuccessfulFinalizationLifecycleAdmission,
-  assertDirectSuccessfulFinalizationPayload,
-  buildDirectSuccessfulFinalizationCommitRecord,
+  admitSuccessfulFinalizationEvidence,
+  buildPublishedSuccessfulFinalization,
 } from '@stark-ballot/application/finalize/successful-finalization-commit-admission';
 import type {
   FinalizationLifecycleApplyResult,
@@ -107,14 +127,11 @@ import type {
   FinalizationLifecyclePersistencePort,
   FinalizationLifecycleRevision,
 } from '@stark-ballot/application/finalize/finalization-transition-persistence';
-import {
-  evaluateFinalizationTransition,
-  type FinalizationTransitionCommand,
-} from '@stark-ballot/application/finalize/finalization-transition-policy';
+import { type FinalizationTransitionCommand } from '@stark-ballot/application/finalize/finalization-transition-policy';
 import type { FinalizationId, FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import {
-  buildSessionRecords,
-  evaluateSessionVoteMutation,
+  type SessionVoteMutation,
+  type SessionVoteCommand,
 } from '@stark-ballot/application/session/session-mutation-policy';
 import type {
   SessionVoteMutationStore,
@@ -127,36 +144,32 @@ import {
 } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
 import {
   parseAwsFinalizationRuntimeMetadata,
+  mergeFinalizationRuntimeMetadata,
+  projectRuntimeBundleDelivery,
   parseAwsVerificationDeliveryMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationMetadataAdmission';
 import {
-  assertNoAwsRuntimeTransitionMetadata,
   type AwsFinalizationFailedPayload,
   type AwsFinalizationRunningPayload,
   type AwsFinalizationRuntimeMetadata,
   type AwsFinalizationRuntimeMetadataStore,
   type AwsFinalizationRuntimeTransitionStore,
-  type AwsFinalizationSucceededPayload,
   type AwsFinalizationTimedOutPayload,
-  type AwsSucceededTransitionMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
 import { recordFinalizationStorePersistenceOutcome } from '@stark-ballot/aws-adapters/finalize/finalizationTransitionObservability';
 import { decryptVoteSecret, encryptVoteSecret } from '@stark-ballot/aws-adapters/security/voteSecretCipher';
 import { deriveExactCtProof } from '@stark-ballot/aws-adapters/store/ct-proof';
-import { computeSuccessfulFinalizationReceiptHash } from './successfulFinalizationReceipt';
+import { prepareReceiptPublication } from './successfulFinalizationReceipt';
 
 import { isFinalizationEventReason } from '@stark-ballot/diagnostics/canonicalEvents';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/domain/shared/constants';
 import type {
-  AddVoteResult,
-  BotVoteCommand,
   RootSnapshot,
   SessionIdentityRecord,
   SessionVotingRecord,
   StoredVoteRecord,
-  UserVoteCommand,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { parseSessionIdentityRecord } from '@stark-ballot/domain/types/sessionRecords';
 import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
@@ -171,14 +184,8 @@ import {
   type VerificationObservationWrite,
 } from '@stark-ballot/domain/types/verificationObservation';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
-import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
-import {
-  buildDefaultElectionConfig,
-  getDefaultElectionConfigHash,
-} from '@stark-ballot/zkvm-contract/zkvm/election-config';
-import { generateLogId } from '@stark-ballot/zkvm-contract/zkvm/log-id';
-import { computeCommitment, createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 export interface DynamoSessionStoreConfig {
   sessionsTableName: string;
@@ -199,49 +206,6 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const MAX_DYNAMODB_TRANSACTION_ITEMS = 100;
 const MAX_CONDITIONAL_RETRIES = 3;
 const FIRST_RECEIPT_BOARD_INDEX = 100;
-
-const FINALIZATION_QUEUED_PAYLOAD_KEYS = new Set(['finalizationId', 'queuedAtMs', 'scenarioContext', 'observability']);
-const FINALIZATION_RUNNING_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'scenarioContext',
-  'observability',
-]);
-const FINALIZATION_SUCCEEDED_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'completedAtMs',
-  'scenarioContext',
-  'finalizationResult',
-  'observability',
-]);
-const FINALIZATION_FAILED_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'failedAtMs',
-  'scenarioContext',
-  'error',
-  'observability',
-]);
-const FINALIZATION_TIMED_OUT_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'timeoutAtMs',
-  'scenarioContext',
-  'observability',
-]);
-const AWS_RUNNING_PAYLOAD_KEYS = new Set([...FINALIZATION_RUNNING_PAYLOAD_KEYS, 'stepFunctionsArn']);
-const AWS_SUCCEEDED_PAYLOAD_KEYS = new Set([
-  ...FINALIZATION_SUCCEEDED_PAYLOAD_KEYS,
-  'stepFunctionsArn',
-  'bundleMetadata',
-]);
-const AWS_FAILED_PAYLOAD_KEYS = new Set([...FINALIZATION_FAILED_PAYLOAD_KEYS, 'stepFunctionsArn']);
-const AWS_TIMED_OUT_PAYLOAD_KEYS = new Set([...FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'stepFunctionsArn']);
 
 function requireTableName(value: string | undefined, name: string): string {
   const trimmed = value?.trim();
@@ -315,12 +279,7 @@ function toStoredVoteRecord(item: VoteItem): StoredVoteRecord {
   }
 }
 
-function restoreVotingRecord(
-  identity: SessionIdentityRecord,
-  persisted: PersistedVotingRecord,
-  voteItems: readonly VoteItem[],
-): SessionVotingRecord {
-  const sorted = [...voteItems].sort((left, right) => left.voteIndex - right.voteIndex);
+function restoreVoteItems(identity: SessionIdentityRecord, sorted: readonly VoteItem[]) {
   const votes = new Map<number, StoredVoteRecord>();
   const bulletin = new SimpleBulletinBoard(identity.logId);
   const reconstructedHistory: RootSnapshot[] = [];
@@ -357,11 +316,19 @@ function restoreVotingRecord(
     });
   }
 
-  if (persisted.bulletinRootHistory.length !== reconstructedHistory.length) {
+  return { votes, bulletin, reconstructedHistory };
+}
+
+function restorePersistedRootHistory(
+  persisted: readonly RootSnapshot[],
+  reconstructed: readonly RootSnapshot[],
+  votes: ReadonlyMap<number, StoredVoteRecord>,
+): RootSnapshot[] {
+  if (persisted.length !== reconstructed.length) {
     throw new Error('CT_PROOF_UNAVAILABLE');
   }
-  const bulletinRootHistory = reconstructedHistory.map((snapshot, index) => {
-    const persistedSnapshot = persisted.bulletinRootHistory[index];
+  return reconstructed.map((snapshot, index) => {
+    const persistedSnapshot = persisted[index];
     if (
       !persistedSnapshot ||
       persistedSnapshot.treeSize !== snapshot.treeSize ||
@@ -372,18 +339,44 @@ function restoreVotingRecord(
     }
     return { ...persistedSnapshot, root: snapshot.root };
   });
+}
 
+function hasFirstUserVote(
+  userVoteIndex: number | undefined,
+  sorted: readonly VoteItem[],
+  votes: ReadonlyMap<number, StoredVoteRecord>,
+): boolean {
+  if (userVoteIndex === undefined) {
+    return sorted.length === 0;
+  }
+  return userVoteIndex === 0 && votes.has(userVoteIndex) && sorted[userVoteIndex]?.isUserVote === true;
+}
+
+function assertPersistedParticipation(
+  persisted: PersistedVotingRecord,
+  sorted: readonly VoteItem[],
+  votes: ReadonlyMap<number, StoredVoteRecord>,
+): void {
   const participation = persisted.userParticipation;
   const userVoteIndex = participation.status === 'cast' ? participation.voteIndex : undefined;
   if (
-    (userVoteIndex === undefined && voteItems.length > 0) ||
-    (userVoteIndex !== undefined &&
-      (userVoteIndex !== 0 || !votes.has(userVoteIndex) || sorted[userVoteIndex]?.isUserVote !== true)) ||
+    !hasFirstUserVote(userVoteIndex, sorted, votes) ||
     sorted.some((item, index) => item.isUserVote !== (index === userVoteIndex)) ||
-    persisted.botCount !== voteItems.length - (userVoteIndex === undefined ? 0 : 1)
+    persisted.botCount !== sorted.length - (userVoteIndex === undefined ? 0 : 1)
   ) {
     throw new Error('CT_PROOF_UNAVAILABLE');
   }
+}
+
+function restoreVotingRecord(
+  identity: SessionIdentityRecord,
+  persisted: PersistedVotingRecord,
+  voteItems: readonly VoteItem[],
+): SessionVotingRecord {
+  const sorted = [...voteItems].sort((left, right) => left.voteIndex - right.voteIndex);
+  const { votes, bulletin, reconstructedHistory } = restoreVoteItems(identity, sorted);
+  const bulletinRootHistory = restorePersistedRootHistory(persisted.bulletinRootHistory, reconstructedHistory, votes);
+  assertPersistedParticipation(persisted, sorted, votes);
 
   return {
     sessionId: identity.sessionId,
@@ -394,12 +387,6 @@ function restoreVotingRecord(
     userParticipation: { ...persisted.userParticipation },
     lastActivityMs: persisted.lastActivityMs,
   };
-}
-
-function assertAllowedPayloadKeys(value: object, allowed: ReadonlySet<string>, label: string): void {
-  if (Object.keys(value).some((key) => !allowed.has(key))) {
-    throw new Error(`Invalid ${label} payload`);
-  }
 }
 
 class ConditionalTransactionConflict extends Error {
@@ -417,14 +404,35 @@ function isConditionalPutFailure(error: unknown): boolean {
   return error instanceof Error && error.name === 'ConditionalCheckFailedException';
 }
 
-function isConditionalTransactionFailure(error: unknown, items: TransactionItems): boolean {
+function transactionCancellationReasons(error: unknown, itemCount: number): readonly unknown[] | undefined {
   if (
     !(error instanceof Error) ||
     error.name !== 'TransactionCanceledException' ||
     !('CancellationReasons' in error) ||
     !Array.isArray(error.CancellationReasons) ||
-    error.CancellationReasons.length !== items.length
+    error.CancellationReasons.length !== itemCount
   ) {
+    return undefined;
+  }
+  return error.CancellationReasons;
+}
+
+function isCancellationReason(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    'Code' in value &&
+    (!('Message' in value) || value['Message'] === undefined || typeof value['Message'] === 'string')
+  );
+}
+
+function hasTransactionCondition(item: TransactionItems[number]): boolean {
+  const operation = item.Put ?? item.Update ?? item.Delete ?? item.ConditionCheck;
+  return Boolean(operation?.ConditionExpression);
+}
+
+function isConditionalTransactionFailure(error: unknown, items: TransactionItems): boolean {
+  const reasons = transactionCancellationReasons(error, items.length);
+  if (!reasons) {
     return false;
   }
 
@@ -432,21 +440,15 @@ function isConditionalTransactionFailure(error: unknown, items: TransactionItems
   // The SDK orders reasons exactly like TransactItems and uses the literal
   // code "None" for an unaffected item. Missing/unknown reasons cannot prove CAS contention.
   for (const [index, item] of items.entries()) {
-    const reason: unknown = error.CancellationReasons[index];
-    if (
-      !reason ||
-      typeof reason !== 'object' ||
-      Array.isArray(reason) ||
-      !('Code' in reason) ||
-      ('Message' in reason && reason.Message !== undefined && typeof reason.Message !== 'string')
-    ) {
+    const reason = reasons[index];
+    if (!isCancellationReason(reason)) {
       return false;
     }
-    if (reason.Code === 'None') {
+    if (reason['Code'] === 'None') {
       continue;
     }
-    const operation = item.Put ?? item.Update ?? item.Delete ?? item.ConditionCheck;
-    if (reason.Code !== 'ConditionalCheckFailed' || !operation?.ConditionExpression) {
+    const conditional = hasTransactionCondition(item);
+    if (reason['Code'] !== 'ConditionalCheckFailed' || !conditional) {
       return false;
     }
     conditionalFailure = true;
@@ -454,40 +456,68 @@ function isConditionalTransactionFailure(error: unknown, items: TransactionItems
   return conditionalFailure;
 }
 
-function isTerminalVerificationStatus(status: VerificationResult['status']): boolean {
-  return status === 'success' || status === 'failed' || status === 'dev_mode';
+/** Expired artifacts are unavailable; malformed active records fail closed. */
+function admitActiveItem<T>(raw: unknown, parse: (value: unknown) => T | undefined, message: string): T | undefined {
+  const item = raw === undefined || isExpiredItem(raw) ? undefined : parse(raw);
+  if (raw !== undefined && !isExpiredItem(raw) && !item) {
+    throw new Error(message);
+  }
+  return item;
 }
 
-function cloneIdentity(identity: SessionIdentityRecord): SessionIdentityRecord {
-  return {
-    ...identity,
-    electionConfig: {
-      ...identity.electionConfig,
-      choices: [...identity.electionConfig.choices],
-    },
-  };
+/** Metadata updates cannot replace an existing expired or malformed record. */
+function admitMetadataForMerge<T>(
+  raw: unknown,
+  parse: (value: unknown) => T | undefined,
+  message: string,
+): T | undefined {
+  const item = raw === undefined || isExpiredItem(raw) ? undefined : parse(raw);
+  if (raw !== undefined && !item) throw new Error(message);
+  return item;
 }
 
-function cloneVoting(record: SessionVotingRecord): SessionVotingRecord {
-  return {
-    ...record,
-    votes: new Map(Array.from(record.votes, ([index, vote]) => [index, { ...vote }])),
-    bulletinRootHistory: record.bulletinRootHistory.map((snapshot) => ({ ...snapshot })),
-    userParticipation: { ...record.userParticipation },
-  };
+function projectLifecycleReloadFailure(
+  reloaded: Exclude<FinalizationLifecycleLoadResult, { status: 'loaded' }>,
+): FinalizationLifecycleApplyResult {
+  return reloaded.status === 'missing'
+    ? { status: 'missing' }
+    : reloaded.status === 'invalid_record'
+      ? reloaded
+      : { status: 'persistence_failure', error: reloaded.error };
 }
 
-function cloneRuntimeMetadata(metadata: AwsFinalizationRuntimeMetadata): AwsFinalizationRuntimeMetadata {
-  return {
-    ...metadata,
-    ...(metadata.bundleMetadata ? { bundleMetadata: { ...metadata.bundleMetadata } } : {}),
-  };
+function requireCoordinatedRecord(record: FinalizationRecord | null, message: string): FinalizationRecord {
+  if (!record) throw new Error(message);
+  return record;
 }
 
-function isSucceededFinalizationRecord(
-  record: FinalizationRecord,
-): record is Extract<FinalizationRecord, { state: { status: 'succeeded' } }> {
-  return record.state.status === 'succeeded' && record.finalizationResult !== undefined;
+function admitObservationWrite(finalizationId: string, input: VerificationObservationWrite) {
+  const admittedFinalizationId = parseFinalizationId(finalizationId);
+  if (!admittedFinalizationId) {
+    throw new Error('Invalid verification observation finalization identifier');
+  }
+  const write = parseVerificationObservationWrite(input);
+  const requested = write ? parseVerificationObservation({ finalizationId, ...write }) : undefined;
+  if (!requested) {
+    throw new Error('Invalid verification observation');
+  }
+  return { admittedFinalizationId, requested };
+}
+
+function admitLifecycleMutation(
+  input: Parameters<FinalizationLifecyclePersistencePort['applyFinalizationLifecycleMutation']>[0],
+) {
+  const expected = decodeLifecycleRevision(input.expectedRevision);
+  const nextRecord = finalizationRecordCodec.admit(input.mutations.nextRecord);
+  if (
+    !expected ||
+    !nextRecord ||
+    nextRecord.sessionId !== input.sessionId ||
+    nextRecord.finalizationId !== input.finalizationId
+  ) {
+    return undefined;
+  }
+  return { expected, nextRecord };
 }
 
 type PostCommitActivityOperation =
@@ -498,6 +528,7 @@ type PostCommitActivityOperation =
   | 'bitmap_write';
 
 export class DynamoSessionStore
+  extends SessionCommandStore
   implements
     VoteStore,
     SessionVoteMutationStore,
@@ -512,6 +543,7 @@ export class DynamoSessionStore
   private readonly client: DynamoDBDocumentClient;
 
   constructor(config: DynamoSessionStoreConfig) {
+    super();
     this.sessionsTableName = requireTableName(config.sessionsTableName, 'DYNAMODB_SESSIONS_TABLE');
     this.votesTableName = requireTableName(config.votesTableName, 'DYNAMODB_VOTES_TABLE');
     this.client = config.documentClient;
@@ -721,15 +753,7 @@ export class DynamoSessionStore
       typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
     );
     const nowMs = Date.now();
-    const records = buildSessionRecords({
-      sessionId,
-      electionId: createElectionId(),
-      electionConfigHash: getDefaultElectionConfigHash(),
-      electionConfig: buildDefaultElectionConfig(),
-      logId: generateLogId(`dynamo-${sessionId}`),
-      createdAtMs: nowMs,
-      lastActivityMs: nowMs,
-    });
+    const records = createDefaultSessionRecords(sessionId, `dynamo-${sessionId}`, nowMs);
     const identity = parseSessionIdentityRecord(records.identity);
     if (!identity) {
       throw new Error('Session creation produced invalid identity authority');
@@ -792,7 +816,7 @@ export class DynamoSessionStore
     const voteItems = await this.loadVoteItems(sessionId);
     const record = restoreVotingRecord(identity, votingItem.record, voteItems);
     const current = await this.getCurrentFinalizationRecord(sessionId);
-    if (current && isSucceededFinalizationRecord(current) && record.bulletinRootHistory.length > 0) {
+    if (current && isSuccessfulFinalizationRecord(current) && record.bulletinRootHistory.length > 0) {
       const finalRoot = record.bulletinRootHistory.at(-1)?.root;
       if (
         !finalRoot ||
@@ -801,7 +825,7 @@ export class DynamoSessionStore
         throw new Error('CT_PROOF_UNAVAILABLE');
       }
     }
-    return cloneVoting(record);
+    return cloneSessionVoting(record);
   }
 
   async getSessionVotingSummary(sessionId: SessionId): Promise<SessionVotingSummary | null> {
@@ -898,106 +922,49 @@ export class DynamoSessionStore
     };
   }
 
-  async addVote(
-    sessionId: SessionId,
-    voteData: UserVoteCommand,
-  ): Promise<Result<AddVoteResult, SessionVoteStoreError>> {
-    for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
-      let authority: Awaited<ReturnType<DynamoSessionStore['loadVoteMutationAuthority']>>;
-      try {
-        authority = await this.loadVoteMutationAuthority(sessionId);
-      } catch (error) {
-        if (error instanceof SessionNotFoundError) {
-          return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
-        }
-        throw error;
-      }
-      const outcome = evaluateSessionVoteMutation(
-        {
-          identity: authority.identity,
-          voting: authority.voting,
-          finalization: authority.finalization,
-        },
-        { kind: 'append_user_vote', vote: voteData },
-        { generateVoteId, nowMs: Date.now },
-      );
-      if (!outcome.ok) {
-        return outcome;
-      }
-      const mutation = outcome.value;
-      if (mutation.kind === 'user_vote_replayed') {
-        return { ok: true, value: mutation.castResult };
-      }
-      if (mutation.kind !== 'user_vote_appended') {
-        throw new Error('Session vote mutation invariant violated');
-      }
-      try {
-        await this.persistVoteMutation(
-          sessionId,
-          {
-            identity: authority.identityItem,
-            voting: authority.votingItem,
-            votes: authority.voteItems,
-            expiresAt: authority.expiresAt,
-          },
-          mutation.nextVoting,
-        );
-        return { ok: true, value: mutation.castResult };
-      } catch (error) {
-        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
-          throw error;
-        }
-      }
+  private async findVoteMutationAuthority(sessionId: SessionId) {
+    try {
+      return await this.loadVoteMutationAuthority(sessionId);
+    } catch (error) {
+      if (error instanceof SessionNotFoundError) return undefined;
+      throw error;
     }
-    throw new Error('Vote mutation contention limit exceeded');
   }
 
-  async addBotVotes(
+  private persistAdmittedVotes(
     sessionId: SessionId,
-    votes: readonly BotVoteCommand[],
-  ): Promise<Result<void, SessionVoteStoreError>> {
+    authority: Awaited<ReturnType<DynamoSessionStore['loadVoteMutationAuthority']>>,
+    nextVoting: SessionVotingRecord,
+  ): Promise<void> {
+    return this.persistVoteMutation(
+      sessionId,
+      {
+        identity: authority.identityItem,
+        voting: authority.votingItem,
+        votes: authority.voteItems,
+        expiresAt: authority.expiresAt,
+      },
+      nextVoting,
+    );
+  }
+
+  protected override async mutateVotes<T>(
+    sessionId: SessionId,
+    command: SessionVoteCommand,
+    prepareWrite: (mutation: SessionVoteMutation) => PreparedVoteWrite<T>,
+  ): Promise<Result<T, SessionVoteStoreError>> {
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
-      let authority: Awaited<ReturnType<DynamoSessionStore['loadVoteMutationAuthority']>>;
+      const authority = await this.findVoteMutationAuthority(sessionId);
+      if (!authority) return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
+      const outcome = evaluateStoredVoteCommand(authority.identity, authority.voting, authority.finalization, command);
+      if (!outcome.ok) return outcome;
+      const write = prepareWrite(outcome.value);
+      if (!write.mutation) return { ok: true, value: write.value };
       try {
-        authority = await this.loadVoteMutationAuthority(sessionId);
+        await this.persistAdmittedVotes(sessionId, authority, write.mutation.nextVoting);
+        return { ok: true, value: write.value };
       } catch (error) {
-        if (error instanceof SessionNotFoundError) {
-          return { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } };
-        }
-        throw error;
-      }
-      const outcome = evaluateSessionVoteMutation(
-        {
-          identity: authority.identity,
-          voting: authority.voting,
-          finalization: authority.finalization,
-        },
-        { kind: 'append_bot_votes', votes },
-        { generateVoteId, nowMs: Date.now },
-      );
-      if (!outcome.ok) {
-        return outcome;
-      }
-      const mutation = outcome.value;
-      if (mutation.kind !== 'bot_votes_appended') {
-        throw new Error('Session vote mutation invariant violated');
-      }
-      try {
-        await this.persistVoteMutation(
-          sessionId,
-          {
-            identity: authority.identityItem,
-            voting: authority.votingItem,
-            votes: authority.voteItems,
-            expiresAt: authority.expiresAt,
-          },
-          mutation.nextVoting,
-        );
-        return { ok: true, value: undefined };
-      } catch (error) {
-        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
-          throw error;
-        }
+        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) throw error;
       }
     }
     throw new Error('Vote mutation contention limit exceeded');
@@ -1055,6 +1022,21 @@ export class DynamoSessionStore
     }
   }
 
+  private async isActiveSessionCandidate(raw: unknown, now: number): Promise<boolean> {
+    if (!isRecord(raw) || raw['itemType'] !== 'SESSION_IDENTITY') {
+      return false;
+    }
+    const identity = parseIdentityItem(raw);
+    if (!identity) {
+      return false;
+    }
+    const voting = await this.loadVotingItem(identity.identity.sessionId);
+    if (voting && now - voting.record.lastActivityMs <= FIVE_MINUTES_MS) {
+      return true;
+    }
+    return false;
+  }
+
   async getActiveSessionCount(): Promise<number> {
     const now = Date.now();
     let count = 0;
@@ -1068,17 +1050,7 @@ export class DynamoSessionStore
         }),
       );
       for (const raw of result.Items ?? []) {
-        if (!isRecord(raw) || raw['itemType'] !== 'SESSION_IDENTITY') {
-          continue;
-        }
-        const identity = parseIdentityItem(raw);
-        if (!identity) {
-          continue;
-        }
-        const voting = await this.loadVotingItem(identity.identity.sessionId);
-        if (voting && now - voting.record.lastActivityMs <= FIVE_MINUTES_MS) {
-          count += 1;
-        }
+        if (await this.isActiveSessionCandidate(raw, now)) count += 1;
       }
       exclusiveStartKey = result.LastEvaluatedKey;
     } while (exclusiveStartKey);
@@ -1190,16 +1162,9 @@ export class DynamoSessionStore
     expectedRevision: FinalizationLifecycleRevision;
     mutations: { nextRecord: FinalizationRecord };
   }): Promise<FinalizationLifecycleApplyResult> {
-    const expected = decodeLifecycleRevision(input.expectedRevision);
-    const nextRecord = finalizationRecordCodec.admit(input.mutations.nextRecord);
-    if (
-      !expected ||
-      !nextRecord ||
-      nextRecord.sessionId !== input.sessionId ||
-      nextRecord.finalizationId !== input.finalizationId
-    ) {
-      return { status: 'invalid_record', error: new Error('Invalid finalization lifecycle mutation') };
-    }
+    const admitted = admitLifecycleMutation(input);
+    if (!admitted) return { status: 'invalid_record', error: new Error('Invalid finalization lifecycle mutation') };
+    const { expected, nextRecord } = admitted;
     const nextRevision = expected.revision + 1;
     try {
       const ttlPlan = await this.buildArtifactTtlUpdatePlan(input.sessionId, this.artifactExpiresAt());
@@ -1281,11 +1246,7 @@ export class DynamoSessionStore
       }
       const reloaded = await this.loadFinalizationLifecycle(input.sessionId, input.finalizationId);
       if (reloaded.status !== 'loaded') {
-        return reloaded.status === 'missing'
-          ? { status: 'missing' }
-          : reloaded.status === 'invalid_record'
-            ? reloaded
-            : { status: 'persistence_failure', error: reloaded.error };
+        return projectLifecycleReloadFailure(reloaded);
       }
       if (isDeepStrictEqual(reloaded.lifecycle.authority.currentRecord, nextRecord)) {
         return { status: 'already_applied', lifecycle: reloaded.lifecycle };
@@ -1299,22 +1260,20 @@ export class DynamoSessionStore
       case 'applied':
       case 'already_applied':
       case 'rejected': {
-        const record = result.lifecycle.authority.currentRecord;
-        if (!record) {
-          throw new Error(`Finalization transition was not applied: ${result.outcome.reason}`);
-        }
-        return record;
+        return requireCoordinatedRecord(
+          result.lifecycle.authority.currentRecord,
+          `Finalization transition was not applied: ${result.outcome.reason}`,
+        );
       }
       case 'invalid':
         throw new Error(`Invalid finalization transition: ${result.outcome.reason}`);
       case 'missing':
         throw new Error('Session not found');
       case 'stale': {
-        const record = result.lifecycle.authority.currentRecord;
-        if (!record) {
-          throw new Error('Finalization lifecycle changed concurrently');
-        }
-        return record;
+        return requireCoordinatedRecord(
+          result.lifecycle.authority.currentRecord,
+          'Finalization lifecycle changed concurrently',
+        );
       }
       case 'invalid_record':
         throw new Error('Invalid persisted finalization record', { cause: result.error });
@@ -1323,7 +1282,7 @@ export class DynamoSessionStore
     }
   }
 
-  private async applyFinalizationCommand(
+  protected override async applyFinalizationCommand(
     command: FinalizationTransitionCommand,
     observability?: FinalizationQueuedPayload['observability'],
   ): Promise<{
@@ -1369,7 +1328,7 @@ export class DynamoSessionStore
     return { record, coordination, before: observed.before };
   }
 
-  async getCurrentFinalizationRecord(sessionId: SessionId): Promise<FinalizationRecord | null> {
+  override async getCurrentFinalizationRecord(sessionId: SessionId): Promise<FinalizationRecord | null> {
     const loaded = await this.loadFinalizationLifecycle(sessionId, null);
     if (loaded.status === 'missing') {
       return null;
@@ -1400,77 +1359,24 @@ export class DynamoSessionStore
     return item.record;
   }
 
-  async markFinalizationQueued(sessionId: SessionId, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_QUEUED_PAYLOAD_KEYS, 'queued finalization');
-    return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'queue', payload), payload.observability)
-    ).record;
-  }
-
-  async markFinalizationRunning(
-    sessionId: SessionId,
-    payload: FinalizationRunningPayload,
-  ): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_RUNNING_PAYLOAD_KEYS, 'running finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'start', payload), payload.observability)
-    ).record;
-  }
-
-  async markFinalizationSucceeded(
-    sessionId: SessionId,
-    payload: FinalizationSucceededPayload,
-  ): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_SUCCEEDED_PAYLOAD_KEYS, 'succeeded finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    assertDirectSuccessfulFinalizationPayload(payload);
-    const current = await this.getCurrentFinalizationRecord(sessionId);
-    const command = buildFinalizationCommand(sessionId, 'succeed', payload);
-    const admission = evaluateFinalizationTransition({
-      authority: { currentRecord: current },
-      command,
-      evaluatedAtMs: Date.now(),
-    });
-    if (admission.kind === 'invalid') {
-      throw new Error(`Invalid finalization transition: ${admission.reason}`);
+  private async putMetadataRevision(
+    buildItem: () => RuntimeMetadataItem | DeliveryMetadataItem,
+    current: { revision: number } | undefined,
+    attempt: number,
+  ): Promise<boolean> {
+    try {
+      await this.client.send(
+        new PutCommand({
+          TableName: this.sessionsTableName,
+          Item: buildItem(),
+          ...matchItemRevision(current),
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (!isConditionalPutFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) throw error;
     }
-    if (
-      current &&
-      (current.finalizationId !== payload.finalizationId ||
-        current.state.status === 'failed' ||
-        current.state.status === 'timeout')
-    ) {
-      return (await this.applyFinalizationCommand(command, payload.observability)).record;
-    }
-    const committed = await this.commitSuccessfulFinalization({
-      record: buildDirectSuccessfulFinalizationCommitRecord(sessionId, payload, current),
-      bitmap: { availability: 'unavailable' },
-      ...(payload.observability ? { observability: payload.observability } : {}),
-    });
-    return committed.record;
-  }
-
-  async markFinalizationFailed(sessionId: SessionId, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_FAILED_PAYLOAD_KEYS, 'failed finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'fail', payload), payload.observability)
-    ).record;
-  }
-
-  async markFinalizationTimedOut(
-    sessionId: SessionId,
-    payload: FinalizationTimedOutPayload,
-  ): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'timed-out finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return (
-      await this.applyFinalizationCommand(
-        buildFinalizationCommand(sessionId, 'time_out', payload),
-        payload.observability,
-      )
-    ).record;
+    return false;
   }
 
   private async mergeRuntimeMetadata(
@@ -1478,35 +1384,20 @@ export class DynamoSessionStore
     finalizationId: FinalizationId,
     patch: AwsFinalizationRuntimeMetadata,
   ): Promise<void> {
-    const admittedPatch = parseAwsFinalizationRuntimeMetadata(patch);
-    if (!admittedPatch) {
-      throw new Error('Invalid AWS finalization runtime metadata');
-    }
+    const admittedPatch = this.admitRuntimeMetadata(patch);
     const key = runtimeMetadataKey(sessionId, finalizationId);
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
       const raw = await this.getSessionItem(key);
-      const current =
-        raw === undefined || isExpiredItem(raw) ? undefined : parseRuntimeMetadataItem(raw, sessionId, finalizationId);
-      if (raw !== undefined && !current) {
-        throw new Error('Invalid persisted AWS finalization runtime metadata');
-      }
-      const metadata: AwsFinalizationRuntimeMetadata = {
-        ...(current?.metadata ?? {}),
-        ...admittedPatch,
-        ...(current?.metadata.bundleMetadata || admittedPatch.bundleMetadata
-          ? {
-              bundleMetadata: {
-                ...(current?.metadata.bundleMetadata ?? {}),
-                ...(admittedPatch.bundleMetadata ?? {}),
-              },
-            }
-          : {}),
-      };
-      try {
-        await this.client.send(
-          new PutCommand({
-            TableName: this.sessionsTableName,
-            Item: {
+      const current = admitMetadataForMerge(
+        raw,
+        (value) => parseRuntimeMetadataItem(value, sessionId, finalizationId),
+        'Invalid persisted AWS finalization runtime metadata',
+      );
+      const metadata = mergeFinalizationRuntimeMetadata(current?.metadata, admittedPatch);
+      if (
+        await this.putMetadataRevision(
+          () =>
+            ({
               sessionId: key,
               itemType: 'FINALIZATION_RUNTIME',
               ownerSessionId: sessionId,
@@ -1514,18 +1405,12 @@ export class DynamoSessionStore
               metadata,
               revision: (current?.revision ?? 0) + 1,
               expiresAt: this.artifactExpiresAt(),
-            } satisfies RuntimeMetadataItem,
-            ConditionExpression: current ? '#revision = :expectedRevision' : 'attribute_not_exists(#sessionId)',
-            ExpressionAttributeNames: current ? { '#revision': 'revision' } : { '#sessionId': 'sessionId' },
-            ...(current ? { ExpressionAttributeValues: { ':expectedRevision': current.revision } } : {}),
-          }),
-        );
+            }) satisfies RuntimeMetadataItem,
+          current,
+          attempt,
+        )
+      )
         return;
-      } catch (error) {
-        if (!isConditionalPutFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
-          throw error;
-        }
-      }
     }
   }
 
@@ -1550,17 +1435,16 @@ export class DynamoSessionStore
     const key = deliveryMetadataKey(sessionId, finalizationId);
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
       const raw = await this.getSessionItem(key);
-      const current =
-        raw === undefined || isExpiredItem(raw) ? undefined : parseDeliveryMetadataItem(raw, sessionId, finalizationId);
-      if (raw !== undefined && !current) {
-        throw new Error('Invalid persisted AWS verification delivery metadata');
-      }
+      const current = admitMetadataForMerge(
+        raw,
+        (value) => parseDeliveryMetadataItem(value, sessionId, finalizationId),
+        'Invalid persisted AWS verification delivery metadata',
+      );
       const metadata = { ...(current?.metadata ?? {}), ...admittedPatch };
-      try {
-        await this.client.send(
-          new PutCommand({
-            TableName: this.sessionsTableName,
-            Item: {
+      if (
+        await this.putMetadataRevision(
+          () =>
+            ({
               sessionId: key,
               itemType: 'VERIFICATION_DELIVERY',
               ownerSessionId: sessionId,
@@ -1568,18 +1452,12 @@ export class DynamoSessionStore
               metadata,
               revision: (current?.revision ?? 0) + 1,
               expiresAt: this.artifactExpiresAt(),
-            } satisfies DeliveryMetadataItem,
-            ConditionExpression: current ? '#revision = :expectedRevision' : 'attribute_not_exists(#sessionId)',
-            ExpressionAttributeNames: current ? { '#revision': 'revision' } : { '#sessionId': 'sessionId' },
-            ...(current ? { ExpressionAttributeValues: { ':expectedRevision': current.revision } } : {}),
-          }),
-        );
+            }) satisfies DeliveryMetadataItem,
+          current,
+          attempt,
+        )
+      )
         return;
-      } catch (error) {
-        if (!isConditionalPutFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
-          throw error;
-        }
-      }
     }
   }
 
@@ -1587,7 +1465,7 @@ export class DynamoSessionStore
     sessionId: SessionId,
     payload: AwsFinalizationRunningPayload,
   ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_RUNNING_PAYLOAD_KEYS, 'AWS running finalization');
+    assertAllowedFinalizationPayloadKeys(payload, AWS_RUNNING_PAYLOAD_KEYS, 'AWS running finalization');
     const { stepFunctionsArn, ...semanticPayload } = payload;
     const runtimeMetadata =
       stepFunctionsArn === undefined ? undefined : this.admitRuntimeMetadata({ stepFunctionsArn });
@@ -1605,66 +1483,22 @@ export class DynamoSessionStore
     return applied.record.state;
   }
 
-  async markAwsFinalizationSucceeded(
+  protected override prepareAwsSuccessCommit(
     sessionId: SessionId,
-    payload: AwsFinalizationSucceededPayload,
-  ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_SUCCEEDED_PAYLOAD_KEYS, 'AWS succeeded finalization');
-    const { stepFunctionsArn, bundleMetadata, finalizationResult, ...common } = payload;
-    const current = await this.getCurrentFinalizationRecord(sessionId);
-    if (
-      current &&
-      (current.finalizationId !== payload.finalizationId ||
-        (current.state.status !== 'pending' &&
-          current.state.status !== 'running' &&
-          current.state.status !== 'succeeded'))
-    ) {
-      return current.state;
-    }
-    const runtimeMetadata =
-      stepFunctionsArn === undefined && bundleMetadata === undefined
-        ? undefined
-        : this.admitRuntimeMetadata({
-            ...(stepFunctionsArn === undefined ? {} : { stepFunctionsArn }),
-            ...(bundleMetadata === undefined ? {} : { bundleMetadata }),
-          });
-    const bitmap =
-      finalizationResult.artifacts.bitmap.availability === 'available'
-        ? { availability: 'available' as const, data: finalizationResult.artifacts.bitmap.data }
-        : { availability: 'unavailable' as const };
-    const requested = finalizationRecordCodec.admit({
-      sessionId,
-      finalizationId: payload.finalizationId,
-      scenarioContext: common.scenarioContext ?? current?.scenarioContext,
-      state: {
-        status: 'succeeded',
-        finalizationId: payload.finalizationId,
-        queuedAtMs: common.queuedAtMs,
-        startedAtMs: common.startedAtMs,
-        completedAtMs: common.completedAtMs,
-      },
-      finalizationResult: {
-        finalizationId: payload.finalizationId,
-        ...finalizationResult,
-      },
-    });
-    if (!requested || requested.state.status !== 'succeeded') {
-      throw new Error('Invalid AWS succeeded finalization record');
-    }
-    const committed = await this.commitSuccessfulFinalization({
-      record: requested as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
-      bitmap,
-      ...(runtimeMetadata ? { runtimeMetadata } : {}),
-      ...(common.observability ? { observability: common.observability } : {}),
-    });
-    return committed.record.state;
+    input: AdmittedAwsSuccessInput,
+    current: FinalizationRecord | null,
+  ) {
+    const projectedMetadata = projectSucceededRuntimeMetadata(input.stepFunctionsArn, input.bundleMetadata);
+    const runtimeMetadata = projectedMetadata === undefined ? undefined : this.admitRuntimeMetadata(projectedMetadata);
+    const prepared = prepareAwsSuccessfulCommit(sessionId, input.semanticPayload, current);
+    return attachAwsSuccessMetadata(prepared, runtimeMetadata, input.semanticPayload.observability);
   }
 
   async markAwsFinalizationFailed(
     sessionId: SessionId,
     payload: AwsFinalizationFailedPayload,
   ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_FAILED_PAYLOAD_KEYS, 'AWS failed finalization');
+    assertAllowedFinalizationPayloadKeys(payload, AWS_FAILED_PAYLOAD_KEYS, 'AWS failed finalization');
     const { stepFunctionsArn, ...semanticPayload } = payload;
     const runtimeMetadata =
       stepFunctionsArn === undefined ? undefined : this.admitRuntimeMetadata({ stepFunctionsArn });
@@ -1686,7 +1520,7 @@ export class DynamoSessionStore
     sessionId: SessionId,
     payload: AwsFinalizationTimedOutPayload,
   ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_TIMED_OUT_PAYLOAD_KEYS, 'AWS timed-out finalization');
+    assertAllowedFinalizationPayloadKeys(payload, AWS_TIMED_OUT_PAYLOAD_KEYS, 'AWS timed-out finalization');
     const { stepFunctionsArn, ...semanticPayload } = payload;
     const runtimeMetadata =
       stepFunctionsArn === undefined ? undefined : this.admitRuntimeMetadata({ stepFunctionsArn });
@@ -1719,7 +1553,7 @@ export class DynamoSessionStore
     return cloneRuntimeMetadata(item.metadata);
   }
 
-  recordAwsProofBundlePublication(
+  override recordAwsProofBundlePublication(
     sessionId: SessionId,
     finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
@@ -1727,7 +1561,7 @@ export class DynamoSessionStore
     return this.mergeDeliveryMetadata(sessionId, finalizationId, metadata);
   }
 
-  recordAwsVerificationDeliveryMetadata(
+  override recordAwsVerificationDeliveryMetadata(
     sessionId: SessionId,
     finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
@@ -1753,9 +1587,9 @@ export class DynamoSessionStore
   private async requireSucceededFinalization(
     sessionId: SessionId,
     finalizationId: FinalizationId,
-  ): Promise<Extract<FinalizationRecord, { state: { status: 'succeeded' } }>> {
+  ): Promise<SuccessfulFinalizationRecord> {
     const record = await this.getFinalizationRecord(sessionId, finalizationId);
-    if (!record || !isSucceededFinalizationRecord(record)) {
+    if (!record || !isSuccessfulFinalizationRecord(record)) {
       throw new Error('Finalization is unavailable for verification');
     }
     return record;
@@ -1797,9 +1631,7 @@ export class DynamoSessionStore
             revision: (current?.revision ?? 0) + 1,
             expiresAt: this.artifactExpiresAt(),
           } satisfies VerificationItem,
-          ConditionExpression: current ? '#revision = :expectedRevision' : 'attribute_not_exists(#sessionId)',
-          ExpressionAttributeNames: current ? { '#revision': 'revision' } : { '#sessionId': 'sessionId' },
-          ...(current ? { ExpressionAttributeValues: { ':expectedRevision': current.revision } } : {}),
+          ...matchItemRevision(current),
         },
       },
       ...extraItems,
@@ -1822,9 +1654,65 @@ export class DynamoSessionStore
     return item;
   }
 
-  async markVerificationRunning(
+  private async buildVerificationRollbackWrites(
     sessionId: SessionId,
     finalizationId: FinalizationId,
+    current: VerificationItem | undefined,
+  ): Promise<TransactionItems> {
+    const rollbackRaw = await this.getSessionItem(verificationRollbackKey(sessionId, finalizationId));
+    const rollback =
+      rollbackRaw === undefined || isExpiredItem(rollbackRaw)
+        ? undefined
+        : parseRollbackItem(rollbackRaw, sessionId, finalizationId);
+    if (rollbackRaw !== undefined && !rollback) {
+      throw new Error('Invalid verification rollback record');
+    }
+    const extraItems: TransactionItems = rollback
+      ? []
+      : [
+          {
+            Put: {
+              TableName: this.sessionsTableName,
+              Item: {
+                sessionId: verificationRollbackKey(sessionId, finalizationId),
+                itemType: 'VERIFICATION_ROLLBACK',
+                ownerSessionId: sessionId,
+                finalizationId,
+                record: current?.record ?? null,
+                expiresAt: this.artifactExpiresAt(),
+              } satisfies VerificationRollbackItem,
+              ConditionExpression: 'attribute_not_exists(#sessionId)',
+              ExpressionAttributeNames: { '#sessionId': 'sessionId' },
+            },
+          },
+        ];
+    return extraItems;
+  }
+
+  private async buildVerificationCompletionWrites(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+  ): Promise<TransactionItems> {
+    const rollbackRaw = await this.getSessionItem(verificationRollbackKey(sessionId, finalizationId));
+    const extraItems: TransactionItems =
+      rollbackRaw === undefined
+        ? []
+        : [
+            {
+              Delete: {
+                TableName: this.sessionsTableName,
+                Key: { sessionId: verificationRollbackKey(sessionId, finalizationId) },
+              },
+            },
+          ];
+    return extraItems;
+  }
+
+  protected override async writeVerificationResult(
+    sessionId: SessionId,
+    finalizationId: FinalizationId,
+    verificationResult: VerificationResult,
+    mode: VerificationWriteMode,
   ): Promise<VerificationResultRecord> {
     await this.requireSucceededFinalization(sessionId, finalizationId);
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
@@ -1832,43 +1720,11 @@ export class DynamoSessionStore
       if (current && isTerminalVerificationStatus(current.record.verificationResult.status)) {
         return current.record;
       }
-      const record = parseVerificationResultRecord({
-        sessionId,
-        finalizationId,
-        verificationResult: {
-          status: 'running',
-        },
-      });
-      if (!record) {
-        throw new Error('Invalid verification result record');
-      }
-      const rollbackRaw = await this.getSessionItem(verificationRollbackKey(sessionId, finalizationId));
-      const rollback =
-        rollbackRaw === undefined || isExpiredItem(rollbackRaw)
-          ? undefined
-          : parseRollbackItem(rollbackRaw, sessionId, finalizationId);
-      if (rollbackRaw !== undefined && !rollback) {
-        throw new Error('Invalid verification rollback record');
-      }
-      const extraItems: TransactionItems = rollback
-        ? []
-        : [
-            {
-              Put: {
-                TableName: this.sessionsTableName,
-                Item: {
-                  sessionId: verificationRollbackKey(sessionId, finalizationId),
-                  itemType: 'VERIFICATION_ROLLBACK',
-                  ownerSessionId: sessionId,
-                  finalizationId,
-                  record: current?.record ?? null,
-                  expiresAt: this.artifactExpiresAt(),
-                } satisfies VerificationRollbackItem,
-                ConditionExpression: 'attribute_not_exists(#sessionId)',
-                ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-              },
-            },
-          ];
+      const record = createVerificationResultRecord(sessionId, finalizationId, verificationResult);
+      const extraItems =
+        mode === 'start'
+          ? await this.buildVerificationRollbackWrites(sessionId, finalizationId, current)
+          : await this.buildVerificationCompletionWrites(sessionId, finalizationId);
       try {
         await this.putVerificationRecord(sessionId, finalizationId, record, current, extraItems);
       } catch (error) {
@@ -1877,7 +1733,10 @@ export class DynamoSessionStore
         }
         continue;
       }
-      await this.touchSessionAfterCommit(sessionId, 'verification_running');
+      await this.touchSessionAfterCommit(
+        sessionId,
+        mode === 'start' ? 'verification_running' : 'verification_completion',
+      );
       return record;
     }
     throw new Error('Verification result contention limit exceeded');
@@ -1942,62 +1801,13 @@ export class DynamoSessionStore
     await this.touchSessionAfterCommit(sessionId, 'verification_rollback');
   }
 
-  async completeVerificationResult(
-    sessionId: SessionId,
-    finalizationId: FinalizationId,
-    verificationResult: VerificationResult,
-  ): Promise<VerificationResultRecord> {
-    await this.requireSucceededFinalization(sessionId, finalizationId);
-    for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
-      const current = await this.loadVerificationItem(sessionId, finalizationId);
-      if (current && isTerminalVerificationStatus(current.record.verificationResult.status)) {
-        return current.record;
-      }
-      const record = parseVerificationResultRecord({ sessionId, finalizationId, verificationResult });
-      if (!record) {
-        throw new Error('Invalid verification result record');
-      }
-      const rollbackRaw = await this.getSessionItem(verificationRollbackKey(sessionId, finalizationId));
-      const extraItems: TransactionItems =
-        rollbackRaw === undefined
-          ? []
-          : [
-              {
-                Delete: {
-                  TableName: this.sessionsTableName,
-                  Key: { sessionId: verificationRollbackKey(sessionId, finalizationId) },
-                },
-              },
-            ];
-      try {
-        await this.putVerificationRecord(sessionId, finalizationId, record, current, extraItems);
-      } catch (error) {
-        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
-          throw error;
-        }
-        continue;
-      }
-      await this.touchSessionAfterCommit(sessionId, 'verification_completion');
-      return record;
-    }
-    throw new Error('Verification result contention limit exceeded');
-  }
-
   async recordVerificationObservation(
     sessionId: SessionId,
     finalizationId: string,
     input: VerificationObservationWrite,
   ): Promise<RecordVerificationObservationResult> {
     await this.requireIdentity(sessionId);
-    const admittedFinalizationId = parseFinalizationId(finalizationId);
-    if (!admittedFinalizationId) {
-      throw new Error('Invalid verification observation finalization identifier');
-    }
-    const write = parseVerificationObservationWrite(input);
-    const requested = write ? parseVerificationObservation({ finalizationId, ...write }) : undefined;
-    if (!requested) {
-      throw new Error('Invalid verification observation');
-    }
+    const { admittedFinalizationId, requested } = admitObservationWrite(finalizationId, input);
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
       const current = await this.getCurrentFinalizationRecord(sessionId);
       const existing = await this.getVerificationObservation(sessionId, admittedFinalizationId);
@@ -2072,7 +1882,7 @@ export class DynamoSessionStore
 
   async getBitmapData(sessionId: SessionId, finalizationId: FinalizationId): Promise<FinalizationBitmapRecord | null> {
     const finalization = await this.getFinalizationRecord(sessionId, finalizationId);
-    if (!finalization || !isSucceededFinalizationRecord(finalization)) {
+    if (!finalization || !isSuccessfulFinalizationRecord(finalization)) {
       return null;
     }
     const raw = await this.getSessionItem(bitmapKey(sessionId, finalizationId));
@@ -2086,412 +1896,246 @@ export class DynamoSessionStore
     return admitPersistedFinalizationBitmapData(finalization, item.bitmap) ?? null;
   }
 
-  async commitSuccessfulFinalization(
+  private async loadSuccessfulCommitReceipt(
+    requested: SuccessfulFinalizationRecord,
+    receipt: SuccessfulFinalizationCommitInput['receipt'],
+  ) {
+    const key = receiptKey(requested.sessionId, requested.finalizationId);
+    const existingReceiptRaw = await this.getSessionItem(key);
+    const existingReceipt = admitActiveItem(
+      existingReceiptRaw,
+      (value) => parseReceiptItem(value, requested.sessionId, requested.finalizationId),
+      'Invalid persisted finalization receipt',
+    );
+    const counterRaw = receipt ? await this.getSessionItem('RECEIPT_BOARD_COUNTER') : undefined;
+    const counter = counterRaw === undefined ? undefined : parseReceiptCounterItem(counterRaw);
+    if (counterRaw !== undefined && !counter) {
+      throw new Error('Receipt board counter is corrupt');
+    }
+    if (existingReceipt && receipt && (!counter || counter.nextBoardIndex <= existingReceipt.boardIndex)) {
+      throw new Error('Receipt board counter does not cover the persisted publication');
+    }
+    return { existingReceiptRaw, existingReceipt, counter };
+  }
+
+  private async loadSuccessfulCommitMetadata(
+    requested: SuccessfulFinalizationRecord,
+    runtimePatch: AwsFinalizationRuntimeMetadata | undefined,
+  ) {
+    const runtimeRaw = runtimePatch
+      ? await this.getSessionItem(runtimeMetadataKey(requested.sessionId, requested.finalizationId))
+      : undefined;
+    const existingRuntime = admitActiveItem(
+      runtimeRaw,
+      (value) => parseRuntimeMetadataItem(value, requested.sessionId, requested.finalizationId),
+      'Invalid persisted AWS finalization runtime metadata',
+    );
+    const runtimeMetadata = runtimePatch
+      ? mergeFinalizationRuntimeMetadata(existingRuntime?.metadata, runtimePatch)
+      : undefined;
+    const delivery = await this.loadSuccessfulCommitDelivery(requested, runtimeMetadata);
+    return { existingRuntime, runtimeMetadata, ...delivery };
+  }
+
+  private async loadSuccessfulCommitDelivery(
+    requested: SuccessfulFinalizationRecord,
+    runtimeMetadata: AwsFinalizationRuntimeMetadata | undefined,
+  ) {
+    const deliveryPatch = projectRuntimeBundleDelivery(runtimeMetadata);
+    const deliveryRaw = deliveryPatch
+      ? await this.getSessionItem(deliveryMetadataKey(requested.sessionId, requested.finalizationId))
+      : undefined;
+    const existingDelivery = admitActiveItem(
+      deliveryRaw,
+      (value) => parseDeliveryMetadataItem(value, requested.sessionId, requested.finalizationId),
+      'Invalid persisted AWS verification delivery metadata',
+    );
+    const deliveryMetadata = deliveryPatch ? { ...(existingDelivery?.metadata ?? {}), ...deliveryPatch } : undefined;
+    return { existingDelivery, deliveryMetadata };
+  }
+
+  private async loadSuccessfulCommitArtifacts(requested: SuccessfulFinalizationRecord) {
+    const [bitmapRaw, verificationRaw] = await Promise.all([
+      this.getSessionItem(bitmapKey(requested.sessionId, requested.finalizationId)),
+      this.getSessionItem(verificationKey(requested.sessionId, requested.finalizationId)),
+    ]);
+    const bitmapActive = bitmapRaw !== undefined && !isExpiredItem(bitmapRaw);
+    const verificationActive = verificationRaw !== undefined && !isExpiredItem(verificationRaw);
+    const existingBitmapItem = bitmapActive
+      ? parseBitmapItem(bitmapRaw, requested.sessionId, requested.finalizationId)
+      : undefined;
+    const existingVerificationItem = verificationActive
+      ? parseVerificationItem(verificationRaw, requested.sessionId, requested.finalizationId)
+      : undefined;
+    if (bitmapActive && !existingBitmapItem) {
+      throw new Error('Invalid persisted finalization bitmap');
+    }
+    if (verificationActive && !existingVerificationItem) {
+      throw new Error('Invalid persisted verification result record');
+    }
+    return { bitmapActive, verificationActive, existingBitmapItem, existingVerificationItem };
+  }
+
+  /** Acquire TTL authority before assembling one atomic successful-finalization write. */
+  private async buildSuccessfulCommitTransaction(input: SuccessfulFinalizationWrite): Promise<TransactionItems> {
+    const ttlPlan = await this.buildArtifactTtlUpdatePlan(input.requested.sessionId, this.artifactExpiresAt());
+    return buildSuccessfulFinalizationTransaction(input, {
+      tableName: this.sessionsTableName,
+      expiresAt: ttlPlan.expiresAt,
+      ttlItems: ttlPlan.items,
+    });
+  }
+
+  private assertSuccessfulCommitReplay(
+    current: FinalizationRecord,
+    stored: {
+      receipt: ReceiptItem | undefined;
+      bitmap: BitmapItem | undefined;
+      verification: VerificationItem | undefined;
+      metadata: Awaited<ReturnType<DynamoSessionStore['loadSuccessfulCommitMetadata']>>;
+    },
+    requested: Parameters<typeof assertSuccessfulFinalizationReplay>[1],
+  ): void {
+    assertSuccessfulFinalizationReplay(
+      {
+        record: current,
+        receipt: stored.receipt?.receipt,
+        bitmap: stored.bitmap?.bitmap,
+        verification: stored.verification?.record,
+        runtimeMetadata: stored.metadata.existingRuntime?.metadata,
+        deliveryMetadata: stored.metadata.existingDelivery?.metadata,
+      },
+      requested,
+    );
+  }
+
+  private async loadSuccessfulCommitAuthority(requested: SuccessfulFinalizationRecord) {
+    const loaded = await this.loadFinalizationLifecycle(requested.sessionId, requested.finalizationId);
+    if (loaded.status !== 'loaded') {
+      throw new Error('Finalization lifecycle unavailable for successful commit');
+    }
+    const revision = decodeLifecycleRevision(loaded.lifecycle.revision);
+    const current = loaded.lifecycle.authority.currentRecord;
+    if (!revision) {
+      throw new Error('Stale successful finalization commit');
+    }
+    assertSuccessfulFinalizationLifecycleAdmission(requested, current);
+
+    return { current, revision };
+  }
+
+  private async writeSuccessfulCommit(
+    items: TransactionItems,
+    context: {
+      requested: SuccessfulFinalizationRecord;
+      committed: SuccessfulFinalizationRecord;
+      current: FinalizationRecord | null;
+      observability: SuccessfulFinalizationCommitInput['observability'];
+    },
+    attempt: number,
+  ): Promise<boolean> {
+    const { requested, committed, current, observability } = context;
+    try {
+      await this.writeTransaction(items);
+      recordFinalizationStorePersistenceOutcome({
+        sessionId: requested.sessionId,
+        requestedFinalizationId: requested.finalizationId,
+        requestedTo: 'succeeded',
+        ...(current ? { before: current.state } : {}),
+        actual: committed.state,
+        authoritativeWrite: true,
+        metadata: observability ?? { source: 'finalize', reason: 'STATE_PERSISTED' },
+      });
+      return true;
+    } catch (error) {
+      if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
+        throw error;
+      }
+    }
+    return false;
+  }
+
+  private async attemptSuccessfulFinalizationCommit(
+    input: SuccessfulFinalizationCommitInput,
+    requested: SuccessfulFinalizationRecord,
+    evidence: ReturnType<typeof admitSuccessfulFinalizationEvidence>,
+    runtimePatch: AwsFinalizationRuntimeMetadata | undefined,
+    attempt: number,
+  ): Promise<SuccessfulFinalizationCommitResult | undefined> {
+    const { bitmap, receipt, verification } = evidence;
+    const { current, revision } = await this.loadSuccessfulCommitAuthority(requested);
+
+    const { existingReceiptRaw, existingReceipt, counter } = await this.loadSuccessfulCommitReceipt(requested, receipt);
+    const metadata = await this.loadSuccessfulCommitMetadata(requested, runtimePatch);
+    const { runtimeMetadata, deliveryMetadata } = metadata;
+    const { bitmapActive, verificationActive, existingBitmapItem, existingVerificationItem } =
+      await this.loadSuccessfulCommitArtifacts(requested);
+    const receiptPublication = prepareReceiptPublication(
+      receipt,
+      existingReceipt,
+      counter?.nextBoardIndex ?? FIRST_RECEIPT_BOARD_INDEX,
+    );
+    const committed = buildPublishedSuccessfulFinalization(requested, receiptPublication);
+    const successful = committed;
+    const outcome: SuccessfulFinalizationCommitResult = {
+      record: successful,
+      bitmap,
+      ...(receiptPublication ? { receiptPublication } : {}),
+    };
+
+    if (current?.state.status === 'succeeded') {
+      this.assertSuccessfulCommitReplay(
+        current,
+        {
+          receipt: existingReceipt,
+          bitmap: existingBitmapItem,
+          verification: existingVerificationItem,
+          metadata,
+        },
+        { record: successful, receipt, bitmap, verification, runtimeMetadata, deliveryMetadata },
+      );
+      return outcome;
+    }
+
+    assertNoPrematureCommitArtifacts(
+      bitmapActive,
+      verificationActive,
+      Boolean(existingReceipt || existingReceiptRaw !== undefined),
+    );
+
+    const items = await this.buildSuccessfulCommitTransaction({
+      requested,
+      committed,
+      revision,
+      receipt,
+      receiptPublication,
+      counter,
+      verification,
+      bitmap,
+      metadata,
+    });
+    if (
+      await this.writeSuccessfulCommit(
+        items,
+        { requested, committed, current, observability: input.observability },
+        attempt,
+      )
+    )
+      return outcome;
+    return undefined;
+  }
+
+  override async commitSuccessfulFinalization(
     input: SuccessfulFinalizationCommitInput & { runtimeMetadata?: AwsFinalizationRuntimeMetadata },
   ): Promise<SuccessfulFinalizationCommitResult> {
     const requested = admitSuccessfulFinalizationCommitRecord(input.record);
-    const bitmap = admitFinalizationBitmapDisposition(requested, input.bitmap);
-    const receipt = admitSuccessfulFinalizationReceipt(input.receipt);
-    const verification = input.verificationResult
-      ? parseVerificationResultRecord({
-          sessionId: requested.sessionId,
-          finalizationId: requested.finalizationId,
-          verificationResult: input.verificationResult,
-        })
-      : undefined;
-    if (input.verificationResult && !verification) {
-      throw new Error('Invalid verification result record');
-    }
+    const evidence = admitSuccessfulFinalizationEvidence(requested, input);
     const runtimePatch = input.runtimeMetadata ? this.admitRuntimeMetadata(input.runtimeMetadata) : undefined;
 
     await this.requireIdentity(requested.sessionId);
-    const key = receiptKey(requested.sessionId, requested.finalizationId);
     for (let attempt = 0; attempt < MAX_CONDITIONAL_RETRIES; attempt += 1) {
-      const loaded = await this.loadFinalizationLifecycle(requested.sessionId, requested.finalizationId);
-      if (loaded.status !== 'loaded') {
-        throw new Error('Finalization lifecycle unavailable for successful commit');
-      }
-      const revision = decodeLifecycleRevision(loaded.lifecycle.revision);
-      const current = loaded.lifecycle.authority.currentRecord;
-      if (!revision) {
-        throw new Error('Stale successful finalization commit');
-      }
-      assertSuccessfulFinalizationLifecycleAdmission(requested, current);
-
-      const existingReceiptRaw = await this.getSessionItem(key);
-      const existingReceipt =
-        existingReceiptRaw === undefined || isExpiredItem(existingReceiptRaw)
-          ? undefined
-          : parseReceiptItem(existingReceiptRaw, requested.sessionId, requested.finalizationId);
-      if (existingReceiptRaw !== undefined && !isExpiredItem(existingReceiptRaw) && !existingReceipt) {
-        throw new Error('Invalid persisted finalization receipt');
-      }
-      const counterRaw = receipt ? await this.getSessionItem('RECEIPT_BOARD_COUNTER') : undefined;
-      const counter = counterRaw === undefined ? undefined : parseReceiptCounterItem(counterRaw);
-      if (counterRaw !== undefined && !counter) {
-        throw new Error('Receipt board counter is corrupt');
-      }
-      if (existingReceipt && receipt && (!counter || counter.nextBoardIndex <= existingReceipt.boardIndex)) {
-        throw new Error('Receipt board counter does not cover the persisted publication');
-      }
-      const runtimeRaw = runtimePatch
-        ? await this.getSessionItem(runtimeMetadataKey(requested.sessionId, requested.finalizationId))
-        : undefined;
-      const existingRuntime =
-        runtimeRaw === undefined || isExpiredItem(runtimeRaw)
-          ? undefined
-          : parseRuntimeMetadataItem(runtimeRaw, requested.sessionId, requested.finalizationId);
-      if (runtimeRaw !== undefined && !isExpiredItem(runtimeRaw) && !existingRuntime) {
-        throw new Error('Invalid persisted AWS finalization runtime metadata');
-      }
-      const runtimeMetadata = runtimePatch
-        ? {
-            ...(existingRuntime?.metadata ?? {}),
-            ...runtimePatch,
-            ...(existingRuntime?.metadata.bundleMetadata || runtimePatch.bundleMetadata
-              ? {
-                  bundleMetadata: {
-                    ...(existingRuntime?.metadata.bundleMetadata ?? {}),
-                    ...(runtimePatch.bundleMetadata ?? {}),
-                  },
-                }
-              : {}),
-          }
-        : undefined;
-      const deliveryPatch: AwsVerificationDeliveryMetadataInput | undefined = runtimeMetadata?.bundleMetadata
-        ? {
-            ...(runtimeMetadata.bundleMetadata.s3BundleKey
-              ? { s3BundleKey: runtimeMetadata.bundleMetadata.s3BundleKey }
-              : {}),
-            ...(runtimeMetadata.bundleMetadata.s3UploadedAtMs === undefined
-              ? {}
-              : { s3UploadedAtMs: runtimeMetadata.bundleMetadata.s3UploadedAtMs }),
-          }
-        : undefined;
-      const deliveryRaw = deliveryPatch
-        ? await this.getSessionItem(deliveryMetadataKey(requested.sessionId, requested.finalizationId))
-        : undefined;
-      const existingDelivery =
-        deliveryRaw === undefined || isExpiredItem(deliveryRaw)
-          ? undefined
-          : parseDeliveryMetadataItem(deliveryRaw, requested.sessionId, requested.finalizationId);
-      if (deliveryRaw !== undefined && !isExpiredItem(deliveryRaw) && !existingDelivery) {
-        throw new Error('Invalid persisted AWS verification delivery metadata');
-      }
-      const deliveryMetadata = deliveryPatch ? { ...(existingDelivery?.metadata ?? {}), ...deliveryPatch } : undefined;
-      const [bitmapRaw, verificationRaw] = await Promise.all([
-        this.getSessionItem(bitmapKey(requested.sessionId, requested.finalizationId)),
-        this.getSessionItem(verificationKey(requested.sessionId, requested.finalizationId)),
-      ]);
-      const bitmapActive = bitmapRaw !== undefined && !isExpiredItem(bitmapRaw);
-      const verificationActive = verificationRaw !== undefined && !isExpiredItem(verificationRaw);
-      const existingBitmapItem = bitmapActive
-        ? parseBitmapItem(bitmapRaw, requested.sessionId, requested.finalizationId)
-        : undefined;
-      const existingVerificationItem = verificationActive
-        ? parseVerificationItem(verificationRaw, requested.sessionId, requested.finalizationId)
-        : undefined;
-      if (bitmapActive && !existingBitmapItem) {
-        throw new Error('Invalid persisted finalization bitmap');
-      }
-      if (verificationActive && !existingVerificationItem) {
-        throw new Error('Invalid persisted verification result record');
-      }
-      const receiptHash = receipt
-        ? (existingReceipt?.receiptHash ?? computeSuccessfulFinalizationReceiptHash(receipt))
-        : undefined;
-      const boardIndex = receipt
-        ? (existingReceipt?.boardIndex ?? counter?.nextBoardIndex ?? FIRST_RECEIPT_BOARD_INDEX)
-        : undefined;
-      const receiptPublication =
-        receipt && receiptHash !== undefined && boardIndex !== undefined
-          ? { receiptHash, boardIndex, timestamp: receipt.timestamp }
-          : undefined;
-      const committed = finalizationRecordCodec.admit({
-        ...requested,
-        finalizationResult: {
-          ...requested.finalizationResult,
-          artifacts: {
-            ...requested.finalizationResult.artifacts,
-            ...(receiptPublication
-              ? { receiptPublication: { availability: 'available' as const, publication: receiptPublication } }
-              : {}),
-          },
-        },
-      });
-      if (!committed || committed.state.status !== 'succeeded') {
-        throw new Error('Invalid successful finalization commit');
-      }
-      const successful = committed as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
-      const outcome: SuccessfulFinalizationCommitResult = {
-        record: successful,
-        bitmap,
-        ...(receiptPublication ? { receiptPublication } : {}),
-      };
-
-      if (current?.state.status === 'succeeded') {
-        const existingBitmap = existingBitmapItem?.bitmap;
-        const existingVerification = existingVerificationItem?.record;
-        const expectedBitmap =
-          bitmap.availability === 'available'
-            ? {
-                sessionId: requested.sessionId,
-                finalizationId: requested.finalizationId,
-                ...bitmap.data,
-              }
-            : undefined;
-        if (
-          !isDeepStrictEqual(current, committed) ||
-          !isDeepStrictEqual(existingReceipt?.receipt, receipt) ||
-          !isDeepStrictEqual(existingBitmap, expectedBitmap) ||
-          (verification !== undefined && !isDeepStrictEqual(existingVerification, verification)) ||
-          (runtimeMetadata !== undefined && !isDeepStrictEqual(existingRuntime?.metadata, runtimeMetadata)) ||
-          (deliveryMetadata !== undefined && !isDeepStrictEqual(existingDelivery?.metadata, deliveryMetadata))
-        ) {
-          throw new Error('Successful finalization commit conflicts with existing authority');
-        }
-        return outcome;
-      }
-
-      if (bitmapActive || verificationActive) {
-        throw new Error('Successful finalization artifacts exist before terminal authority');
-      }
-      if (existingReceipt || existingReceiptRaw !== undefined) {
-        throw new Error('Successful finalization receipt exists before terminal authority');
-      }
-
-      const nextRevision = revision.revision + 1;
-      const ttlPlan = await this.buildArtifactTtlUpdatePlan(requested.sessionId, this.artifactExpiresAt());
-      const { expiresAt } = ttlPlan;
-      const pointerCondition =
-        revision.currentFinalizationId === null
-          ? {
-              ConditionExpression: 'attribute_not_exists(#sessionId)',
-              ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-            }
-          : {
-              ConditionExpression: '#revision = :expectedRevision AND #currentFinalizationId = :finalizationId',
-              ExpressionAttributeNames: {
-                '#revision': 'revision',
-                '#currentFinalizationId': 'currentFinalizationId',
-              },
-              ExpressionAttributeValues: {
-                ':expectedRevision': revision.revision,
-                ':finalizationId': requested.finalizationId,
-              },
-            };
-      const items: TransactionItems = [
-        {
-          Put: {
-            TableName: this.sessionsTableName,
-            Item: {
-              sessionId: currentFinalizationKey(requested.sessionId),
-              itemType: 'FINALIZATION_CURRENT',
-              ownerSessionId: requested.sessionId,
-              currentFinalizationId: requested.finalizationId,
-              revision: nextRevision,
-              expiresAt,
-            } satisfies CurrentFinalizationItem,
-            ...pointerCondition,
-          },
-        },
-        {
-          Put: {
-            TableName: this.sessionsTableName,
-            Item: {
-              sessionId: finalizationKey(requested.sessionId, requested.finalizationId),
-              itemType: 'FINALIZATION',
-              ownerSessionId: requested.sessionId,
-              finalizationId: requested.finalizationId,
-              record: finalizationRecordCodec.encode(committed),
-              revision: nextRevision,
-              expiresAt,
-            } satisfies PersistedFinalizationItem,
-            ConditionExpression:
-              revision.currentFinalizationId === null
-                ? 'attribute_not_exists(#sessionId)'
-                : '#revision = :expectedRevision',
-            ExpressionAttributeNames:
-              revision.currentFinalizationId === null ? { '#sessionId': 'sessionId' } : { '#revision': 'revision' },
-            ...(revision.currentFinalizationId === null
-              ? {}
-              : { ExpressionAttributeValues: { ':expectedRevision': revision.revision } }),
-          },
-        },
-        ...(receipt && receiptPublication
-          ? [
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: {
-                    sessionId: key,
-                    itemType: 'FINALIZATION_RECEIPT',
-                    ownerSessionId: requested.sessionId,
-                    finalizationId: requested.finalizationId,
-                    receiptHash: receiptPublication.receiptHash,
-                    boardIndex: receiptPublication.boardIndex,
-                    receipt: { ...receipt },
-                    expiresAt,
-                  } satisfies ReceiptItem,
-                  ConditionExpression: 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-                },
-              },
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: {
-                    sessionId: 'RECEIPT_BOARD_COUNTER',
-                    itemType: 'RECEIPT_COUNTER',
-                    nextBoardIndex: receiptPublication.boardIndex + 1,
-                  } satisfies ReceiptCounterItem,
-                  ConditionExpression: counter
-                    ? '#nextBoardIndex = :expectedNextBoardIndex'
-                    : 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: counter
-                    ? { '#nextBoardIndex': 'nextBoardIndex' }
-                    : { '#sessionId': 'sessionId' },
-                  ...(counter
-                    ? { ExpressionAttributeValues: { ':expectedNextBoardIndex': counter.nextBoardIndex } }
-                    : {}),
-                },
-              },
-            ]
-          : []),
-        ...(verification
-          ? [
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: {
-                    sessionId: verificationKey(requested.sessionId, requested.finalizationId),
-                    itemType: 'VERIFICATION_RESULT',
-                    ownerSessionId: requested.sessionId,
-                    finalizationId: requested.finalizationId,
-                    record: verification,
-                    revision: 1,
-                    expiresAt,
-                  } satisfies VerificationItem,
-                  ConditionExpression: 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-                },
-              },
-            ]
-          : [
-              {
-                ConditionCheck: {
-                  TableName: this.sessionsTableName,
-                  Key: { sessionId: verificationKey(requested.sessionId, requested.finalizationId) },
-                  ConditionExpression: 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-                },
-              },
-            ]),
-        ...(bitmap.availability === 'available'
-          ? [
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: {
-                    sessionId: bitmapKey(requested.sessionId, requested.finalizationId),
-                    itemType: 'FINALIZATION_BITMAP',
-                    ownerSessionId: requested.sessionId,
-                    finalizationId: requested.finalizationId,
-                    bitmap: {
-                      sessionId: requested.sessionId,
-                      finalizationId: requested.finalizationId,
-                      ...finalizationBitmapDataCodec.encode(bitmap.data),
-                    },
-                    expiresAt,
-                  } satisfies BitmapItem,
-                  ConditionExpression: 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-                },
-              },
-            ]
-          : [
-              {
-                ConditionCheck: {
-                  TableName: this.sessionsTableName,
-                  Key: { sessionId: bitmapKey(requested.sessionId, requested.finalizationId) },
-                  ConditionExpression: 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: { '#sessionId': 'sessionId' },
-                },
-              },
-            ]),
-        ...(runtimeMetadata
-          ? [
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: {
-                    sessionId: runtimeMetadataKey(requested.sessionId, requested.finalizationId),
-                    itemType: 'FINALIZATION_RUNTIME',
-                    ownerSessionId: requested.sessionId,
-                    finalizationId: requested.finalizationId,
-                    metadata: runtimeMetadata,
-                    revision: (existingRuntime?.revision ?? 0) + 1,
-                    expiresAt,
-                  } satisfies RuntimeMetadataItem,
-                  ConditionExpression: existingRuntime
-                    ? '#revision = :expectedRevision'
-                    : 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: existingRuntime
-                    ? { '#revision': 'revision' }
-                    : { '#sessionId': 'sessionId' },
-                  ...(existingRuntime
-                    ? { ExpressionAttributeValues: { ':expectedRevision': existingRuntime.revision } }
-                    : {}),
-                },
-              },
-            ]
-          : []),
-        ...(deliveryMetadata
-          ? [
-              {
-                Put: {
-                  TableName: this.sessionsTableName,
-                  Item: {
-                    sessionId: deliveryMetadataKey(requested.sessionId, requested.finalizationId),
-                    itemType: 'VERIFICATION_DELIVERY',
-                    ownerSessionId: requested.sessionId,
-                    finalizationId: requested.finalizationId,
-                    metadata: deliveryMetadata,
-                    revision: (existingDelivery?.revision ?? 0) + 1,
-                    expiresAt,
-                  } satisfies DeliveryMetadataItem,
-                  ConditionExpression: existingDelivery
-                    ? '#revision = :expectedRevision'
-                    : 'attribute_not_exists(#sessionId)',
-                  ExpressionAttributeNames: existingDelivery
-                    ? { '#revision': 'revision' }
-                    : { '#sessionId': 'sessionId' },
-                  ...(existingDelivery
-                    ? { ExpressionAttributeValues: { ':expectedRevision': existingDelivery.revision } }
-                    : {}),
-                },
-              },
-            ]
-          : []),
-        ...ttlPlan.items,
-      ];
-      try {
-        await this.writeTransaction(items);
-        recordFinalizationStorePersistenceOutcome({
-          sessionId: requested.sessionId,
-          requestedFinalizationId: requested.finalizationId,
-          requestedTo: 'succeeded',
-          ...(current ? { before: current.state } : {}),
-          actual: committed.state,
-          authoritativeWrite: true,
-          metadata: input.observability ?? { source: 'finalize', reason: 'STATE_PERSISTED' },
-        });
-        return outcome;
-      } catch (error) {
-        if (!isConditionalFailure(error) || attempt + 1 === MAX_CONDITIONAL_RETRIES) {
-          throw error;
-        }
-      }
+      const outcome = await this.attemptSuccessfulFinalizationCommit(input, requested, evidence, runtimePatch, attempt);
+      if (outcome) return outcome;
     }
     throw new Error('Successful finalization commit contention limit exceeded');
   }

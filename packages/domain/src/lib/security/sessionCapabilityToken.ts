@@ -80,49 +80,16 @@ export function verifySessionCapabilityToken(
     return { ok: false, reason: 'invalid' };
   }
 
-  const parts = token.trim().split('.');
-  if (parts.length !== 3) {
-    return { ok: false, reason: 'invalid' };
-  }
-
-  const [version, payload, signature] = parts;
-  if (!version || !payload || !signature) {
-    return { ok: false, reason: 'invalid' };
-  }
-  if (version !== TOKEN_VERSION) {
-    return { ok: false, reason: 'invalid' };
-  }
-
-  const signed = `${version}.${payload}`;
-  const expectedSignature = sign(signed, secret);
-  if (!safeTimingEqualHex(expectedSignature, signature)) {
-    return { ok: false, reason: 'invalid' };
-  }
-
-  const decoded = decodeBase64Url(payload);
-  if (!decoded) {
-    return { ok: false, reason: 'invalid' };
-  }
-
-  let claims: unknown;
-  try {
-    claims = JSON.parse(decoded) as unknown;
-  } catch {
-    return { ok: false, reason: 'invalid' };
-  }
-
-  if (!isSessionCapabilityClaims(claims)) {
-    return { ok: false, reason: 'invalid' };
-  }
+  const payload = authenticateCapabilityPayload(token, secret);
+  if (!payload) return { ok: false, reason: 'invalid' };
+  const claims = parseCapabilityClaims(payload);
+  if (!claims) return { ok: false, reason: 'invalid' };
 
   if (claims.sid !== sessionId) {
     return { ok: false, reason: 'session_mismatch' };
   }
 
-  const maxTtlSeconds =
-    typeof options.maxTtlSeconds === 'number' && Number.isInteger(options.maxTtlSeconds) && options.maxTtlSeconds > 0
-      ? options.maxTtlSeconds
-      : MAX_SESSION_CAPABILITY_TTL_SECONDS;
+  const maxTtlSeconds = resolveCapabilityMaxTtl(options.maxTtlSeconds);
   if (claims.exp - claims.iat > maxTtlSeconds || claims.exp <= claims.iat) {
     return { ok: false, reason: 'invalid' };
   }
@@ -141,6 +108,52 @@ export function verifySessionCapabilityToken(
       nonce: claims.nonce,
     },
   };
+}
+
+function authenticateCapabilityPayload(token: CapabilityToken, secret: string): string | undefined {
+  const parts = token.trim().split('.');
+  if (parts.length !== 3) {
+    return undefined;
+  }
+
+  const [version, payload, signature] = parts;
+  if (!version || !payload || !signature) {
+    return undefined;
+  }
+  if (version !== TOKEN_VERSION) {
+    return undefined;
+  }
+
+  const signed = `${version}.${payload}`;
+  const expectedSignature = sign(signed, secret);
+  if (!safeTimingEqualHex(expectedSignature, signature)) {
+    return undefined;
+  }
+
+  return payload;
+}
+
+function parseCapabilityClaims(payload: string): SessionCapabilityClaims | undefined {
+  const decoded = decodeBase64Url(payload);
+  if (!decoded) {
+    return undefined;
+  }
+
+  let claims: unknown;
+  try {
+    claims = JSON.parse(decoded) as unknown;
+  } catch {
+    return undefined;
+  }
+
+  if (!isSessionCapabilityClaims(claims)) {
+    return undefined;
+  }
+  return claims;
+}
+
+function resolveCapabilityMaxTtl(value: number | undefined): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : MAX_SESSION_CAPABILITY_TTL_SECONDS;
 }
 
 function sign(message: string, secret: string): string {
@@ -163,11 +176,13 @@ function isSessionCapabilityClaims(value: unknown): value is SessionCapabilityCl
     sid.length > 0 &&
     typeof nonce === 'string' &&
     nonce.length > 0 &&
-    Number.isInteger(iat) &&
-    (iat as number) > 0 &&
-    Number.isInteger(exp) &&
-    (exp as number) > 0
+    isPositiveClaimTimestamp(iat) &&
+    isPositiveClaimTimestamp(exp)
   );
+}
+
+function isPositiveClaimTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 function encodeBase64Url(value: string): string {

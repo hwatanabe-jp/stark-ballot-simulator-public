@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 
-export const BITMAP_CHUNK_BYTES = 32;
+const BITMAP_CHUNK_BYTES = 32;
 export const BITMAP_CHUNK_BITS = BITMAP_CHUNK_BYTES * 8;
 
 const BITMAP_LEAF_USAGE_TAG = utf8ToBytes('stark-ballot:leaf|v1');
@@ -24,7 +24,7 @@ export function packBitmapBitsToBytes(bits: readonly boolean[]): Uint8Array {
   return bytes;
 }
 
-export function splitBitmapBytesIntoChunks(bytes: Uint8Array): Uint8Array[] {
+function splitBitmapBytesIntoChunks(bytes: Uint8Array): Uint8Array[] {
   const chunks: Uint8Array[] = [];
 
   for (let offset = 0; offset < bytes.length; offset += BITMAP_CHUNK_BYTES) {
@@ -40,7 +40,7 @@ export function splitBitmapBytesIntoChunks(bytes: Uint8Array): Uint8Array[] {
   return chunks;
 }
 
-export function hashBitmapLeafChunk(chunk: Uint8Array): Uint8Array {
+function hashBitmapLeafChunk(chunk: Uint8Array): Uint8Array {
   const hash = sha256.create();
   hash.update(Uint8Array.of(0));
   hash.update(BITMAP_LEAF_USAGE_TAG);
@@ -48,7 +48,7 @@ export function hashBitmapLeafChunk(chunk: Uint8Array): Uint8Array {
   return hash.digest();
 }
 
-export function hashBitmapInternalNode(left: Uint8Array, right: Uint8Array): Uint8Array {
+function hashBitmapInternalNode(left: Uint8Array, right: Uint8Array): Uint8Array {
   const hash = sha256.create();
   hash.update(Uint8Array.of(1));
   hash.update(left);
@@ -56,7 +56,7 @@ export function hashBitmapInternalNode(left: Uint8Array, right: Uint8Array): Uin
   return hash.digest();
 }
 
-export function computeBitmapMerkleRootBytes(leaves: readonly Uint8Array[]): Uint8Array {
+function computeBitmapMerkleRootBytes(leaves: readonly Uint8Array[]): Uint8Array {
   const root = buildBitmapMerkleTreeByteLevels(leaves).at(-1)?.[0];
   if (root === undefined) {
     throw new Error('Merkle tree root is missing');
@@ -64,7 +64,7 @@ export function computeBitmapMerkleRootBytes(leaves: readonly Uint8Array[]): Uin
   return root;
 }
 
-export function buildBitmapMerkleTreeByteLevels(leaves: readonly Uint8Array[]): Uint8Array[][] {
+function buildBitmapMerkleTreeByteLevels(leaves: readonly Uint8Array[]): Uint8Array[][] {
   if (leaves.length === 0) {
     return [[new Uint8Array(BITMAP_CHUNK_BYTES)]];
   }

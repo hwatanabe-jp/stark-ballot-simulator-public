@@ -8,9 +8,9 @@
 import { downloadFromS3 } from './s3-download';
 import {
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
 import {
@@ -81,7 +81,7 @@ function isTransientS3Failure(error: unknown): boolean {
     return true;
   }
 
-  const metadata = getRecordProperty(error, '$metadata');
+  const metadata = getObjectProperty(error, '$metadata');
   const httpStatusCode = getNumberProperty(metadata, 'httpStatusCode');
   return httpStatusCode === 429 || (httpStatusCode !== undefined && httpStatusCode >= 500 && httpStatusCode <= 599);
 }
@@ -108,6 +108,134 @@ export interface RestoredReceipt {
   closeStatement?: CloseStatement;
   includedBitmapArtifact?: IncludedBitmapArtifact;
   seenBitmapArtifact?: SeenBitmapArtifact;
+}
+
+function restoreJournal(buffer: Buffer | undefined): unknown {
+  let journalData: unknown = undefined;
+  if (buffer) {
+    try {
+      journalData = JSON.parse(buffer.toString('utf8'));
+      logger.info(`[S3 Restore] Journal restored successfully`);
+    } catch {
+      logger.warn('[S3 Restore] Failed to parse journal.json');
+    }
+  }
+
+  return journalData;
+}
+
+function restorePublicInput(buffer: Buffer | undefined, bundleKey: string) {
+  let publicInputArtifact: SupportedPublicInputArtifact | undefined;
+  let publicInput: unknown;
+  if (buffer) {
+    const finalizationId = extractFinalizationIdFromBundleKey(bundleKey);
+    try {
+      const publicInputData: unknown = JSON.parse(buffer.toString('utf8'));
+      publicInput = publicInputData;
+      publicInputArtifact = parseSupportedPublicInputArtifact(publicInputData, {
+        ...omitUndefinedProperties({ finalizationId }),
+        bundleKey,
+        source: 'bundle',
+      });
+      if (publicInputArtifact) {
+        logger.info(`[S3 Restore] Public input authority restored successfully`);
+      } else {
+        logger.warn('[S3 Restore] public-input.json was readable but did not match the supported contract');
+      }
+    } catch {
+      logger.warn('[S3 Restore] Failed to parse public-input.json');
+    }
+  }
+
+  return { publicInputArtifact, publicInput };
+}
+
+function restoreAuditArtifact<T>(
+  buffer: Buffer | undefined,
+  fileName: string,
+  admit: (value: unknown) => value is T,
+): T | undefined {
+  if (!buffer) return undefined;
+  try {
+    const value: unknown = JSON.parse(buffer.toString('utf8'));
+    if (admit(value)) return value;
+    logger.warn(`[S3 Restore] ${fileName} did not match expected shape`);
+  } catch {
+    logger.warn(`[S3 Restore] Failed to parse ${fileName}`);
+  }
+  return undefined;
+}
+
+async function restorePrivateBitmap<
+  T extends { treeSize: number; includedBitmapRoot?: string; seenBitmapRoot?: string },
+>(
+  profile: ResolvedRuntimeProfile,
+  bundleKey: string,
+  journal: unknown,
+  artifact: {
+    fileName: string;
+    label: string;
+    journalKey: 'includedBitmapRoot' | 'seenBitmapRoot';
+    parse: (value: unknown) => T | null | undefined;
+  },
+): Promise<T | undefined> {
+  const key = deriveSiblingObjectKey(bundleKey, artifact.fileName);
+  if (!key) return undefined;
+  try {
+    const buffer = await downloadFromS3(profile, key);
+    const value: unknown = JSON.parse(buffer.toString('utf8'));
+    const parsed = artifact.parse(value);
+    if (parsed && matchesJournalBitmapRoot(parsed, journal, artifact.journalKey)) return parsed;
+    logger.warn(`[S3 Restore] ${artifact.fileName} failed validation or did not match journal bitmap metadata`);
+  } catch (error) {
+    handleOptionalArtifactFailure(error, artifact.label);
+  }
+  return undefined;
+}
+
+function restoreBundleReceipt(entries: ReadonlyMap<string, Buffer>, bundleKey: string): RestoredReceipt {
+  const receiptBuffer = entries.get('receipt.json');
+  if (!receiptBuffer) {
+    throw new BundleArtifactError('receipt.json not found in bundle');
+  }
+
+  // Step 3: Parse receipt.json
+  const receiptData: unknown = JSON.parse(receiptBuffer.toString('utf8'));
+  const receiptRecord = isNonNullObject(receiptData) ? receiptData : null;
+  if (!receiptRecord) {
+    throw new Error('receipt.json must contain a JSON object');
+  }
+  const receiptPayload = getObjectProperty(receiptRecord, 'receipt') ?? receiptRecord;
+
+  const journalData = restoreJournal(entries.get('journal.json'));
+  const { publicInputArtifact, publicInput } = restorePublicInput(entries.get('public-input.json'), bundleKey);
+
+  logger.info(`[S3 Restore] Receipt restored successfully`);
+
+  const restored: RestoredReceipt = {
+    receipt: receiptPayload,
+    receiptRaw: admitReceiptPayload(receiptRecord),
+    journal: journalData,
+    ...omitUndefinedProperties({ publicInputArtifact: publicInputArtifact }),
+  };
+  if (publicInput !== undefined) {
+    restored.publicInput = publicInput;
+  }
+
+  const electionManifest = restoreAuditArtifact(
+    entries.get('election-manifest.json'),
+    'election-manifest.json',
+    isElectionManifest,
+  );
+  if (electionManifest !== undefined) restored.electionManifest = electionManifest;
+  const closeStatement = restoreAuditArtifact(
+    entries.get('close-statement.json'),
+    'close-statement.json',
+    isCloseStatement,
+  );
+  if (closeStatement !== undefined) restored.closeStatement = closeStatement;
+
+  return restored;
 }
 
 /**
@@ -144,129 +272,21 @@ export async function restoreReceiptFromS3(
       'election-manifest.json',
       'close-statement.json',
     ]);
-    const receiptBuffer = entries.get('receipt.json');
-    if (!receiptBuffer) {
-      throw new BundleArtifactError('receipt.json not found in bundle');
-    }
-
-    // Step 3: Parse receipt.json
-    const receiptData: unknown = JSON.parse(receiptBuffer.toString('utf8'));
-    const receiptRecord = isRecord(receiptData) ? receiptData : null;
-    if (!receiptRecord) {
-      throw new Error('receipt.json must contain a JSON object');
-    }
-    const receiptPayload = getRecordProperty(receiptRecord, 'receipt') ?? receiptRecord;
-
-    // Step 4: Locate and parse journal.json (optional, may be large ~15 MB)
-    const journalBuffer = entries.get('journal.json');
-    let journalData: unknown = undefined;
-    if (journalBuffer) {
-      try {
-        journalData = JSON.parse(journalBuffer.toString('utf8'));
-        logger.info(`[S3 Restore] Journal restored successfully`);
-      } catch {
-        logger.warn('[S3 Restore] Failed to parse journal.json');
-      }
-    }
-
-    // Step 5: Locate and parse public-input.json (optional)
-    const publicInputBuffer = entries.get('public-input.json');
-    let publicInputArtifact: SupportedPublicInputArtifact | undefined;
-    let publicInput: unknown;
-    if (publicInputBuffer) {
-      const finalizationId = extractFinalizationIdFromBundleKey(bundleKey);
-      try {
-        const publicInputData: unknown = JSON.parse(publicInputBuffer.toString('utf8'));
-        publicInput = publicInputData;
-        publicInputArtifact = parseSupportedPublicInputArtifact(publicInputData, {
-          ...omitUndefinedProperties({ finalizationId }),
-          bundleKey,
-          source: 'bundle',
-        });
-        if (publicInputArtifact) {
-          logger.info(`[S3 Restore] Public input authority restored successfully`);
-        } else {
-          logger.warn('[S3 Restore] public-input.json was readable but did not match the supported contract');
-        }
-      } catch {
-        logger.warn('[S3 Restore] Failed to parse public-input.json');
-      }
-    }
-
-    logger.info(`[S3 Restore] Receipt restored successfully`);
-
-    const restored: RestoredReceipt = {
-      receipt: receiptPayload,
-      receiptRaw: admitReceiptPayload(receiptRecord),
-      journal: journalData,
-      ...omitUndefinedProperties({ publicInputArtifact: publicInputArtifact }),
-    };
-    if (publicInput !== undefined) {
-      restored.publicInput = publicInput;
-    }
-
-    const electionManifestBuffer = entries.get('election-manifest.json');
-    if (electionManifestBuffer) {
-      try {
-        const electionManifestData: unknown = JSON.parse(electionManifestBuffer.toString('utf8'));
-        if (isElectionManifest(electionManifestData)) {
-          restored.electionManifest = electionManifestData;
-        } else {
-          logger.warn('[S3 Restore] election-manifest.json did not match expected shape');
-        }
-      } catch {
-        logger.warn('[S3 Restore] Failed to parse election-manifest.json');
-      }
-    }
-
-    const closeStatementBuffer = entries.get('close-statement.json');
-    if (closeStatementBuffer) {
-      try {
-        const closeStatementData: unknown = JSON.parse(closeStatementBuffer.toString('utf8'));
-        if (isCloseStatement(closeStatementData)) {
-          restored.closeStatement = closeStatementData;
-        } else {
-          logger.warn('[S3 Restore] close-statement.json did not match expected shape');
-        }
-      } catch {
-        logger.warn('[S3 Restore] Failed to parse close-statement.json');
-      }
-    }
-
-    const includedBitmapKey = deriveSiblingObjectKey(bundleKey, 'included-bitmap.json');
-    if (includedBitmapKey) {
-      try {
-        const includedBitmapBuffer = await downloadFromS3(profile, includedBitmapKey);
-        const includedBitmapData: unknown = JSON.parse(includedBitmapBuffer.toString('utf8'));
-        const includedBitmapArtifact = parseIncludedBitmapArtifact(includedBitmapData);
-        if (
-          includedBitmapArtifact &&
-          matchesJournalBitmapRoot(includedBitmapArtifact, journalData, 'includedBitmapRoot')
-        ) {
-          restored.includedBitmapArtifact = includedBitmapArtifact;
-        } else {
-          logger.warn('[S3 Restore] included-bitmap.json failed validation or did not match journal bitmap metadata');
-        }
-      } catch (error) {
-        handleOptionalArtifactFailure(error, 'Included bitmap artifact');
-      }
-    }
-
-    const seenBitmapKey = deriveSiblingObjectKey(bundleKey, 'seen-bitmap.json');
-    if (seenBitmapKey) {
-      try {
-        const seenBitmapBuffer = await downloadFromS3(profile, seenBitmapKey);
-        const seenBitmapData: unknown = JSON.parse(seenBitmapBuffer.toString('utf8'));
-        const seenBitmapArtifact = parseSeenBitmapArtifact(seenBitmapData);
-        if (seenBitmapArtifact && matchesJournalBitmapRoot(seenBitmapArtifact, journalData, 'seenBitmapRoot')) {
-          restored.seenBitmapArtifact = seenBitmapArtifact;
-        } else {
-          logger.warn('[S3 Restore] seen-bitmap.json failed validation or did not match journal bitmap metadata');
-        }
-      } catch (error) {
-        handleOptionalArtifactFailure(error, 'Seen bitmap artifact');
-      }
-    }
+    const restored = restoreBundleReceipt(entries, bundleKey);
+    const includedBitmapArtifact = await restorePrivateBitmap(profile, bundleKey, restored.journal, {
+      fileName: 'included-bitmap.json',
+      label: 'Included bitmap artifact',
+      journalKey: 'includedBitmapRoot',
+      parse: parseIncludedBitmapArtifact,
+    });
+    if (includedBitmapArtifact !== undefined) restored.includedBitmapArtifact = includedBitmapArtifact;
+    const seenBitmapArtifact = await restorePrivateBitmap(profile, bundleKey, restored.journal, {
+      fileName: 'seen-bitmap.json',
+      label: 'Seen bitmap artifact',
+      journalKey: 'seenBitmapRoot',
+      parse: parseSeenBitmapArtifact,
+    });
+    if (seenBitmapArtifact !== undefined) restored.seenBitmapArtifact = seenBitmapArtifact;
 
     return restored;
   } catch (error) {
@@ -314,7 +334,7 @@ function matchesJournalBitmapRoot(
   journal: unknown,
   journalKey: 'includedBitmapRoot' | 'seenBitmapRoot',
 ): boolean {
-  if (!isRecord(journal)) {
+  if (!isNonNullObject(journal)) {
     return false;
   }
 

@@ -57,18 +57,23 @@ function reviewedHistoricalReferenceKey(reference: ReviewedHistoricalReference):
   return `${reference.sourcePath}\0${reference.line}\0${reference.destination}`;
 }
 
+function parseHistoricalSourcePath(sourcePath: unknown, location: string): string {
+  if (typeof sourcePath !== 'string' || path.posix.normalize(sourcePath) !== sourcePath || /[*?[\]]/.test(sourcePath)) {
+    throw new Error(`${location}.sourcePath must be an exact normalized repository path`);
+  }
+  return sourcePath;
+}
+
 function parseReviewedHistoricalReference(value: unknown, index: number): ReviewedHistoricalReference {
   const location = `${REVIEWED_HISTORICAL_REFERENCES_PATH}.references[${index}]`;
   if (!isRecord(value) || !hasExactKeys(value, ['destination', 'line', 'sourcePath'])) {
     throw new Error(`${location} must contain exactly sourcePath, line, and destination`);
   }
 
-  const sourcePath = value['sourcePath'];
+  const rawSourcePath = value['sourcePath'];
   const line = value['line'];
   const destination = value['destination'];
-  if (typeof sourcePath !== 'string' || path.posix.normalize(sourcePath) !== sourcePath || /[*?[\]]/.test(sourcePath)) {
-    throw new Error(`${location}.sourcePath must be an exact normalized repository path`);
-  }
+  const sourcePath = parseHistoricalSourcePath(rawSourcePath, location);
   if (typeof line !== 'number' || !Number.isInteger(line) || line < 1) {
     throw new Error(`${location}.line must be a positive integer`);
   }
@@ -90,6 +95,27 @@ function parseHistoricalRoot(value: unknown, index: number): string {
     throw new Error(`${location} must be an exact normalized repository directory prefix`);
   }
   return value;
+}
+
+function validateHistoricalReferences(
+  historicalRoots: readonly string[],
+  references: readonly ReviewedHistoricalReference[],
+): void {
+  for (const reference of references) {
+    if (!historicalRoots.some((historicalRoot) => reference.sourcePath.startsWith(historicalRoot))) {
+      throw new Error(
+        `${REVIEWED_HISTORICAL_REFERENCES_PATH}: reviewed historical reference source must be under an approved historical root`,
+      );
+    }
+  }
+  const keys = new Set<string>();
+  for (const reference of references) {
+    const key = reviewedHistoricalReferenceKey(reference);
+    if (keys.has(key)) {
+      throw new Error(`${REVIEWED_HISTORICAL_REFERENCES_PATH} contains a duplicate reviewed reference`);
+    }
+    keys.add(key);
+  }
 }
 
 function loadReviewedHistoricalReferenceManifest(root: string): ReviewedHistoricalReferenceManifest {
@@ -118,21 +144,7 @@ function loadReviewedHistoricalReferenceManifest(root: string): ReviewedHistoric
 
   const historicalRoots = value['historicalRoots'].map(parseHistoricalRoot);
   const references = value['references'].map(parseReviewedHistoricalReference);
-  for (const reference of references) {
-    if (!historicalRoots.some((historicalRoot) => reference.sourcePath.startsWith(historicalRoot))) {
-      throw new Error(
-        `${REVIEWED_HISTORICAL_REFERENCES_PATH}: reviewed historical reference source must be under an approved historical root`,
-      );
-    }
-  }
-  const keys = new Set<string>();
-  for (const reference of references) {
-    const key = reviewedHistoricalReferenceKey(reference);
-    if (keys.has(key)) {
-      throw new Error(`${REVIEWED_HISTORICAL_REFERENCES_PATH} contains a duplicate reviewed reference`);
-    }
-    keys.add(key);
-  }
+  validateHistoricalReferences(historicalRoots, references);
   return { historicalRoots, references };
 }
 
@@ -296,6 +308,23 @@ function normalizeHeadingAnchor(heading: string): string {
     .replace(/\s/g, '-');
 }
 
+function appendLineAnchors(line: string, anchors: Set<string>, headingCounts: Map<string, number>): void {
+  const heading = line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/)?.[1];
+  if (heading !== undefined) {
+    const baseAnchor = normalizeHeadingAnchor(heading);
+    const duplicateCount = headingCounts.get(baseAnchor) ?? 0;
+    headingCounts.set(baseAnchor, duplicateCount + 1);
+    anchors.add(duplicateCount === 0 ? baseAnchor : `${baseAnchor}-${duplicateCount}`);
+  }
+
+  for (const match of line.matchAll(/\bid=["']([^"']+)["']/g)) {
+    const explicitId = match[1];
+    if (explicitId !== undefined) {
+      anchors.add(explicitId);
+    }
+  }
+}
+
 function collectMarkdownAnchors(markdown: string): Set<string> {
   const anchors = new Set<string>();
   const headingCounts = new Map<string, number>();
@@ -310,20 +339,7 @@ function collectMarkdownAnchors(markdown: string): Set<string> {
       continue;
     }
 
-    const heading = line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/)?.[1];
-    if (heading !== undefined) {
-      const baseAnchor = normalizeHeadingAnchor(heading);
-      const duplicateCount = headingCounts.get(baseAnchor) ?? 0;
-      headingCounts.set(baseAnchor, duplicateCount + 1);
-      anchors.add(duplicateCount === 0 ? baseAnchor : `${baseAnchor}-${duplicateCount}`);
-    }
-
-    for (const match of line.matchAll(/\bid=["']([^"']+)["']/g)) {
-      const explicitId = match[1];
-      if (explicitId !== undefined) {
-        anchors.add(explicitId);
-      }
-    }
+    appendLineAnchors(line, anchors, headingCounts);
   }
 
   return anchors;
@@ -341,6 +357,63 @@ function isExternalDestination(destination: string): boolean {
 function isPathInsideRoot(root: string, targetPath: string): boolean {
   const relativePath = path.relative(root, targetPath);
   return relativePath === '' || (!relativePath.startsWith(`..${path.sep}`) && relativePath !== '..');
+}
+
+function markdownReferenceProblemReason(
+  root: string,
+  sourceFile: string,
+  reference: MarkdownReference,
+  anchorCache: Map<string, Set<string>>,
+): MarkdownLinkProblem['reason'] | undefined {
+  const destination = reference.destination;
+  if (!destination.startsWith('#') && isExternalDestination(destination)) return undefined;
+  const [rawTarget = '', rawAnchor] = destination.split('#', 2);
+  const targetWithoutQuery = rawTarget.split('?', 1)[0] ?? '';
+  const decodedTarget = decodeLinkComponent(targetWithoutQuery);
+  const targetPath = decodedTarget ? path.resolve(path.dirname(sourceFile), decodedTarget) : sourceFile;
+  if (!isPathInsideRoot(root, targetPath)) return 'outside-root';
+  if (!existsSync(targetPath)) return 'missing-target';
+  return markdownAnchorProblemReason(targetPath, rawAnchor, anchorCache);
+}
+
+function markdownAnchorProblemReason(
+  targetPath: string,
+  rawAnchor: string | undefined,
+  anchorCache: Map<string, Set<string>>,
+): MarkdownLinkProblem['reason'] | undefined {
+  if (rawAnchor === undefined || path.extname(targetPath).toLocaleLowerCase('en') !== '.md') return undefined;
+  const decodedAnchor = decodeLinkComponent(rawAnchor);
+  const targetAnchors = anchorCache.get(targetPath) ?? collectMarkdownAnchors(readFileSync(targetPath, 'utf8'));
+  anchorCache.set(targetPath, targetAnchors);
+  return targetAnchors.has(decodedAnchor) ? undefined : 'missing-anchor';
+}
+
+function filterReviewedHistoricalProblems(
+  problems: MarkdownLinkProblem[],
+  reviewedHistoricalReferences: readonly ReviewedHistoricalReference[],
+): MarkdownLinkProblem[] {
+  const reviewableProblems = new Set(
+    problems
+      .filter((problem) => problem.reason === 'missing-target' || problem.reason === 'missing-anchor')
+      .map(reviewedHistoricalReferenceKey),
+  );
+  for (const reference of reviewedHistoricalReferences) {
+    if (!reviewableProblems.has(reviewedHistoricalReferenceKey(reference))) {
+      throw new Error(
+        `${REVIEWED_HISTORICAL_REFERENCES_PATH}: stale reviewed historical reference ${reference.sourcePath}:${reference.line} -> ${reference.destination}`,
+      );
+    }
+  }
+
+  const reviewedKeys = new Set(reviewedHistoricalReferences.map(reviewedHistoricalReferenceKey));
+  return problems
+    .filter((problem) => !reviewedKeys.has(reviewedHistoricalReferenceKey(problem)))
+    .sort((left, right) => {
+      const pathOrder = compareText(left.sourcePath, right.sourcePath);
+      if (pathOrder !== 0) return pathOrder;
+      if (left.line !== right.line) return left.line - right.line;
+      return compareText(left.destination, right.destination);
+    });
 }
 
 export function findBrokenMarkdownLinks(rootPath: string): MarkdownLinkProblem[] {
@@ -367,78 +440,19 @@ export function findBrokenMarkdownLinks(rootPath: string): MarkdownLinkProblem[]
     }
 
     for (const reference of collectMarkdownReferences(scannableMarkdown)) {
-      const destination = reference.destination;
-      if (isExternalDestination(destination) || destination.startsWith('#')) {
-        if (!destination.startsWith('#')) {
-          continue;
-        }
-      }
-
-      const [rawTarget = '', rawAnchor] = destination.split('#', 2);
-      const targetWithoutQuery = rawTarget.split('?', 1)[0] ?? '';
-      const decodedTarget = decodeLinkComponent(targetWithoutQuery);
-      const targetPath = decodedTarget ? path.resolve(path.dirname(sourceFile), decodedTarget) : sourceFile;
-
-      if (!isPathInsideRoot(root, targetPath)) {
+      const reason = markdownReferenceProblemReason(root, sourceFile, reference, anchorCache);
+      if (reason !== undefined) {
         problems.push({
           sourcePath: toRepoPath(root, sourceFile),
           line: reference.line,
-          destination,
-          reason: 'outside-root',
-        });
-        continue;
-      }
-
-      if (!existsSync(targetPath)) {
-        problems.push({
-          sourcePath: toRepoPath(root, sourceFile),
-          line: reference.line,
-          destination,
-          reason: 'missing-target',
-        });
-        continue;
-      }
-
-      if (rawAnchor === undefined || path.extname(targetPath).toLocaleLowerCase('en') !== '.md') {
-        continue;
-      }
-
-      const decodedAnchor = decodeLinkComponent(rawAnchor);
-      const targetAnchors = anchorCache.get(targetPath) ?? collectMarkdownAnchors(readFileSync(targetPath, 'utf8'));
-      anchorCache.set(targetPath, targetAnchors);
-      if (!targetAnchors.has(decodedAnchor)) {
-        problems.push({
-          sourcePath: toRepoPath(root, sourceFile),
-          line: reference.line,
-          destination,
-          reason: 'missing-anchor',
+          destination: reference.destination,
+          reason,
         });
       }
     }
   }
 
-  const reviewableProblems = new Set(
-    problems
-      .filter((problem) => problem.reason === 'missing-target' || problem.reason === 'missing-anchor')
-      .map(reviewedHistoricalReferenceKey),
-  );
-  for (const reference of reviewedHistoricalReferences) {
-    if (!reviewableProblems.has(reviewedHistoricalReferenceKey(reference))) {
-      throw new Error(
-        `${REVIEWED_HISTORICAL_REFERENCES_PATH}: stale reviewed historical reference ${reference.sourcePath}:${reference.line} -> ${reference.destination}`,
-      );
-    }
-  }
-
-  const reviewedKeys = new Set(reviewedHistoricalReferences.map(reviewedHistoricalReferenceKey));
-  return problems
-    .filter((problem) => !reviewedKeys.has(reviewedHistoricalReferenceKey(problem)))
-    .sort((left, right) => {
-      const pathOrder = compareText(left.sourcePath, right.sourcePath);
-      if (pathOrder !== 0) return pathOrder;
-      if (left.line !== right.line) return left.line - right.line;
-      return compareText(left.destination, right.destination);
-    });
+  return filterReviewedHistoricalProblems(problems, reviewedHistoricalReferences);
 }
 
 export function assertMarkdownLinksValid(rootPath: string): void {
@@ -457,6 +471,14 @@ export function assertMarkdownLinksValid(rootPath: string): void {
   );
 }
 
+function readRootOptionValue(args: readonly string[], index: number): string {
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith('--')) {
+    throw new Error('--root requires a directory path.');
+  }
+  return value;
+}
+
 function parseRootArgument(args: readonly string[]): string {
   let root: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
@@ -465,11 +487,7 @@ function parseRootArgument(args: readonly string[]): string {
       continue;
     }
     if (argument === '--root') {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith('--')) {
-        throw new Error('--root requires a directory path.');
-      }
-      root = value;
+      root = readRootOptionValue(args, index);
       index += 1;
       continue;
     }

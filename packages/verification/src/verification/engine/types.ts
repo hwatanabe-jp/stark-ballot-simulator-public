@@ -2,7 +2,6 @@ import type { VerificationStepStatus } from '../step-types';
 import type {
   BitmapProofSource,
   VerificationFailureCategory,
-  VerificationStatus,
   VoteReceipt,
 } from '@stark-ballot/verification/shared/types';
 import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
@@ -15,7 +14,6 @@ import type { EvidenceAcquisition } from '../evidence-acquisition';
 import type { SthVerificationResult } from '../sth-verifier';
 import type { VerificationCheckId, VerificationCheckNoteKey } from '../verification-checks';
 
-export type { VerificationStatus };
 export type { AdmittedConsistencyProof } from '../consistency-proof-types';
 export type { BitmapProofResponse } from '../bitmap-proof-types';
 export type { EvidenceAcquisition } from '../evidence-acquisition';

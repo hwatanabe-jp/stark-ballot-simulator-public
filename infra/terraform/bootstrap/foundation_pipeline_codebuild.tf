@@ -1,5 +1,6 @@
 resource "aws_codebuild_project" "foundation_terraform_plan" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.foundation_terraform_plan_project_name
   service_role  = aws_iam_role.foundation_terraform_plan[0].arn
@@ -34,7 +35,8 @@ resource "aws_codebuild_project" "foundation_terraform_plan" {
 }
 
 resource "aws_codebuild_project" "foundation_terraform_apply" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.foundation_terraform_apply_project_name
   service_role  = aws_iam_role.foundation_terraform_apply[0].arn
@@ -69,7 +71,8 @@ resource "aws_codebuild_project" "foundation_terraform_apply" {
 }
 
 resource "aws_codebuild_project" "foundation_smoke" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.foundation_smoke_project_name
   service_role  = aws_iam_role.foundation_terraform_smoke[0].arn

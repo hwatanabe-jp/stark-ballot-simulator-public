@@ -1,14 +1,14 @@
 # System Architecture
 
-This area explains the current STARK Ballot Simulator structure. It describes
-the educational proof of concept that exists today; it is not a production
-election architecture or a speculative scale-out design.
+This area describes the current educational STARK Ballot Simulator architecture:
+its components, execution boundaries, and deployment topology. Production election
+architecture and speculative scale-out designs are outside its scope.
 
 ## Documents
 
 | Document                                             | Purpose                                                                                                   | Language |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | -------- |
-| [AWS architecture](./aws-architecture.md)            | CloudFront/S3 frontend, Hono API, DynamoDB state, asynchronous proof generation, and verification workers | Japanese |
+| [AWS architecture](./aws-architecture.md)            | CloudFront/S3 frontend, Hono API, DynamoDB state, asynchronous proof generation, and verification workers | English  |
 | [Repository context map](./context-map.md)           | Package ownership, runtime boundaries, and cross-cutting support surfaces                                 | English  |
 | [Draw.io source](./aws-architecture-overview.drawio) | Editable source for the AWS runtime and deployment diagrams                                               | Diagram  |
 
@@ -58,11 +58,11 @@ Browser
   -> Vite / React Router application
   -> CloudFront
      -> private S3 static frontend
-     -> API Gateway HTTP API
+     -> API Gateway REST API
         -> Hono public-api Lambda
            -> DynamoDB session and vote state
            -> append-only bulletin evidence
-           -> SQS / Step Functions / ECS prover pipeline
+           -> SQS / Step Functions / AWS Batch / Fargate prover pipeline
            -> verification-worker Lambda
            -> private proof and report storage
 ```

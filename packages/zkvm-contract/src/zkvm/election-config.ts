@@ -11,7 +11,7 @@ export interface ElectionConfig {
   merkleTreeDepth: number;
 }
 
-export const ELECTION_VERSION = 'v1.0';
+const ELECTION_VERSION = 'v1.0';
 
 export function buildDefaultElectionConfig(): ElectionConfig {
   return {

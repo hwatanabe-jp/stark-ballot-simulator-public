@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,20 +12,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function loadCompilerProject(projectPath: string): CompilerProject {
+const runCompiler = promisify(execFile);
+
+export async function loadCompilerProject(projectPath: string): Promise<CompilerProject> {
   const absolutePath = path.resolve(projectPath);
   const compiler = path.join(path.dirname(fileURLToPath(import.meta.resolve('typescript/package.json'))), 'bin/tsc');
   // --showConfig can omit configuration diagnostics, including a missing extends target.
-  execFileSync(process.execPath, [compiler, '--noEmit', '--listFilesOnly', '--project', absolutePath], {
+  await runCompiler(process.execPath, [compiler, '--noEmit', '--listFilesOnly', '--project', absolutePath], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
   });
-  const output = execFileSync(process.execPath, [compiler, '--showConfig', '--project', absolutePath], {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const { stdout: output } = await runCompiler(
+    process.execPath,
+    [compiler, '--showConfig', '--project', absolutePath],
+    {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    },
+  );
   const parsed: unknown = JSON.parse(output);
   if (
     !isRecord(parsed) ||

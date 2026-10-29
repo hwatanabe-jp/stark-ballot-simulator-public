@@ -103,6 +103,15 @@ export function deriveVerificationSummary(
     return null;
   }
 
+  const evidence = resolveSummaryEvidence(resolved, hasUnknown, context);
+  return deriveBlockingSummary(evidence, context) ?? deriveTerminalSummary(evidence, context);
+}
+
+function resolveSummaryEvidence(
+  resolved: ResolvedCheck[],
+  hasUnknown: boolean,
+  context: VerificationSummaryContext | undefined,
+) {
   const requiredDefinitions = VERIFICATION_CHECK_DEFINITIONS.filter((definition) =>
     isRequiredCheck(definition, context),
   );
@@ -110,8 +119,31 @@ export function deriveVerificationSummary(
   const optionalChecks = resolved.filter((entry) => !isRequiredCheck(entry.definition, context));
   const resolvedIds = new Set(resolved.map((entry) => entry.definition.id));
   const missingRequiredChecks = requiredDefinitions.filter((definition) => !resolvedIds.has(definition.id));
-  const hasMissingRequiredChecks = missingRequiredChecks.length > 0;
 
+  return { resolved, hasUnknown, requiredChecks, optionalChecks, missingRequiredChecks };
+}
+
+type SummaryEvidence = ReturnType<typeof resolveSummaryEvidence>;
+
+function deriveExclusionSummary(
+  userInclusionStatus: VerificationStepStatus | undefined,
+  context: VerificationSummaryContext | undefined,
+): VerificationSummaryResult {
+  const status =
+    userInclusionStatus === 'failed'
+      ? 'user_vote_excluded'
+      : userInclusionStatus === 'success'
+        ? 'votes_excluded'
+        : 'votes_excluded_unknown';
+  const messageKey = resolveExclusionMessageKey(status, resolveExclusionReason(context));
+  return { status, tone: 'failed', ...(messageKey ? { messageKey } : {}) };
+}
+
+function deriveBlockingSummary(
+  evidence: SummaryEvidence,
+  context: VerificationSummaryContext | undefined,
+): VerificationSummaryResult | undefined {
+  const { resolved, requiredChecks } = evidence;
   const hasRequiredInProgress = requiredChecks.some((entry) => isInProgress(entry.check.status));
   if (hasRequiredInProgress) {
     return { status: 'in_progress', tone: 'warning' };
@@ -124,40 +156,27 @@ export function deriveVerificationSummary(
 
   const completenessStatus = resolveRoleStatus(resolved, 'tally_completeness');
   const userInclusionStatus = resolveRoleStatus(resolved, 'user_inclusion');
-  const inputIntegrityStatus = resolveRoleStatus(resolved, 'tally_input_integrity');
-  const consistencyStatus = resolveRoleStatus(resolved, 'tally_consistency');
 
-  if (completenessStatus === 'failed') {
-    const exclusionReason = resolveExclusionReason(context);
-    if (userInclusionStatus === 'failed') {
-      const messageKey = resolveExclusionMessageKey('user_vote_excluded', exclusionReason);
-      return {
-        status: 'user_vote_excluded',
-        tone: 'failed',
-        ...(messageKey ? { messageKey } : {}),
-      };
-    }
-    if (userInclusionStatus === 'success') {
-      const messageKey = resolveExclusionMessageKey('votes_excluded', exclusionReason);
-      return {
-        status: 'votes_excluded',
-        tone: 'failed',
-        ...(messageKey ? { messageKey } : {}),
-      };
-    }
-    const messageKey = resolveExclusionMessageKey('votes_excluded_unknown', exclusionReason);
-    return {
-      status: 'votes_excluded_unknown',
-      tone: 'failed',
-      ...(messageKey ? { messageKey } : {}),
-    };
-  }
+  if (completenessStatus === 'failed') return deriveExclusionSummary(userInclusionStatus, context);
 
   if (categoryFailed(requiredChecks, 'recorded_as_cast')) {
     return { status: 'recorded_integrity_failed', tone: 'failed' };
   }
 
-  const hasRequiredNotRun = requiredChecks.some((entry) => entry.check.status === 'not_run');
+  return undefined;
+}
+
+function hasPublishedTallyMismatch(evidence: SummaryEvidence, hasRequiredNotRun: boolean): boolean {
+  const { resolved, requiredChecks, missingRequiredChecks, hasUnknown } = evidence;
+  const hasSuccessfulTallyEvidence = (
+    [
+      'proof_verification',
+      'tally_completeness',
+      'user_inclusion',
+      'tally_input_integrity',
+    ] satisfies VerificationCheckRole[]
+  ).every((role) => resolveRoleStatus(resolved, role) === 'success');
+  const consistencyStatus = resolveRoleStatus(resolved, 'tally_consistency');
   const recordedAllRequiredSucceeded = categoryAllRequiredSucceeded(
     requiredChecks,
     missingRequiredChecks,
@@ -165,17 +184,26 @@ export function deriveVerificationSummary(
   );
   if (
     consistencyStatus === 'failed' &&
-    proofStatus === 'success' &&
-    completenessStatus === 'success' &&
-    userInclusionStatus === 'success' &&
-    inputIntegrityStatus === 'success' &&
+    hasSuccessfulTallyEvidence &&
     recordedAllRequiredSucceeded &&
     !hasRequiredNotRun &&
-    !hasMissingRequiredChecks &&
+    missingRequiredChecks.length === 0 &&
     !hasUnknown
   ) {
-    return { status: 'published_tally_mismatch', tone: 'failed' };
+    return true;
   }
+
+  return false;
+}
+
+function deriveTerminalSummary(
+  evidence: SummaryEvidence,
+  context: VerificationSummaryContext | undefined,
+): VerificationSummaryResult {
+  const { resolved, requiredChecks, missingRequiredChecks, hasUnknown } = evidence;
+  const hasRequiredNotRun = requiredChecks.some((entry) => entry.check.status === 'not_run');
+  if (hasPublishedTallyMismatch(evidence, hasRequiredNotRun))
+    return { status: 'published_tally_mismatch', tone: 'failed' };
 
   if (categoryFailed(requiredChecks, 'counted_as_recorded')) {
     return { status: 'counted_integrity_failed', tone: 'failed' };
@@ -184,11 +212,20 @@ export function deriveVerificationSummary(
     return { status: 'cast_integrity_failed', tone: 'failed' };
   }
 
-  const hasMissingRequiredRoles = !completenessStatus || !userInclusionStatus;
-  if (hasRequiredNotRun || hasUnknown || hasMissingRequiredRoles || hasMissingRequiredChecks) {
+  const hasMissingRequiredRoles =
+    !resolveRoleStatus(resolved, 'tally_completeness') || !resolveRoleStatus(resolved, 'user_inclusion');
+  if (hasRequiredNotRun || hasUnknown || hasMissingRequiredRoles || missingRequiredChecks.length > 0) {
     return { status: 'missing_evidence', tone: 'warning' };
   }
 
+  return deriveSuccessfulEvidenceSummary(evidence, context);
+}
+
+function deriveSuccessfulEvidenceSummary(
+  evidence: SummaryEvidence,
+  context: VerificationSummaryContext | undefined,
+): VerificationSummaryResult {
+  const { resolved, optionalChecks } = evidence;
   if (context?.devModeEvidence || hasDemoEvidence(resolved)) {
     return { status: 'demo_only', tone: 'demo' };
   }
@@ -214,9 +251,7 @@ function isRequiredCheck(definition: VerificationCheckDefinition, context?: Veri
  * `excludedSlots` only tells us to fail closed when that breakdown is missing.
  */
 function resolveExclusionReason(context?: VerificationSummaryContext): ExclusionReason | undefined {
-  const missing = toPositiveCount(context?.missingSlots);
-  const invalid = toPositiveCount(context?.invalidPresentedSlots);
-  const excluded = toPositiveCount(context?.excludedSlots);
+  const { missing, invalid, excluded } = resolvePositiveExclusionCounts(context);
 
   if (!missing && !invalid) {
     return excluded ? 'unknown' : undefined;
@@ -225,6 +260,14 @@ function resolveExclusionReason(context?: VerificationSummaryContext): Exclusion
     return 'mixed';
   }
   return missing ? 'missing' : 'invalid';
+}
+
+function resolvePositiveExclusionCounts(context: VerificationSummaryContext | undefined) {
+  return {
+    missing: toPositiveCount(context?.missingSlots),
+    invalid: toPositiveCount(context?.invalidPresentedSlots),
+    excluded: toPositiveCount(context?.excludedSlots),
+  };
 }
 
 function resolveExclusionMessageKey(

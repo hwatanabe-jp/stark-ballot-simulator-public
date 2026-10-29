@@ -2,7 +2,7 @@ import { resolveRuntimeProfile, type ResolvedRuntimeProfile } from '@stark-ballo
 
 type PlaywrightRuntimeProfile = Extract<ResolvedRuntimeProfile, { readonly target: { readonly kind: 'local' } }>;
 
-export function resolvePlaywrightRuntimeProfile(env: NodeJS.ProcessEnv = process.env): PlaywrightRuntimeProfile {
+function resolvePlaywrightRuntimeProfile(env: NodeJS.ProcessEnv = process.env): PlaywrightRuntimeProfile {
   const profile = resolveRuntimeProfile(env);
   if (
     profile.name !== 'static-mock-e2e' &&

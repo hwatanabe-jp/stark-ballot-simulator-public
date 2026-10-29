@@ -19,7 +19,7 @@ import { localRuntimeProfile } from '@stark-ballot/runtime-config/env/test-suppo
 import { createMockVoteStore, type MockVoteStore } from '../../test-support/mockVoteStore';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getNumberProperty, getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { createHonoApp } from '../routes/hono';
 
 const canonicalEventMocks = vi.hoisted(() => ({
@@ -160,7 +160,7 @@ function expectRequestStatusLogs(spy: MockInstance<typeof logger.warn>, statuses
     const fields = call?.[1];
     expect(call?.[0]).toBe('request completed');
     expect(getStringProperty(fields, 'event')).toBe('http_request');
-    expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(status);
+    expect(getNumberProperty(getObjectProperty(fields, 'http'), 'status')).toBe(status);
   }
 }
 

@@ -1,12 +1,12 @@
+import { admitSessionIdentity } from './identity';
 import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
-import { isValidVoteId } from '@stark-ballot/web/vote/voteIdValidation';
+import { isValidVoteId } from '@stark-ballot/validation/vote-id';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
-import type { SessionData } from './types';
+import type { SessionData, ServerIssuedSessionIdentity, PrivateOpening, CastReceipt } from './types';
 
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const VOTE_CHOICE_SET: ReadonlySet<unknown> = new Set(VOTE_CHOICES);
 const SESSION_RECORD_KEYS = new Set([
   'sessionId',
   'capabilityToken',
@@ -32,6 +32,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -42,10 +46,6 @@ function hasExactKeys(value: Record<string, unknown>, allowed: ReadonlySet<strin
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
-}
-
-function isFiniteTimestamp(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 function isHex32(value: unknown): value is string {
@@ -71,108 +71,96 @@ function stripUndefined(value: unknown): unknown {
   );
 }
 
-function isDeepExact(value: unknown, expected: unknown): boolean {
-  if (Object.is(value, expected)) {
-    return true;
-  }
-  if (Array.isArray(value) || Array.isArray(expected)) {
-    if (!Array.isArray(value) || !Array.isArray(expected) || value.length !== expected.length) {
-      return false;
-    }
-    return value.every((entry, index) => isDeepExact(entry, expected[index]));
-  }
-  if (!isRecord(value) || !isRecord(expected)) {
-    return false;
-  }
+function isExactArray(value: unknown, expected: unknown): boolean {
+  if (!Array.isArray(value) || !Array.isArray(expected) || value.length !== expected.length) return false;
+  return value.every((entry, index) => isDeepExact(entry, expected[index]));
+}
+
+function isExactRecord(value: Record<string, unknown>, expected: Record<string, unknown>): boolean {
   const valueKeys = Object.keys(value);
   const expectedKeys = Object.keys(expected);
-  if (valueKeys.length !== expectedKeys.length || valueKeys.some((key) => !hasOwn(expected, key))) {
-    return false;
-  }
+  if (valueKeys.length !== expectedKeys.length || valueKeys.some((key) => !hasOwn(expected, key))) return false;
   return valueKeys.every((key) => isDeepExact(value[key], expected[key]));
 }
 
-function hasValidPrivateOpening(value: Record<string, unknown>): boolean {
-  if (!hasCompleteGroup(value, PRIVATE_OPENING_KEYS)) {
-    return false;
-  }
-  if (!hasOwn(value, 'myVote')) {
-    return true;
-  }
-  return VOTE_CHOICE_SET.has(value['myVote']) && isHex32(value['myCommit']) && isHex32(value['myRand']);
+function isDeepExact(value: unknown, expected: unknown): boolean {
+  if (Object.is(value, expected)) return true;
+  if (Array.isArray(value) || Array.isArray(expected)) return isExactArray(value, expected);
+  if (!isRecord(value) || !isRecord(expected)) return false;
+  return isExactRecord(value, expected);
 }
 
-function hasValidCastReceipt(value: Record<string, unknown>): boolean {
-  if (!hasCompleteGroup(value, CAST_RECEIPT_KEYS)) {
-    return false;
-  }
-  if (!hasOwn(value, 'voteId')) {
-    return true;
-  }
-  return (
-    typeof value['voteId'] === 'string' &&
-    isValidVoteId(value['voteId']) &&
-    typeof value['bulletinIndex'] === 'number' &&
-    Number.isInteger(value['bulletinIndex']) &&
-    value['bulletinIndex'] >= 0 &&
-    isHex32(value['bulletinRootAtCast'])
-  );
+function admitPrivateOpening(value: Record<string, unknown>): PrivateOpening | null {
+  if (!hasCompleteGroup(value, PRIVATE_OPENING_KEYS)) return null;
+  if (!hasOwn(value, 'myVote')) return {};
+  const myVote = VOTE_CHOICES.find((choice) => choice === value['myVote']);
+  const myCommit = value['myCommit'];
+  const myRand = value['myRand'];
+  return myVote !== undefined && isHex32(myCommit) && isHex32(myRand) ? { myVote, myCommit, myRand } : null;
 }
 
-function hasValidIdentity(value: Record<string, unknown>): boolean {
-  return (
-    typeof value['sessionId'] === 'string' &&
-    isSafeVerifierSegment(value['sessionId']) &&
-    isNonEmptyString(value['capabilityToken']) &&
-    typeof value['electionId'] === 'string' &&
-    UUID_V4_PATTERN.test(value['electionId']) &&
-    isHex32(value['electionConfigHash']) &&
-    isHex32(value['logId'])
-  );
+function admitCastReceipt(value: Record<string, unknown>): CastReceipt | null {
+  if (!hasCompleteGroup(value, CAST_RECEIPT_KEYS)) return null;
+  if (!hasOwn(value, 'voteId')) return {};
+  const voteId = value['voteId'];
+  const bulletinIndex = value['bulletinIndex'];
+  const bulletinRootAtCast = value['bulletinRootAtCast'];
+  return typeof voteId === 'string' &&
+    isValidVoteId(voteId) &&
+    isNonNegativeSafeInteger(bulletinIndex) &&
+    isHex32(bulletinRootAtCast)
+    ? { voteId, bulletinIndex, bulletinRootAtCast }
+    : null;
 }
 
-function hasValidLifetime(value: Record<string, unknown>): boolean {
-  return (
-    isFiniteTimestamp(value['lastActivity']) &&
-    isFiniteTimestamp(value['expiresAt']) &&
-    value['expiresAt'] >= value['lastActivity']
-  );
-}
-
-function hasExactFinalizationSnapshot(value: unknown): boolean {
-  const canonical = resolveCanonicalFinalizationPayload(value);
-  return canonical !== null && isDeepExact(value, stripUndefined(canonical));
+function admitIdentity(value: Record<string, unknown>): ServerIssuedSessionIdentity | null {
+  const sessionId = value['sessionId'];
+  const capabilityToken = value['capabilityToken'];
+  const electionId = value['electionId'];
+  const electionConfigHash = value['electionConfigHash'];
+  const logId = value['logId'];
+  return typeof sessionId === 'string' &&
+    isSafeVerifierSegment(sessionId) &&
+    isNonEmptyString(capabilityToken) &&
+    typeof electionId === 'string' &&
+    UUID_V4_PATTERN.test(electionId) &&
+    isHex32(electionConfigHash) &&
+    isHex32(logId)
+    ? { ...admitSessionIdentity({ sessionId, capabilityToken }), electionId, electionConfigHash, logId }
+    : null;
 }
 
 export function admitStoredSessionData(value: unknown): SessionData | null {
-  if (!isRecord(value) || !hasExactKeys(value, SESSION_RECORD_KEYS)) {
-    return null;
-  }
+  if (!isRecord(value) || !hasExactKeys(value, SESSION_RECORD_KEYS)) return null;
+  const identity = admitIdentity(value);
+  const opening = admitPrivateOpening(value);
+  const receipt = admitCastReceipt(value);
+  const lastActivity = value['lastActivity'];
+  const expiresAt = value['expiresAt'];
   if (
-    !hasValidIdentity(value) ||
-    !hasValidLifetime(value) ||
-    !hasValidPrivateOpening(value) ||
-    !hasValidCastReceipt(value)
-  ) {
+    !identity ||
+    !opening ||
+    !receipt ||
+    !isNonNegativeSafeInteger(lastActivity) ||
+    !isNonNegativeSafeInteger(expiresAt) ||
+    expiresAt < lastActivity
+  )
     return null;
-  }
-
-  switch (value['phase']) {
+  const base = { ...identity, ...opening, ...receipt, lastActivity, expiresAt };
+  const phase = value['phase'];
+  switch (phase) {
     case 'voting':
     case 'finalizing':
-      if (hasOwn(value, 'finalizeResult') || hasOwn(value, 'verificationRequestedAt')) {
-        return null;
-      }
-      return value as unknown as SessionData;
-    case 'verifying':
-      if (
-        !hasOwn(value, 'finalizeResult') ||
-        !hasExactFinalizationSnapshot(value['finalizeResult']) ||
-        (hasOwn(value, 'verificationRequestedAt') && !isFiniteTimestamp(value['verificationRequestedAt']))
-      ) {
-        return null;
-      }
-      return value as unknown as SessionData;
+      if (hasOwn(value, 'finalizeResult') || hasOwn(value, 'verificationRequestedAt')) return null;
+      return { ...base, phase };
+    case 'verifying': {
+      const finalizeResult = resolveCanonicalFinalizationPayload(value['finalizeResult']);
+      if (!finalizeResult || !isDeepExact(value['finalizeResult'], stripUndefined(finalizeResult))) return null;
+      if (!hasOwn(value, 'verificationRequestedAt')) return { ...base, phase, finalizeResult };
+      const verificationRequestedAt = value['verificationRequestedAt'];
+      if (!isNonNegativeSafeInteger(verificationRequestedAt)) return null;
+      return { ...base, phase, finalizeResult, verificationRequestedAt };
+    }
     default:
       return null;
   }

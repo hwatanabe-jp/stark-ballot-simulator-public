@@ -30,7 +30,7 @@ import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballo
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
-import { uploadVerificationBundleToS3 } from './verificationBundleS3Upload.js';
+import { publishVerificationBundleArtifacts } from '@stark-ballot/aws-adapters/finalize/publish-verification-artifacts';
 import { RuntimeConfigValidationError, bootstrapLambdaRuntime } from '../runtimeBootstrap.js';
 
 const INVALID_PAYLOAD_DETAILS = 'Invalid verifier invocation payload';
@@ -114,6 +114,12 @@ function readOwnDataProperty(value: unknown, key: string): unknown {
   }
 }
 
+function isBoundedDiagnosticByteCount(value: unknown): value is number {
+  return (
+    typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_VERIFIER_STDERR_DIAGNOSTIC_BYTES
+  );
+}
+
 function emitVerifierServiceDiagnostics(
   input: Pick<HandlerEvent, 'sessionId' | 'finalizationId'>,
   diagnostics: unknown,
@@ -124,10 +130,7 @@ function emitVerifierServiceDiagnostics(
   const valid =
     typeof category === 'string' &&
     VERIFIER_STDERR_DIAGNOSTIC_CATEGORIES.has(category) &&
-    typeof bytes === 'number' &&
-    Number.isInteger(bytes) &&
-    bytes >= 0 &&
-    bytes <= MAX_VERIFIER_STDERR_DIAGNOSTIC_BYTES &&
+    isBoundedDiagnosticByteCount(bytes) &&
     typeof truncated === 'boolean';
 
   logger.info('[VerificationWorker] verifier-service diagnostics', {
@@ -228,6 +231,116 @@ function rejectUnsafeTargetOptions(
   return null;
 }
 
+async function restoreVerificationWorkDirectory(
+  profile: ResolvedRuntimeProfile,
+  input: HandlerEvent,
+  workDir: string,
+): Promise<string> {
+  let bundleKey: string;
+  try {
+    bundleKey = validateAsyncProverBundleKey(profile, input.sessionId, input.finalizationId, input.bundleKey);
+  } catch {
+    throw infrastructureFailure('corrupt_bundle');
+  }
+  const bundlePath = path.join(workDir, input.sessionId, input.finalizationId);
+  try {
+    await fs.mkdir(bundlePath, { recursive: true });
+  } catch {
+    throw infrastructureFailure('unknown');
+  }
+
+  let zipBuffer: Buffer;
+  try {
+    zipBuffer = await downloadFromS3(profile, bundleKey);
+  } catch (error) {
+    throw infrastructureFailure(classifyS3Failure(error));
+  }
+  try {
+    await inspectVerificationBundleArchiveBuffer(zipBuffer, ASYNC_PUBLIC_BUNDLE_POLICY);
+    await extractZipFromBuffer(zipBuffer, { destination: bundlePath });
+  } catch {
+    throw infrastructureFailure('corrupt_bundle');
+  }
+
+  return bundlePath;
+}
+
+async function invokeBundleVerifier(
+  input: HandlerEvent,
+  bundlePath: string,
+): Promise<Awaited<ReturnType<typeof invokeVerifierService>>> {
+  const reportPath = path.join(bundlePath, 'verification.json');
+  let invocation: Awaited<ReturnType<typeof invokeVerifierService>>;
+  try {
+    invocation = await invokeVerifierService({
+      bundlePath,
+      expectedImageId: input.expectedImageId,
+      reportPath,
+    });
+  } catch (error) {
+    emitVerifierServiceDiagnostics(input, readOwnDataProperty(error, 'diagnostics'));
+    throw infrastructureFailure(classifyVerifierFailure(error));
+  }
+  emitVerifierServiceDiagnostics(input, invocation.diagnostics);
+
+  return invocation;
+}
+
+async function publishVerificationArtifacts(
+  profile: ResolvedRuntimeProfile,
+  input: HandlerEvent,
+  bundlePath: string,
+): Promise<Awaited<ReturnType<typeof publishVerificationBundleArtifacts>> | undefined> {
+  let s3Result: Awaited<ReturnType<typeof publishVerificationBundleArtifacts>> | undefined;
+  if (input.options?.uploadToS3 ?? true) {
+    try {
+      s3Result = await publishVerificationBundleArtifacts({
+        profile,
+        bundlePath,
+        sessionId: input.sessionId,
+        finalizationId: input.finalizationId,
+        upload: true,
+        policy: ASYNC_PUBLIC_BUNDLE_POLICY,
+      });
+    } catch (error) {
+      throw infrastructureFailure(classifyS3Failure(error));
+    }
+  }
+
+  return s3Result;
+}
+
+function verificationInvocationResponse(
+  input: HandlerEvent,
+  invocation: Awaited<ReturnType<typeof invokeVerifierService>>,
+  s3Result: Awaited<ReturnType<typeof publishVerificationBundleArtifacts>> | undefined,
+): VerificationWorkerResponse {
+  const commonResponse = {
+    status: 'success' as const,
+    sessionId: input.sessionId,
+    finalizationId: input.finalizationId,
+    ...(s3Result
+      ? {
+          s3: omitUndefinedProperties({
+            bundleKey: s3Result.s3BundleKey,
+            reportKey: s3Result.s3ReportKey,
+            uploadedAtMs: s3Result.s3UploadedAtMs,
+          }),
+        }
+      : {}),
+  };
+  switch (invocation.status) {
+    case 'success':
+      return { ...commonResponse, verifierStatus: 'success', verificationReport: invocation.report };
+    case 'dev_mode':
+      return { ...commonResponse, verifierStatus: 'dev_mode', verificationReport: invocation.report };
+    case 'failed':
+      return { ...commonResponse, verifierStatus: 'failed', verificationReport: invocation.report };
+    default:
+      throw new Error('Verifier service returned an unsupported status');
+  }
+}
+
 async function runVerificationPayload(
   profile: ResolvedRuntimeProfile,
   input: HandlerEvent,
@@ -242,79 +355,10 @@ async function runVerificationPayload(
   process.env['VERIFIER_WORK_DIR'] = workDir;
 
   try {
-    let bundleKey: string;
-    try {
-      bundleKey = validateAsyncProverBundleKey(profile, input.sessionId, input.finalizationId, input.bundleKey);
-    } catch {
-      throw infrastructureFailure('corrupt_bundle');
-    }
-    const bundlePath = path.join(workDir, input.sessionId, input.finalizationId);
-    try {
-      await fs.mkdir(bundlePath, { recursive: true });
-    } catch {
-      throw infrastructureFailure('unknown');
-    }
-
-    let zipBuffer: Buffer;
-    try {
-      zipBuffer = await downloadFromS3(profile, bundleKey);
-    } catch (error) {
-      throw infrastructureFailure(classifyS3Failure(error));
-    }
-    try {
-      await inspectVerificationBundleArchiveBuffer(zipBuffer, ASYNC_PUBLIC_BUNDLE_POLICY);
-      await extractZipFromBuffer(zipBuffer, { destination: bundlePath });
-    } catch {
-      throw infrastructureFailure('corrupt_bundle');
-    }
-
-    const reportPath = path.join(bundlePath, 'verification.json');
-    let invocation: Awaited<ReturnType<typeof invokeVerifierService>>;
-    try {
-      invocation = await invokeVerifierService({
-        bundlePath,
-        expectedImageId: input.expectedImageId,
-        reportPath,
-      });
-    } catch (error) {
-      emitVerifierServiceDiagnostics(input, readOwnDataProperty(error, 'diagnostics'));
-      throw infrastructureFailure(classifyVerifierFailure(error));
-    }
-    emitVerifierServiceDiagnostics(input, invocation.diagnostics);
-
-    let s3Result: Awaited<ReturnType<typeof uploadVerificationBundleToS3>> | undefined;
-    if (input.options?.uploadToS3 ?? true) {
-      try {
-        s3Result = await uploadVerificationBundleToS3(profile, bundlePath, input.sessionId, input.finalizationId);
-      } catch (error) {
-        throw infrastructureFailure(classifyS3Failure(error));
-      }
-    }
-
-    const commonResponse = {
-      status: 'success' as const,
-      sessionId: input.sessionId,
-      finalizationId: input.finalizationId,
-      ...(s3Result
-        ? {
-            s3: omitUndefinedProperties({
-              bundleKey: s3Result.s3BundleKey,
-              reportKey: s3Result.s3ReportKey,
-              uploadedAtMs: s3Result.s3UploadedAtMs,
-            }),
-          }
-        : {}),
-    };
-    switch (invocation.status) {
-      case 'success':
-        return { ...commonResponse, verifierStatus: 'success', verificationReport: invocation.report };
-      case 'dev_mode':
-        return { ...commonResponse, verifierStatus: 'dev_mode', verificationReport: invocation.report };
-      case 'failed':
-        return { ...commonResponse, verifierStatus: 'failed', verificationReport: invocation.report };
-      default:
-        throw new Error('Verifier service returned an unsupported status');
-    }
+    const bundlePath = await restoreVerificationWorkDirectory(profile, input, workDir);
+    const invocation = await invokeBundleVerifier(input, bundlePath);
+    const s3Result = await publishVerificationArtifacts(profile, input, bundlePath);
+    return verificationInvocationResponse(input, invocation, s3Result);
   } catch (error) {
     logger.error(
       '[VerificationWorker] Verifier service execution failed',
@@ -419,6 +463,115 @@ async function resolveVerificationWorkDisposition(
   return 'process';
 }
 
+function completedVerificationResultFromResponse(
+  response: Extract<VerificationWorkerResponse, { status: 'success' }>,
+): VerificationResult {
+  let completedVerificationResult: VerificationResult;
+  switch (response.verifierStatus) {
+    case 'success':
+      completedVerificationResult = {
+        status: 'success',
+        report: response.verificationReport,
+        failureCategory: 'none',
+      };
+      break;
+    case 'dev_mode':
+      completedVerificationResult = {
+        status: 'dev_mode',
+        report: response.verificationReport,
+        failureCategory: 'none',
+      };
+      break;
+    case 'failed':
+      completedVerificationResult = { status: 'failed', report: response.verificationReport };
+      break;
+  }
+  return completedVerificationResult;
+}
+
+async function persistVerificationResponse(
+  store: ReturnType<typeof getGlobalStore>,
+  message: ReturnType<typeof parseVerificationWorkMessage>,
+  response: VerificationWorkerResponse,
+): Promise<void> {
+  if (response.status !== 'success') {
+    await store.completeVerificationResult(message.sessionId, message.finalizationId, {
+      status: 'failed',
+      failureCategory: 'unknown',
+    });
+    return;
+  }
+
+  await store.recordAwsVerificationDeliveryMetadata(message.sessionId, message.finalizationId, {
+    s3BundleKey: response.s3?.bundleKey ?? message.bundleKey,
+    ...(response.s3?.reportKey ? { s3ReportKey: response.s3.reportKey } : {}),
+    ...(response.s3?.uploadedAtMs ? { s3UploadedAtMs: response.s3.uploadedAtMs } : {}),
+  });
+  const completedVerificationResult = completedVerificationResultFromResponse(response);
+  await store.completeVerificationResult(message.sessionId, message.finalizationId, completedVerificationResult);
+}
+
+async function processVerificationMessage(
+  profile: ResolvedRuntimeProfile,
+  store: ReturnType<typeof getGlobalStore>,
+  message: ReturnType<typeof parseVerificationWorkMessage>,
+  processedWorkKeys: Set<string>,
+): Promise<void> {
+  const workKey = `${message.sessionId}/${message.finalizationId}`;
+  if (processedWorkKeys.has(workKey)) {
+    return;
+  }
+  processedWorkKeys.add(workKey);
+  const disposition = await resolveVerificationWorkDisposition(store, message.sessionId, message.finalizationId);
+  if (disposition !== 'process') {
+    logger.info('[VerificationWorker] Skipping idempotent SQS verification work', {
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      finalizationId: message.finalizationId,
+      disposition,
+    });
+    return;
+  }
+  const response = await runVerificationPayload(
+    profile,
+    {
+      mode: 's3_bundle',
+      sessionId: message.sessionId,
+      finalizationId: message.finalizationId,
+      bundleKey: message.bundleKey,
+      expectedImageId: message.expectedImageId,
+    },
+    {
+      retryInfrastructureErrors: true,
+    },
+  );
+
+  await persistVerificationResponse(store, message, response);
+}
+
+async function persistExhaustedVerificationFailure(
+  store: ReturnType<typeof getGlobalStore>,
+  message: ReturnType<typeof parseVerificationWorkMessage>,
+  record: SqsRecord,
+  itemIdentifier: string,
+  error: unknown,
+): Promise<void> {
+  if (parseApproximateReceiveCount(record) >= VERIFICATION_WORK_MAX_RECEIVE_COUNT) {
+    try {
+      await persistTerminalFailureAfterRetryExhaustion(store, message, resolveInfrastructureFailureCategory(error));
+    } catch (persistenceError) {
+      logger.error(
+        '[VerificationWorker] Failed to persist terminal verification failure after retry exhaustion',
+        {
+          itemIdentifier,
+          session_id_hash: hashSessionIdForLogging(message.sessionId),
+          finalizationId: message.finalizationId,
+        },
+        persistenceError,
+      );
+    }
+  }
+}
+
 async function handleSqsEvent(profile: ResolvedRuntimeProfile, rawEvent: SqsEvent): Promise<SqsBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
   const processedWorkKeys = new Set<string>();
@@ -444,90 +597,10 @@ async function handleSqsEvent(profile: ResolvedRuntimeProfile, rawEvent: SqsEven
     }
 
     try {
-      const message = parsedMessage;
-      const workKey = `${message.sessionId}/${message.finalizationId}`;
-      if (processedWorkKeys.has(workKey)) {
-        continue;
-      }
-      processedWorkKeys.add(workKey);
-      const disposition = await resolveVerificationWorkDisposition(store, message.sessionId, message.finalizationId);
-      if (disposition !== 'process') {
-        logger.info('[VerificationWorker] Skipping idempotent SQS verification work', {
-          session_id_hash: hashSessionIdForLogging(message.sessionId),
-          finalizationId: message.finalizationId,
-          disposition,
-        });
-        continue;
-      }
-      const response = await runVerificationPayload(
-        profile,
-        {
-          mode: 's3_bundle',
-          sessionId: message.sessionId,
-          finalizationId: message.finalizationId,
-          bundleKey: message.bundleKey,
-          expectedImageId: message.expectedImageId,
-        },
-        {
-          retryInfrastructureErrors: true,
-        },
-      );
-
-      if (response.status !== 'success') {
-        await store.completeVerificationResult(message.sessionId, message.finalizationId, {
-          status: 'failed',
-          failureCategory: 'unknown',
-        });
-        continue;
-      }
-
-      await store.recordAwsVerificationDeliveryMetadata(message.sessionId, message.finalizationId, {
-        s3BundleKey: response.s3?.bundleKey ?? message.bundleKey,
-        ...(response.s3?.reportKey ? { s3ReportKey: response.s3.reportKey } : {}),
-        ...(response.s3?.uploadedAtMs ? { s3UploadedAtMs: response.s3.uploadedAtMs } : {}),
-      });
-      let completedVerificationResult: VerificationResult;
-      switch (response.verifierStatus) {
-        case 'success':
-          completedVerificationResult = {
-            status: 'success',
-            report: response.verificationReport,
-            failureCategory: 'none',
-          };
-          break;
-        case 'dev_mode':
-          completedVerificationResult = {
-            status: 'dev_mode',
-            report: response.verificationReport,
-            failureCategory: 'none',
-          };
-          break;
-        case 'failed':
-          completedVerificationResult = { status: 'failed', report: response.verificationReport };
-          break;
-      }
-      await store.completeVerificationResult(message.sessionId, message.finalizationId, completedVerificationResult);
+      await processVerificationMessage(profile, store, parsedMessage, processedWorkKeys);
     } catch (error) {
       logger.error('[VerificationWorker] SQS verification work failed', { itemIdentifier }, error);
-      if (parseApproximateReceiveCount(record) >= VERIFICATION_WORK_MAX_RECEIVE_COUNT) {
-        try {
-          await persistTerminalFailureAfterRetryExhaustion(
-            store,
-            parsedMessage,
-            resolveInfrastructureFailureCategory(error),
-          );
-        } catch (persistenceError) {
-          logger.error(
-            '[VerificationWorker] Failed to persist terminal verification failure after retry exhaustion',
-            {
-              itemIdentifier,
-              session_id_hash: hashSessionIdForLogging(parsedMessage.sessionId),
-              finalizationId: parsedMessage.finalizationId,
-            },
-            persistenceError,
-          );
-        }
-      }
+      await persistExhaustedVerificationFailure(store, parsedMessage, record, itemIdentifier, error);
       if (itemIdentifier) {
         batchItemFailures.push({ itemIdentifier });
       }
@@ -590,5 +663,3 @@ export const handler = async (rawEvent: unknown): Promise<VerificationWorkerResp
 
   return await runVerificationPayload(runtimeProfile, input);
 };
-
-export type { HandlerEvent };

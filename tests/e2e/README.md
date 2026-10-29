@@ -7,7 +7,9 @@
 ### Spec files
 
 - `voting-flow.spec.ts`
-  S0-S5 の投票→集計→検証フローを確認します。`@smoke` は現在 S0 と S2 です。mock S0 では正常系の verify が `demo_only` で完了することを、S2 では claimed tally tamper 時に `counted_tally_consistent=failed` かつ `stark_receipt_verify=success` / `stark_verification=success` になることを確認します。
+  S0-S5 の投票→集計→検証フローを確認します。この spec の `@smoke` は S0 と S2 です。mock S0 では正常系の verify が `demo_only` で完了することを、S2 では claimed tally tamper 時に `counted_tally_consistent=failed` かつ `stark_receipt_verify=success` / `stark_verification=success` になることを確認します。
+- `vote-retry.spec.ts`
+  `@smoke` タグ付きの投票再送テストです。サーバーで保存済みの投票の応答が失われた後、reload を挟んでも選択肢の変更を防ぎ、同じ payload を再送して元の receipt identity を復元することを確認します。
 - `a11y.spec.ts`
   `@axe` タグ付きのアクセシビリティ smoke です。対象は `/vote`, `/aggregate`, `/privacy`, `/terms` です。
 - `legal-pages.spec.ts`
@@ -42,7 +44,7 @@ pnpm test:e2e:mock
 # CI と同じ全 mock 実行（S0-S5 を含む）
 CI=true pnpm test:e2e:mock
 
-# ローカルの短い smoke 実行（S0 と S2）
+# ローカルの短い smoke 実行（S0・S2・応答喪失後の投票再送）
 pnpm test:e2e:mock --grep @smoke --reporter=list
 
 # axe smoke のみ
@@ -67,6 +69,9 @@ pnpm test:e2e:report
 pnpm test:cli:real-dev
 pnpm test:cli:real-prod:s0
 ```
+
+ローカルの `pnpm ci:verify` は `pnpm test:e2e` を一度実行し、axe と mock の
+全ケースで frontend build と test server を共有します。個別の selector command も利用できます。
 
 ## CI の現状
 
@@ -136,6 +141,10 @@ expect(tallySum).toBe(totalVotes);
 このため、mock 環境では選択肢ごとの固定分布ではなく、総数と verify check の整合性を見ます。
 
 さらに smoke では verify 画面の `data-status` を読み、S0 / S2 ともに tally・missing indices・manifest・close statement・STH・receipt・step status の主要 check を確認します。S2 では特に `counted_tally_consistent=failed` と `stark_receipt_verify=success`／`stark_verification=success` を確認し、mock receipt の検証状態が成功でも claimed tally の不整合を検出することを確かめます。S0 の summary は `demo_only` です。これらの mock status を production STARK proof の正しさの証拠として扱いません。
+
+S0 では `cast_commitment_match` をキーボードで開閉し、その check に対応する commitment が
+inline evidence に表示され、無関係な session ID が含まれないことも確認します。
+幅 320px への変更後も開閉状態とフォーカスが保たれ、横スクロールが発生しないことを検証します。
 
 ## `data-testid` の使い方
 

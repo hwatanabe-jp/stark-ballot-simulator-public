@@ -50,7 +50,7 @@ describe('toApiHandlerContext (Hono)', () => {
     });
     const response = await app.fetch(request, {
       requestContext: {
-        http: {
+        identity: {
           sourceIp: '203.0.113.80',
         },
       },
@@ -87,7 +87,7 @@ describe('toApiHandlerContext (Hono)', () => {
     const request = new Request('http://localhost/api/test');
     const response = await app.fetch(request, {
       requestContext: {
-        http: {
+        identity: {
           sourceIp: '203.0.113.90',
         },
       },
@@ -147,7 +147,7 @@ describe('toApiHandlerContext (Hono)', () => {
     });
     const response = await app.fetch(request, {
       requestContext: {
-        requestId: 'trusted-gateway-id',
+        extendedRequestId: 'trusted-gateway-id',
       },
     });
 
@@ -167,7 +167,7 @@ describe('toApiHandlerContext (Hono)', () => {
       new Request('http://localhost/api/test', {
         headers: { 'x-request-id': 'forged-client-id' },
       }),
-      { requestContext: { requestId: '   ' } },
+      { requestContext: { extendedRequestId: '   ' } },
     );
 
     const payload = await readJsonRecord(response, 'missing trusted request-id response');

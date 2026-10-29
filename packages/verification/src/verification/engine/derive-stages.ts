@@ -36,7 +36,7 @@ export function deriveStageStatusFromChecks(
   return 'not_run';
 }
 
-export function pickStageError(
+function pickStageError(
   checks: Map<VerificationCheckId, StageCheckResult>,
   checkIds: VerificationCheckId[],
 ): string | undefined {

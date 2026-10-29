@@ -46,7 +46,7 @@ const GATED_SMOKE_PATH = 'scripts/tests/develop-gated-smoke.ts';
  *
  * The browser and CLI surfaces record direct HTTP client owners. Browser
  * components and hooks are intentionally transitive through the resource
- * clients. The mock surface records explicit contract route-handler branches.
+ * clients. The mock surface records explicit contract route-handler registrations.
  * Transitive orchestrators and inbound route hosts, such as the public API
  * Lambda bridge, are not callers. Empty arrays explicitly record that a
  * surface has no current caller.
@@ -63,12 +63,12 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.progress,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'progress\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'progress\.get':\s*readProgress\b/u)],
     cli: [
       evidence(
         CLI_HELPERS_PATH,
         /fetch\(`\$\{baseUrl\}\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/progress`,\s*\{\s*method: 'GET'/u,
-        /const payload = await readJsonRecord\(response, 'bot progress'\);\s*const data = getRecordProperty\(payload, 'data'\)/u,
+        /const payload = await readJsonRecord\(response, 'bot progress'\);\s*const data = getObjectProperty\(payload, 'data'\)/u,
       ),
       evidence(
         GATED_SMOKE_PATH,
@@ -83,7 +83,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.verification,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId,\s*finalizationId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.verification\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.verification\.get':\s*readVerification\b/u)],
     cli: [
       evidence(
         CLI_HELPERS_PATH,
@@ -104,7 +104,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.currentFinalization,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.current\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.current\.get':\s*readCurrentFinalization\b/u)],
     cli: [
       evidence(
         'packages/test-support/src/testing/finalization-status-client.ts',
@@ -121,7 +121,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /export async function downloadBundle[\s\S]*?fetchBundleBlob\(candidate\.url, options\)/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.artifacts\.bundle\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.artifacts\.bundle\.get':\s*readArtifact\b/u)],
     cli: [
       evidence(
         CLI_FLOW_PATH,
@@ -144,7 +144,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /export async function fetchVerificationReport[\s\S]*?apiFetch\(candidate\.url/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.artifacts\.report\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.artifacts\.report\.get':\s*readArtifact\b/u)],
     cli: [
       evidence(
         CLI_FLOW_PATH,
@@ -160,13 +160,13 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
     ],
   }),
   'sessions.bulletin.get': callers({
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /const bulletinRouteId: 'sessions\.bulletin\.get' = routeId/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.bulletin\.get':\s*readBulletin\b/u)],
   }),
   'sessions.bulletin.consistencyProof.get': callers({
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.bulletin\.consistencyProof\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.bulletin\.consistencyProof\.get':\s*readConsistencyProof\b/u)],
   }),
   'sessions.votes.inclusionProof.get': callers({
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.votes\.inclusionProof\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.votes\.inclusionProof\.get':\s*readInclusionProof\b/u)],
     cli: [
       evidence(
         CLI_HELPERS_PATH,
@@ -176,24 +176,31 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
     ],
   }),
   'sessions.finalizations.current.bitmapProof.get': callers({
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.current\.bitmapProof\.get'/u)],
+    mockApi: [
+      evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.current\.bitmapProof\.get':\s*readBitmapProof\b/u),
+    ],
   }),
   'sessions.bulletin.sth.get': callers({
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.bulletin\.sth\.get'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.bulletin\.sth\.get':\s*readSignedTreeHead\b/u)],
   }),
   'sessions.finalizations.current.inputCommitment.get': callers({
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.current\.inputCommitment\.get'/u)],
+    mockApi: [
+      evidence(
+        MOCK_HANDLERS_PATH,
+        /'sessions\.finalizations\.current\.inputCommitment\.get':\s*readInputCommitment\b/u,
+      ),
+    ],
   }),
   'session.post': callers({
     browser: [
       evidence(WEB_SESSIONS_PATH, /requestJsonRoute\(\s*API_ROUTES\.createSession,\s*\{\s*body:\s*request\s*\}/u),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'session\.post'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'session\.post':\s*createSession\b/u)],
     cli: [
       evidence(
         CLI_HELPERS_PATH,
         /fetch\(`\$\{baseUrl\}\/api\/sessions`,\s*\{\s*method: 'POST'/u,
-        /const payload = await readJsonRecord\(response, 'create session'\);\s*const data = getRecordProperty\(payload, 'data'\)/u,
+        /const payload = await readJsonRecord\(response, 'create session'\);\s*const data = getObjectProperty\(payload, 'data'\)/u,
       ),
       evidence(
         GATED_SMOKE_PATH,
@@ -208,12 +215,12 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.submitVote,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'vote\.post'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'vote\.post':\s*submitVote\b/u)],
     cli: [
       evidence(
         CLI_HELPERS_PATH,
         /fetch\(`\$\{baseUrl\}\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/votes`,\s*\{\s*method: 'POST'/u,
-        /const payload = await readJsonRecord\(response, 'submit vote'\);\s*const data = getRecordProperty\(payload, 'data'\)/u,
+        /const payload = await readJsonRecord\(response, 'submit vote'\);\s*const data = getObjectProperty\(payload, 'data'\)/u,
       ),
     ],
   }),
@@ -224,7 +231,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.createFinalization,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.post'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.post':\s*createFinalization\b/u)],
     cli: [
       evidence(
         CLI_HELPERS_PATH,
@@ -237,7 +244,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
     browser: [
       evidence(WEB_FINALIZATIONS_PATH, /requestJsonRoute\(\s*API_ROUTES\.cancelFinalization,\s*\{\s*params:\s*\{/u),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.cancel\.post'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.cancel\.post':\s*cancelFinalization\b/u)],
   }),
   'sessions.finalizations.verification.observations.post': callers({
     browser: [
@@ -246,7 +253,12 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.recordVerificationObservation,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId,\s*finalizationId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.verification\.observations\.post'/u)],
+    mockApi: [
+      evidence(
+        MOCK_HANDLERS_PATH,
+        /'sessions\.finalizations\.verification\.observations\.post':\s*recordVerificationObservation\b/u,
+      ),
+    ],
   }),
   'sessions.finalizations.verification.post': callers({
     browser: [
@@ -255,7 +267,7 @@ export const PUBLIC_CONTRACT_CALLER_INVENTORY = {
         /requestJsonRoute\(\s*API_ROUTES\.runVerification,\s*\{\s*params:\s*\{\s*sessionId:\s*identity\.sessionId,\s*finalizationId/u,
       ),
     ],
-    mockApi: [evidence(MOCK_HANDLERS_PATH, /routeId === 'sessions\.finalizations\.verification\.post'/u)],
+    mockApi: [evidence(MOCK_HANDLERS_PATH, /'sessions\.finalizations\.verification\.post':\s*startVerification\b/u)],
     cli: [
       evidence(
         GATED_SMOKE_PATH,

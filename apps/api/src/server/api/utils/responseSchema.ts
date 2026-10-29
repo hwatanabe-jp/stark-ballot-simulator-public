@@ -5,7 +5,7 @@ import {
   type ErrorDetails,
 } from '@stark-ballot/api-contract/errors/apiErrors';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
-import type { ApiRouteContract, JsonRouteResponse, RouteLike, RouteOutput } from '@stark-ballot/api-contract/routes';
+import type { ApiRouteContract, JsonRouteResponse, RouteLike } from '@stark-ballot/api-contract/routes';
 import { errorResponse, jsonResponse } from '../../http/response';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { resolvePublicRequestId } from '../../http/publicRequestId';
@@ -31,17 +31,6 @@ type AdmittedJsonResponse<TResponse> = TResponse extends JsonRouteResponse
 export type AdmittedRouteOutput<TRoute extends RouteLike> = TRoute extends RouteLike
   ? AdmittedJsonResponse<TRoute['responses'][number]>
   : never;
-
-type OutputByContent<TRoute extends RouteLike, TContent extends 'binary' | 'text'> = Extract<
-  RouteOutput<TRoute>,
-  { content: TContent }
->;
-
-type BodylessStatus = 204 | 205 | 304;
-type DeclaredConditionalStatus<TRoute extends RouteLike> = Extract<
-  TRoute['responses'][number]['status'],
-  BodylessStatus
->;
 
 type PublicErrorRoute = ApiRouteContract;
 
@@ -214,59 +203,4 @@ export async function admitRouteErrorResponse<TRoute extends PublicErrorRoute>(
   }
   const admitted = await admitPublicRouteErrorResponse(route, response);
   return bindAdmittedRouteResponse(route, admitted);
-}
-
-/** Admit a declared binary response before constructing its native Response. */
-export function respondWithBinaryRoute<TRoute extends RouteLike>(
-  route: TRoute,
-  output: OutputByContent<TRoute, 'binary'>,
-  init?: RouteResponseInit,
-): RouteBoundResponse<TRoute> {
-  const declared = route.responses.some(
-    (candidate) => candidate.status === output.status && candidate.content === 'binary',
-  );
-  if (!declared || !(output.body instanceof ArrayBuffer || output.body instanceof Uint8Array)) {
-    logger.error('[API] Binary route response admission failed', {
-      routeId: route.routeId,
-      status: output.status,
-    });
-    return routeAdmissionFailure(route, 'Binary route response admission failed');
-  }
-  return bindAdmittedRouteResponse(route, new Response(output.body, { ...init, status: output.status }));
-}
-
-/** Admit a declared text response before constructing its native Response. */
-export function respondWithTextRoute<TRoute extends RouteLike>(
-  route: TRoute,
-  output: OutputByContent<TRoute, 'text'>,
-  init?: RouteResponseInit,
-): RouteBoundResponse<TRoute> {
-  const declared = route.responses.some(
-    (candidate) => candidate.status === output.status && candidate.content === 'text',
-  );
-  if (!declared || typeof output.body !== 'string') {
-    logger.error('[API] Text route response admission failed', {
-      routeId: route.routeId,
-      status: output.status,
-    });
-    return routeAdmissionFailure(route, 'Text route response admission failed');
-  }
-  return bindAdmittedRouteResponse(route, new Response(output.body, { ...init, status: output.status }));
-}
-
-/** Construct a declared bodyless conditional response (for example 304). */
-export function respondWithConditionalRoute<TRoute extends RouteLike>(
-  route: TRoute,
-  status: DeclaredConditionalStatus<TRoute>,
-  init?: RouteResponseInit,
-): RouteBoundResponse<TRoute> {
-  const declared = route.responses.some((candidate) => candidate.status === status);
-  if (!declared || (status !== 204 && status !== 205 && status !== 304)) {
-    logger.error('[API] Conditional route response admission failed', {
-      routeId: route.routeId,
-      status,
-    });
-    return routeAdmissionFailure(route, 'Conditional route response admission failed');
-  }
-  return bindAdmittedRouteResponse(route, new Response(null, { ...init, status }));
 }

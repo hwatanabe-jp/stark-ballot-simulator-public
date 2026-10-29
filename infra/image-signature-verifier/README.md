@@ -7,27 +7,29 @@ assets.
 
 ## Execution boundary
 
-Cryptographic image verification does not run in the Toolchain or Prover
-release lanes. Toolchain has no image-signing or signature-verification
-contract. The Prover release lane records ECR managed-signing readiness, but
-the App preflight and runtime verifier Lambda perform the cryptographic check
-of the selected digest-pinned Prover image.
+Native App preparation and the runtime verifier Lambda cryptographically verify
+the selected digest-pinned Prover image. The Prover release lane records ECR
+managed-signing readiness for that later check. Toolchain has no image-signing
+or signature-verification contract, and neither release lane performs the
+cryptographic check itself.
 
-During a normal App deployment, the preflight plan builds the deterministic
-`linux-amd64` Lambda ZIP with
-`scripts/build/build-image-signature-verifier-lambda.mjs`. The reviewed
-verifier-only plan publishes an immutable Lambda version, and the preflight
-alias must verify the selected Prover before the App lane continues. The
-runtime alias applies the same verifier contract before the async workflow
-launches that Prover image.
+During App preparation, `prepare-app-signature.mjs` installs checksum-pinned
+assets and runs the shared native CLI against the selected digest. It packages
+the same verified assets with `scripts/build/build-image-signature-verifier-lambda.mjs`,
+then publishes immutable versioned evidence and ZIP references for the full App
+plan. Verification failure or timeout stops before deployment.
 
-`verifier.mjs` implements the shared verification core, and
-`infra/lambdas/image-signature-verifier/index.mjs` provides the Lambda
-request, response, configuration, and logging boundary. `verify-image.mjs`
-remains tested standalone CLI source; it is not a bundled artifact or a
-production release-lane entry point. The Lambda builder bundles the handler
-and its JavaScript dependencies into the ZIP, then packages the same
-checksum-pinned native assets.
+`asset-files.mjs` owns shared file shapes, paths, inventory and integrity checks
+for the installer, packager and runtime. Each caller retains its own size,
+permission and diagnostic policies.
+
+`verifier.mjs` implements the shared core and bounded result admission; `verify-image.mjs` is its native
+CodeBuild CLI boundary. `infra/lambdas/image-signature-verifier/index.mjs`
+provides the Lambda request, response, configuration and logging boundary.
+The ordinary App saved plan owns code/configuration and `publish = true`.
+Step Functions invokes that exact immutable qualified ARN and verifies the
+signature again before launching Prover. There is no verifier-only Terraform
+plan, alias reconciliation or separate preflight approval.
 
 ## Lambda package and runtime authority
 
@@ -67,5 +69,5 @@ hashes, or ARNs.
 Asset metadata, installation records, directory inventory, file
 type/size/mode/hash validation, deployment authority, process spawn,
 unexpected signal, and wrapper failures have distinct bounded codes. This
-allows an App preflight failure to be diagnosed without weakening the public
+allows a runtime verification failure to be diagnosed without weakening the public
 verification contract.

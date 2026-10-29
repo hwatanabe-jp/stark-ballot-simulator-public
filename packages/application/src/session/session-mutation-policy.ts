@@ -48,7 +48,7 @@ export interface SessionMutationDependencies {
   nowMs(): number;
 }
 
-export interface VoteIndexIntent {
+interface VoteIndexIntent {
   voteId: string;
   index: number;
 }
@@ -296,24 +296,8 @@ export function evaluateSessionVoteMutation(
   }
 
   switch (command.kind) {
-    case 'append_user_vote': {
-      const duplicateVoteId = Array.from(authority.voting.votes.values()).some(
-        (storedVote) => storedVote.voteId === command.vote.voteId,
-      );
-      if (duplicateVoteId) {
-        return {
-          ok: false,
-          error: {
-            code: ApplicationErrorCode.DUPLICATE_VOTE,
-            details: { duplicateKind: 'voteId' },
-          },
-        };
-      }
-      if (authority.voting.userParticipation.status === 'cast' || authority.voting.votes.size > 0) {
-        return { ok: false, error: { code: ApplicationErrorCode.ALREADY_VOTED } };
-      }
-      return { ok: true, value: evaluateUserVoteMutation(authority, command.vote, dependencies) };
-    }
+    case 'append_user_vote':
+      return admitNewUserVote(authority, command.vote, dependencies);
     case 'append_bot_votes':
       if (authority.voting.userParticipation.status === 'not_cast') {
         return { ok: false, error: { code: ApplicationErrorCode.USER_NOT_VOTED } };
@@ -325,4 +309,27 @@ export function evaluateSessionVoteMutation(
     default:
       return assertNever(command);
   }
+}
+
+function admitNewUserVote(
+  authority: SessionVoteAuthority,
+  vote: UserVoteCommand,
+  dependencies: SessionMutationDependencies,
+): SessionVoteMutationResult {
+  const duplicateVoteId = Array.from(authority.voting.votes.values()).some(
+    (storedVote) => storedVote.voteId === vote.voteId,
+  );
+  if (duplicateVoteId) {
+    return {
+      ok: false,
+      error: {
+        code: ApplicationErrorCode.DUPLICATE_VOTE,
+        details: { duplicateKind: 'voteId' },
+      },
+    };
+  }
+  if (authority.voting.userParticipation.status === 'cast' || authority.voting.votes.size > 0) {
+    return { ok: false, error: { code: ApplicationErrorCode.ALREADY_VOTED } };
+  }
+  return { ok: true, value: evaluateUserVoteMutation(authority, vote, dependencies) };
 }

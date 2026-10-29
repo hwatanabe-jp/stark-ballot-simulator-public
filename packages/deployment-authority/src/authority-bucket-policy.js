@@ -170,31 +170,20 @@ function requireDeletionDeny(statements, specification) {
     const resources = stringValues(statement['Resource']);
     return (
       hasExactStatementKeys(statement, ['Sid', 'Effect', 'Principal', 'Action', 'Resource']) &&
-      resources.length > 0 &&
-      new Set(resources).size === resources.length &&
-      resources.every((resource) => specification.deletionProtectedObjectArns.includes(resource))
+      isNonemptyResourceSubset(resources, specification.deletionProtectedObjectArns)
     );
   });
   const coveredResources = uniqueSorted(proofStatements.flatMap((statement) => stringValues(statement['Resource'])));
   if (hasExactStringValues(coveredResources, specification.deletionProtectedObjectArns)) {
     return;
   }
-  if (wildcardDenies.length === 0 && overlappingDeleteDenies.length > 0) {
-    throw new Error(`${label} must apply to exact Principal *`);
-  }
-  if (unconditionalWildcardDenies.length === 0 && wildcardDenies.length > 0) {
-    throw new Error(`${label} must be unconditional`);
-  }
-  if (exactActionDenies.length === 0 && unconditionalWildcardDenies.length > 0) {
-    throw new Error(`${label} must cover exactly s3:DeleteObject and s3:DeleteObjectVersion`);
-  }
+  assertDeletionDenyCoverageShape(
+    { overlappingDeleteDenies, wildcardDenies, unconditionalWildcardDenies, exactActionDenies },
+    label,
+  );
   for (const candidate of exactActionDenies) {
     const resources = stringValues(candidate['Resource']);
-    if (
-      resources.length > 0 &&
-      new Set(resources).size === resources.length &&
-      resources.every((resource) => specification.deletionProtectedObjectArns.includes(resource))
-    ) {
+    if (isNonemptyResourceSubset(resources, specification.deletionProtectedObjectArns)) {
       requireExactKeys(candidate, ['Sid', 'Effect', 'Principal', 'Action', 'Resource'], label);
     }
   }
@@ -324,20 +313,7 @@ function requirePublisherRestrictions(statements, specification) {
     if (!isExactWildcardPrincipal(statement['Principal'])) {
       throw new Error(`${label} must apply to exact Principal *`);
     }
-    let condition;
-    try {
-      condition = requireExactKeys(statement['Condition'], [restriction.conditionOperator], `${label} condition`);
-    } catch {
-      throw new Error(`${label} must use the configured ARN condition operator`);
-    }
-    const principalCondition = requireExactKeys(
-      condition[restriction.conditionOperator],
-      ['aws:PrincipalArn'],
-      `${label} principal condition`,
-    );
-    if (!hasExactStringValues(principalCondition['aws:PrincipalArn'], restriction.publisherPrincipalArns)) {
-      throw new Error(`${label} must admit only the configured publisher principals`);
-    }
+    assertPublisherPrincipals(statement, restriction, label);
   }
 }
 
@@ -350,6 +326,8 @@ function requireRetiredWriteDeny(statements, specification) {
     return;
   }
   const label = `${specification.kind} retired authority write deny`;
+  if (hasClosedWriteNamespace(statements, specification, label)) return;
+
   const candidates = statements.filter(
     (statement) =>
       statement['Effect'] === 'Deny' &&
@@ -360,23 +338,24 @@ function requireRetiredWriteDeny(statements, specification) {
   const coveredResources = [];
   for (const candidate of candidates) {
     if (Object.hasOwn(candidate, 'Condition')) {
-      throw new Error(`${label} must be unconditional`);
+      // A retained create-only deny may overlap a retired namespace. Only
+      // unconditional denies can establish that namespace's write prohibition.
+      continue;
     }
     requireExactKeys(candidate, ['Sid', 'Effect', 'Principal', 'Action', 'Resource'], label);
     if (!isExactWildcardPrincipal(candidate['Principal'])) {
       throw new Error(`${label} must apply to exact Principal *`);
     }
     const resources = stringValues(candidate['Resource']);
-    if (
-      resources.length === 0 ||
-      new Set(resources).size !== resources.length ||
-      resources.some((resource) => !specification.retiredWriteDeniedObjectArns.includes(resource))
-    ) {
+    if (!isNonemptyResourceSubset(resources, specification.retiredWriteDeniedObjectArns)) {
       throw new Error(`${label} must cover exactly the configured retired resources`);
     }
     coveredResources.push(...resources);
   }
   if (!hasExactStringValues(coveredResources, specification.retiredWriteDeniedObjectArns)) {
+    if (candidates.some((candidate) => Object.hasOwn(candidate, 'Condition'))) {
+      throw new Error(`${label} must be unconditional`);
+    }
     throw new Error(`${label} must cover exactly the configured retired resources`);
   }
 }
@@ -414,163 +393,121 @@ export function buildAuthorityBucketPolicyAuditSpecifications(expectedTargetKey)
   const target = resolveAllowedDeploymentTarget(
     requireString(expectedTargetKey, 'Authority bucket policy expected target'),
   );
-  const bootstrap = resolveDeploymentLaneAuthority(target, 'bootstrap');
   const foundation = resolveDeploymentLaneAuthority(target, 'foundation');
   const app = resolveDeploymentLaneAuthority(target, 'app');
-  const staticFast = target.environmentId === 'develop' ? resolveDeploymentLaneAuthority(target, 'static-fast') : null;
   const names = foundation.names;
-  /** @param {string} name */
-  const arnForRole = (name) => roleArn(target.partition, target.accountId, name);
   const releaseBucketArn = `arn:${target.partition}:s3:::${names.releaseManifestBucket}`;
-  const appRetainedBucketArn = `arn:${target.partition}:s3:::${names.appRetainedArtifactBucket}`;
+  const appBucketArn = `arn:${target.partition}:s3:::${names.appRetainedArtifactBucket}`;
   const terraformBucketArn = `arn:${target.partition}:s3:::${names.terraformAuthorityBucket}`;
-  const releaseImmutableObjectArns = ['artifacts', 'candidates', 'promotions'].map(
-    (prefix) => `${releaseBucketArn}/${prefix}/*`,
-  );
-  const retiredDeploymentObjectArns = [`${releaseBucketArn}/deployments/*`, `${releaseBucketArn}/rollbacks/*`];
-  const releasePointerObjectArns = [names.toolchainAcceptedPointerKey, names.proverAcceptedPointerKey].map(
-    (key) => `${releaseBucketArn}/${key}`,
-  );
-  const retiredFoundationSigningObjectArn = `${releaseBucketArn}/${names.foundationSigningAuthorityPrefix}/*`;
-  const retiredFoundationNetworkingObjectArn = `${releaseBucketArn}/${names.foundationAppNetworkingKey}`;
-  const appImmutableObjectArns = [
-    `${appRetainedBucketArn}/${names.acceptedDeploymentPrefix}/*/*`,
-    `${appRetainedBucketArn}/${names.lambdaArtifactPrefix}/*`,
-    `${appRetainedBucketArn}/${names.staticFrontendArtifactPrefix}/*`,
-    `${appRetainedBucketArn}/${names.approvalEvidencePrefix}/*`,
-    `${appRetainedBucketArn}/${names.recoveryManifestPrefix}/*`,
-    `${appRetainedBucketArn}/${names.signaturePreflightPrefix}/*`,
-  ];
-  const appStatusObjectArn = `${appRetainedBucketArn}/${names.appDeploymentStatusKey}`;
-  const appPointerObjectArns = [`${appRetainedBucketArn}/${names.acceptedDeploymentPointerKey}`, appStatusObjectArn];
-  const terraformBootstrapHistoryObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${bootstrap.stateIdentity}/executions/*`;
-  const terraformBootstrapAcceptanceObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${bootstrap.stateIdentity}/acceptances/*`;
-  const terraformFoundationHistoryObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${foundation.stateIdentity}/executions/*`;
-  const terraformFoundationAcceptanceObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${foundation.stateIdentity}/acceptances/*`;
-  const terraformAppBaselineHistoryObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${app.stateIdentity}/executions/*`;
-  const terraformBootstrapPointerObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${bootstrap.stateIdentity}/current.json`;
-  const terraformFoundationPointerObjectArn = `${terraformBucketArn}/${names.terraformBaselinePrefix}/${foundation.stateIdentity}/current.json`;
-  const terraformImmutableObjectArns = [terraformBootstrapAcceptanceObjectArn, terraformFoundationAcceptanceObjectArn];
-  const terraformPointerObjectArns = [terraformBootstrapPointerObjectArn, terraformFoundationPointerObjectArn];
-  const operatorPrincipalArnPattern =
-    `arn:${target.partition}:iam::${target.accountId}:role/aws-reserved/sso.amazonaws.com/${target.region}/` +
-    `AWSReservedSSO_${target.operatorPermissionSetName}_*`;
-  /**
-   * @param {readonly string[]} objectArns
-   * @param {readonly string[]} publisherRoleNames
-   */
-  const exactPublishers = (objectArns, publisherRoleNames) => ({
+  /** @param {readonly string[]} objectArns @param {readonly string[]} roles */
+  const publishers = (objectArns, roles) => ({
     objectArns,
     conditionOperator: /** @type {const} */ ('ArnNotEquals'),
-    publisherPrincipalArns: uniqueSorted(publisherRoleNames.map(arnForRole)),
+    publisherPrincipalArns: uniqueSorted(roles.map((name) => roleArn(target.partition, target.accountId, name))),
   });
-  /** @param {readonly string[]} objectArns */
-  const operatorPublisher = (objectArns) => ({
-    objectArns,
-    conditionOperator: /** @type {const} */ ('ArnNotLike'),
-    publisherPrincipalArns: [operatorPrincipalArnPattern],
-  });
-
+  const admin = `aws-reserved/sso.amazonaws.com/${target.region}/AWSReservedSSO_AdministratorAccess_????????????????`;
+  /** @param {'bootstrap'|'foundation'|'app'} root */
+  const prefix = (root) =>
+    `${root === 'app' ? appBucketArn : terraformBucketArn}/deployment/${target.targetKey}/${root}`;
+  /** @param {'bootstrap'|'foundation'|'app'} root */
+  const immutable = (root) => ['plan-packages', 'actions', 'approvals'].map((name) => `${prefix(root)}/${name}/*`);
+  /** @param {'bootstrap'|'foundation'|'app'} root */
+  const rootPublishers = (root) => {
+    const laneNames = root === 'app' ? app.names : foundation.names;
+    const plan = root === 'bootstrap' ? admin : laneNames.terraformPlanRole;
+    const apply = root === 'bootstrap' ? admin : laneNames.terraformApplyRole;
+    const smoke = root === 'bootstrap' ? admin : laneNames.terraformSmokeRole;
+    const actions =
+      root === 'bootstrap'
+        ? [['Local/Apply', admin]]
+        : root === 'foundation'
+          ? [
+              ['DeployFoundation/ApplyReviewedFoundationPlan', apply],
+              ['DeployFoundation/FoundationStateAbsenceOfAppRuntime', smoke],
+            ]
+          : [
+              ['DeployApplication/ApplyReviewedAppPlan', apply],
+              ['DeployApplication/DeployStaticFrontend', app.names.appStaticDeployRole],
+              ['DeployApplication/TargetRuntimeSmoke', smoke],
+              ['DeployApplication/PublishCurrentStatus', app.names.appDeploymentStatusPublisherRole],
+            ];
+    return [
+      publishers([`${prefix(root)}/plan-packages/*`], [plan]),
+      publishers([`${prefix(root)}/checkpoint.json`], [smoke]),
+      publishers([`${prefix(root)}/mutation-owner.json`], [apply]),
+      ...actions.map(([action, writer]) =>
+        publishers([`${prefix(root)}/actions/*/${action}.json`], [requireString(writer, 'Action writer')]),
+      ),
+      ...(root === 'bootstrap' ? [publishers([`${prefix(root)}/approvals/*`], [admin])] : []),
+    ];
+  };
+  const appArtifacts = [
+    names.lambdaArtifactPrefix,
+    names.staticFrontendArtifactPrefix,
+    names.signaturePreflightPrefix,
+  ].map((name) => `${appBucketArn}/${name}/*`);
+  const oldApp = [names.acceptedDeploymentPrefix, names.approvalEvidencePrefix, names.recoveryManifestPrefix].map(
+    (name) => `${appBucketArn}/${name}/*`,
+  );
+  const status = `${appBucketArn}/${names.appDeploymentStatusKey}`;
+  const oldTerraform = [
+    `${terraformBucketArn}/${names.terraformBaselinePrefix}/*`,
+    `${terraformBucketArn}/${names.approvalEvidencePrefix}/*`,
+  ];
+  const oldRelease = [
+    `${releaseBucketArn}/deployments/*`,
+    `${releaseBucketArn}/rollbacks/*`,
+    `${releaseBucketArn}/reissue/*`,
+    `${releaseBucketArn}/candidates/*`,
+    `${releaseBucketArn}/${names.toolchainAcceptedPointerKey}`,
+    `${releaseBucketArn}/${names.proverAcceptedPointerKey}`,
+    `${releaseBucketArn}/${names.foundationSigningAuthorityPrefix}/*`,
+    `${releaseBucketArn}/${names.foundationAppNetworkingKey}`,
+  ];
   return deepFreeze([
     {
       kind: 'release',
       bucketName: names.releaseManifestBucket,
-      immutableObjectArns: releaseImmutableObjectArns,
-      pointerObjectArns: releasePointerObjectArns,
-      deletionProtectedObjectArns: [
-        ...releaseImmutableObjectArns,
-        ...retiredDeploymentObjectArns,
-        `${releaseBucketArn}/reissue/*`,
-        retiredFoundationNetworkingObjectArn,
-        ...releasePointerObjectArns,
-      ],
+      immutableObjectArns: ['toolchain', 'prover'].map((kind) => `${releaseBucketArn}/artifacts/${kind}/candidates/*`),
+      pointerObjectArns: ['toolchain', 'prover'].map((kind) => `${releaseBucketArn}/promotions/${kind}/current.json`),
+      deletionProtectedObjectArns: [`${releaseBucketArn}/*`],
       retiredWriteDeniedObjectArns: [
-        `${releaseBucketArn}/${names.proverReleasePrefix}/*/manifest.json`,
-        `${releaseBucketArn}/${names.toolchainArtifactPrefix}/*/manifest.json`,
-        ...retiredDeploymentObjectArns,
-        retiredFoundationSigningObjectArn,
-        retiredFoundationNetworkingObjectArn,
+        ...oldRelease,
+        `${releaseBucketArn}/artifacts/toolchain/releases/*`,
+        `${releaseBucketArn}/artifacts/prover/releases/*`,
+        `${releaseBucketArn}/artifacts/toolchain/*/manifest.json`,
+        `${releaseBucketArn}/artifacts/prover/*/manifest.json`,
       ],
       publisherRestrictions: [
-        exactPublishers(
-          [`${releaseBucketArn}/${names.toolchainArtifactPrefix}/candidates/*`],
-          [names.toolchainCandidateRole],
-        ),
-        exactPublishers(
-          [`${releaseBucketArn}/${names.toolchainArtifactPrefix}/releases/*`],
-          [names.toolchainPointerRole],
-        ),
-        exactPublishers([`${releaseBucketArn}/${names.proverReleasePrefix}/candidates/*`], [names.proverCandidateRole]),
-        exactPublishers([`${releaseBucketArn}/${names.proverReleasePrefix}/releases/*`], [names.proverPointerRole]),
-        exactPublishers(
-          [`${releaseBucketArn}/candidates/*`],
-          [names.toolchainCandidateRole, names.proverCandidateRole],
-        ),
-        exactPublishers([`${releaseBucketArn}/promotions/*`], [names.toolchainPointerRole, names.proverPointerRole]),
-        exactPublishers([`${releaseBucketArn}/${names.toolchainAcceptedPointerKey}`], [names.toolchainPointerRole]),
-        exactPublishers([`${releaseBucketArn}/${names.proverAcceptedPointerKey}`], [names.proverPointerRole]),
+        publishers([`${releaseBucketArn}/artifacts/toolchain/candidates/*`], [names.toolchainCandidateRole]),
+        publishers([`${releaseBucketArn}/artifacts/prover/candidates/*`], [names.proverCandidateRole]),
+        publishers([`${releaseBucketArn}/promotions/toolchain/current.json`], [names.toolchainPointerRole]),
+        publishers([`${releaseBucketArn}/promotions/prover/current.json`], [names.proverPointerRole]),
       ],
     },
     {
       kind: 'app-retained',
       bucketName: names.appRetainedArtifactBucket,
-      immutableObjectArns: appImmutableObjectArns,
-      pointerObjectArns: appPointerObjectArns,
-      deletionProtectedObjectArns: [
-        `${appRetainedBucketArn}/${names.acceptedDeploymentPrefix}/*`,
-        ...appImmutableObjectArns.slice(1),
-        appStatusObjectArn,
-      ],
-      retiredWriteDeniedObjectArns: [],
+      immutableObjectArns: [...immutable('app'), ...appArtifacts],
+      pointerObjectArns: [`${prefix('app')}/*`, status],
+      deletionProtectedObjectArns: [`${prefix('app')}/*`, ...appArtifacts, ...oldApp, status],
+      retiredWriteDeniedObjectArns: oldApp,
       publisherRestrictions: [
-        exactPublishers(
-          [`${appRetainedBucketArn}/${names.acceptedDeploymentPrefix}/*`],
-          [names.appAcceptancePublisherRole],
-        ),
-        exactPublishers(
-          [`${appRetainedBucketArn}/${names.lambdaArtifactPrefix}/*`],
-          [app.names.terraformPlanRole, names.appSignaturePreflightPlanRole],
-        ),
-        exactPublishers(
-          [`${appRetainedBucketArn}/${names.staticFrontendArtifactPrefix}/*`],
-          [names.appStaticDeployRole, ...(staticFast === null ? [] : [staticFast.names.appStaticFastDeployRole])],
-        ),
-        exactPublishers([`${appRetainedBucketArn}/${names.approvalEvidencePrefix}/*`], [app.names.terraformApplyRole]),
-        operatorPublisher([`${appRetainedBucketArn}/${names.recoveryManifestPrefix}/*`]),
-        exactPublishers(
-          [`${appRetainedBucketArn}/${names.signaturePreflightPrefix}/*`],
-          [names.appSignaturePreflightInvokerRole],
-        ),
-        exactPublishers([appStatusObjectArn], [names.appDeploymentStatusPublisherRole]),
+        ...rootPublishers('app'),
+        publishers([appArtifacts[0] ?? ''], [app.names.terraformPlanRole]),
+        publishers([appArtifacts[1] ?? ''], [app.names.terraformPlanRole]),
+        publishers([appArtifacts[2] ?? ''], [app.names.terraformPlanRole]),
+        publishers([status], [app.names.appDeploymentStatusPublisherRole]),
       ],
     },
     {
       kind: 'terraform',
       bucketName: names.terraformAuthorityBucket,
-      immutableObjectArns: terraformImmutableObjectArns,
-      pointerObjectArns: terraformPointerObjectArns,
-      deletionProtectedObjectArns: [
-        ...terraformImmutableObjectArns,
-        terraformBootstrapHistoryObjectArn,
-        terraformFoundationHistoryObjectArn,
-        terraformAppBaselineHistoryObjectArn,
-        ...terraformPointerObjectArns,
-      ],
-      retiredWriteDeniedObjectArns: [
-        terraformBootstrapHistoryObjectArn,
-        terraformFoundationHistoryObjectArn,
-        terraformAppBaselineHistoryObjectArn,
-      ],
-      publisherRestrictions: [
-        exactPublishers(
-          [terraformBootstrapAcceptanceObjectArn, terraformBootstrapPointerObjectArn],
-          [names.bootstrapTerraformAcceptancePublisherRole],
-        ),
-        exactPublishers(
-          [terraformFoundationAcceptanceObjectArn, terraformFoundationPointerObjectArn],
-          [names.foundationTerraformAcceptancePublisherRole],
-        ),
-      ],
+      immutableObjectArns: [...immutable('bootstrap'), ...immutable('foundation')],
+      pointerObjectArns: [`${prefix('bootstrap')}/*`, `${prefix('foundation')}/*`],
+      deletionProtectedObjectArns: [`${prefix('bootstrap')}/*`, `${prefix('foundation')}/*`, ...oldTerraform],
+      retiredWriteDeniedObjectArns: oldTerraform,
+      publisherRestrictions: [...rootPublishers('bootstrap'), ...rootPublishers('foundation')],
     },
   ]);
 }
@@ -675,4 +612,88 @@ export function auditAuthorityBucketPolicies(input, expectedTargetKey) {
     );
   });
   return deepFreeze({ auditType: /** @type {const} */ ('authority-bucket-policy'), buckets: summaries });
+}
+
+/** @param {Record<string, unknown>} statement @param {AuthorityBucketPolicyAuditSpecification['publisherRestrictions'][number]} restriction @param {string} label */
+function assertPublisherPrincipals(statement, restriction, label) {
+  let condition;
+  try {
+    condition = requireExactKeys(statement['Condition'], [restriction.conditionOperator], `${label} condition`);
+  } catch {
+    throw new Error(`${label} must use the configured ARN condition operator`);
+  }
+  const principalCondition = requireExactKeys(
+    condition[restriction.conditionOperator],
+    ['aws:PrincipalArn'],
+    `${label} principal condition`,
+  );
+  const expected = restriction.publisherPrincipalArns;
+  const exactAdministrator = isExactAdministratorPrincipal(principalCondition['aws:PrincipalArn'], expected);
+  if (
+    !exactAdministrator &&
+    (expected.some((arn) => arn.includes('?')) ||
+      !hasExactStringValues(principalCondition['aws:PrincipalArn'], expected))
+  ) {
+    throw new Error(`${label} must admit only the configured publisher principals`);
+  }
+}
+/** @param {unknown} value @param {readonly string[]} expected */
+function isExactAdministratorPrincipal(value, expected) {
+  const actualPrincipals = stringValues(value);
+  return (
+    expected.length === 1 &&
+    expected[0]?.endsWith('_????????????????') &&
+    actualPrincipals.length === 1 &&
+    actualPrincipals[0]?.startsWith(expected[0].slice(0, -16)) &&
+    /^[0-9a-f]{16}$/u.test(actualPrincipals[0].slice(-16))
+  );
+}
+
+/** @param {readonly Record<string, unknown>[]} statements @param {AuthorityBucketPolicyAuditSpecification} specification @param {string} label */
+function hasClosedWriteNamespace(statements, specification, label) {
+  const closedNamespace = statements.filter(
+    (statement) =>
+      statement['Effect'] === 'Deny' &&
+      hasExactStringValues(statement['Action'], ['s3:PutObject']) &&
+      Object.hasOwn(statement, 'NotResource'),
+  );
+  if (closedNamespace.length === 1) {
+    const statement = closedNamespace[0];
+    if (
+      statement &&
+      hasExactStatementKeys(statement, ['Sid', 'Effect', 'Principal', 'Action', 'NotResource']) &&
+      isExactWildcardPrincipal(statement['Principal']) &&
+      hasExactStringValues(statement['NotResource'], [
+        ...specification.immutableObjectArns,
+        ...specification.pointerObjectArns,
+      ])
+    )
+      return true;
+    throw new Error(`${label} must exclude exactly the current immutable/current namespaces.`);
+  }
+
+  return false;
+}
+
+/** @param {readonly string[]} resources @param {readonly string[]} allowed */
+function isNonemptyResourceSubset(resources, allowed) {
+  return (
+    resources.length > 0 &&
+    new Set(resources).size === resources.length &&
+    resources.every((resource) => allowed.includes(resource))
+  );
+}
+
+/** @param {{overlappingDeleteDenies: readonly unknown[],wildcardDenies: readonly unknown[],unconditionalWildcardDenies: readonly unknown[],exactActionDenies: readonly unknown[]}} candidates @param {string} label */
+function assertDeletionDenyCoverageShape(candidates, label) {
+  const { overlappingDeleteDenies, wildcardDenies, unconditionalWildcardDenies, exactActionDenies } = candidates;
+  if (wildcardDenies.length === 0 && overlappingDeleteDenies.length > 0) {
+    throw new Error(`${label} must apply to exact Principal *`);
+  }
+  if (unconditionalWildcardDenies.length === 0 && wildcardDenies.length > 0) {
+    throw new Error(`${label} must be unconditional`);
+  }
+  if (exactActionDenies.length === 0 && unconditionalWildcardDenies.length > 0) {
+    throw new Error(`${label} must cover exactly s3:DeleteObject and s3:DeleteObjectVersion`);
+  }
 }

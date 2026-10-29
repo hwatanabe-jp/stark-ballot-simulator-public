@@ -18,24 +18,15 @@ data "aws_iam_policy_document" "terraform_drift_runner_boundary" {
   }
 
   statement {
-    effect        = "Deny"
-    actions       = ["s3:PutObject"]
-    not_resources = [local.terraform_drift_runner_report_object_arns[each.key]]
-  }
-
-  statement {
-    effect  = "Deny"
-    actions = ["s3:GetObject"]
-    not_resources = concat(
-      [local.terraform_drift_runner_state_object_arns[each.key]],
-      local.terraform_drift_runner_authority_object_arns[each.key],
-    )
+    effect    = "Deny"
+    actions   = ["s3:PutObject"]
+    resources = ["*"]
   }
 
   statement {
     effect        = "Deny"
-    actions       = ["s3:GetObjectVersion"]
-    not_resources = local.terraform_drift_runner_authority_object_arns[each.key]
+    actions       = ["s3:GetObject", "s3:GetObjectVersion"]
+    not_resources = concat([local.terraform_drift_runner_state_object_arns[each.key]], local.terraform_drift_runner_authority_object_arns[each.key])
   }
 
   dynamic "statement" {
@@ -134,30 +125,13 @@ data "aws_iam_policy_document" "terraform_drift_runner_boundary" {
     }
   }
 
-  statement {
-    effect = "Deny"
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-    not_resources = [local.terraform_drift_runner_log_stream_arns[each.key]]
-  }
 
-  statement {
-    effect = "Deny"
-    actions = [
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
-    ]
-    not_resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
-  }
 
 }
 
 resource "aws_iam_policy" "terraform_drift_runner_boundary" {
   for_each = local.terraform_drift_runner_roles
 
-  depends_on = [aws_iam_role_policy_attachment.terraform_baseline_authority_runtime_management]
 
   name   = local.terraform_drift_runner_boundary_policy_names[each.key]
   policy = data.aws_iam_policy_document.terraform_drift_runner_boundary[each.key].json
@@ -181,7 +155,7 @@ resource "aws_iam_role" "terraform_drift_runner" {
   for_each = local.terraform_drift_runner_roles
 
   name                 = each.value.roleName
-  assume_role_policy   = data.aws_iam_policy_document.codebuild_assume_role[0].json
+  assume_role_policy   = data.aws_iam_policy_document.local_drift_assume_role[0].json
   permissions_boundary = aws_iam_policy.terraform_drift_runner_boundary[each.key].arn
   tags                 = merge(local.common_tags, { StateScope = each.key })
 }
@@ -190,25 +164,39 @@ data "aws_iam_policy_document" "terraform_drift_runner" {
   for_each = local.terraform_drift_runner_roles
 
   statement {
+    sid       = "ObserveOwningNativeExecutions"
+    actions   = ["codepipeline:ListPipelineExecutions", "codepipeline:GetPipelineExecution", "codepipeline:ListActionExecutions"]
+    resources = [for name in(each.key == "bootstrap" ? [local.foundation_pipeline_name, local.app_pipeline_name, local.toolchain_release_pipeline_name, local.prover_release_pipeline_name] : [each.key == "app" ? local.app_pipeline_name : local.foundation_pipeline_name]) : "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${name}"]
+  }
+  statement {
+    sid     = "ObserveOwningNativeBuilds"
+    actions = ["codebuild:ListBuildsForProject", "codebuild:BatchGetBuilds"]
+    resources = [for execution in values(local.managed_codebuild_executions) :
+      "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${execution.project}"
+      if each.key == "bootstrap" || execution.pipeline == (each.key == "app" ? local.app_pipeline_name : local.foundation_pipeline_name)
+    ]
+  }
+  dynamic "statement" {
+    for_each = each.key == "app" ? [1] : []
+    content {
+      sid       = "ObserveSelectedImages"
+      actions   = ["ecr:BatchGetImage", "ecr:DescribeImages"]
+      resources = local.foundation_ecr_repository_arns
+    }
+  }
+
+  statement {
     sid       = "ReadRunnerAccountIdentity"
     effect    = "Allow"
     actions   = ["sts:GetCallerIdentity"]
     resources = ["*"]
   }
 
-  statement {
-    sid     = "ReadExactInstalledRunnerProject"
-    effect  = "Allow"
-    actions = ["codebuild:BatchGetProjects"]
-    resources = [
-      "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${each.value.projectName}"
-    ]
-  }
 
   statement {
     sid       = "ReadExactTerraformState"
     effect    = "Allow"
-    actions   = ["s3:GetObject"]
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
     resources = ["${aws_s3_bucket.state.arn}/${each.value.backendKey}"]
   }
 
@@ -267,20 +255,6 @@ data "aws_iam_policy_document" "terraform_drift_runner" {
     resources = local.terraform_drift_runner_authority_object_arns[each.key]
   }
 
-  statement {
-    sid     = "PublishConditionalTerraformDriftReport"
-    effect  = "Allow"
-    actions = ["s3:PutObject"]
-    resources = [
-      "arn:aws:s3:::${local.terraform_authority_bucket_name}/${local.terraform_drift_report_prefix}/${each.key}/*"
-    ]
-
-    condition {
-      test     = "StringEquals"
-      variable = "s3:if-none-match"
-      values   = ["*"]
-    }
-  }
 
   statement {
     sid       = "DescribeTerraformAuthorityKey"
@@ -334,8 +308,6 @@ data "aws_iam_policy_document" "terraform_drift_runner" {
     effect = "Allow"
     actions = [
       "kms:Decrypt",
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
     ]
     resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
 
@@ -358,29 +330,7 @@ data "aws_iam_policy_document" "terraform_drift_runner" {
     }
   }
 
-  statement {
-    sid    = "UseSourceConnection"
-    effect = "Allow"
-    actions = [
-      "codeconnections:GetConnection",
-      "codeconnections:GetConnectionToken",
-      "codestar-connections:GetConnection",
-      "codestar-connections:GetConnectionToken",
-    ]
-    resources = [aws_codeconnections_connection.source[0].arn]
-  }
 
-  statement {
-    sid    = "WriteTerraformDriftLogs"
-    effect = "Allow"
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-    resources = [
-      "${module.terraform_drift_codebuild_log_groups.log_groups[each.value.projectName].arn}:*"
-    ]
-  }
 }
 
 resource "aws_iam_role_policy" "terraform_drift_runner" {
@@ -409,7 +359,6 @@ data "aws_iam_policy_document" "terraform_drift_runner_bootstrap_provider" {
 resource "aws_iam_policy" "terraform_drift_runner_bootstrap_provider" {
   for_each = local.terraform_drift_bootstrap_provider_policy_configuration
 
-  depends_on = [aws_iam_role_policy_attachment.terraform_baseline_authority_runtime_management]
 
   name   = each.value.name
   policy = data.aws_iam_policy_document.terraform_drift_runner_bootstrap_provider[each.key].json
@@ -447,7 +396,15 @@ check "terraform_drift_runner_bootstrap_managed_policy_attachment_quota" {
 }
 
 data "aws_iam_policy_document" "terraform_drift_runner_foundation_provider" {
-  count = local.terraform_drift_enabled ? 1 : 0
+  count                   = local.terraform_drift_enabled ? 1 : 0
+  source_policy_documents = [data.aws_iam_policy_document.foundation_retained_image_logs_read.json]
+
+  statement {
+    sid       = "ReadExactFoundationImageLifecyclePolicies"
+    effect    = "Allow"
+    actions   = ["ecr:GetLifecyclePolicy"]
+    resources = local.foundation_ecr_repository_arns
+  }
 
   statement {
     sid       = "ReadExactFoundationProviderResources"
@@ -463,70 +420,6 @@ data "aws_iam_policy_document" "terraform_drift_runner_foundation_provider" {
     resources = ["*"]
   }
 
-  statement {
-    sid    = "ReadExactFoundationEcrRetentionRole"
-    effect = "Allow"
-    actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-  }
-
-  statement {
-    sid    = "ReadExactFoundationEcrRetentionBoundary"
-    effect = "Allow"
-    actions = [
-      "iam:GetPolicy",
-      "iam:GetPolicyVersion",
-      "iam:ListPolicyVersions",
-    ]
-    resources = [local.foundation_ecr_retention_boundary_policy_arn]
-  }
-
-  statement {
-    sid    = "ReadExactFoundationEcrRetentionLambda"
-    effect = "Allow"
-    actions = [
-      "lambda:GetFunction",
-      "lambda:GetFunctionCodeSigningConfig",
-      "lambda:GetFunctionConcurrency",
-      "lambda:GetPolicy",
-      "lambda:GetRuntimeManagementConfig",
-      "lambda:ListTags",
-      "lambda:ListVersionsByFunction",
-    ]
-    resources = [local.foundation_ecr_retention_function_arn]
-  }
-
-  statement {
-    sid    = "ReadExactFoundationEcrRetentionSchedule"
-    effect = "Allow"
-    actions = [
-      "events:DescribeRule",
-      "events:ListTagsForResource",
-      "events:ListTargetsByRule",
-    ]
-    resources = [local.foundation_ecr_retention_schedule_arn]
-  }
-
-  statement {
-    sid       = "ReadExactFoundationEcrRetentionLogGroupTags"
-    effect    = "Allow"
-    actions   = ["logs:ListTagsForResource"]
-    resources = [local.foundation_ecr_retention_log_group_arn]
-  }
-
-  statement {
-    sid       = "ReadExactFoundationEcrRetentionAuthorityKey"
-    effect    = "Allow"
-    actions   = ["kms:DescribeKey"]
-    resources = [aws_kms_alias.app_pipeline_artifacts[0].target_key_arn]
-  }
 }
 
 resource "aws_iam_role_policy" "terraform_drift_runner_foundation_provider" {
@@ -656,12 +549,13 @@ data "aws_iam_policy_document" "terraform_drift_runner_app_provider_core" {
     sid       = "ReadExactAppApiGatewayRuntime"
     effect    = "Allow"
     actions   = ["apigateway:GET"]
-    resources = concat(local.app_target_api_arns, local.app_target_api_tagging_arns)
+    resources = concat(local.app_target_api_arns, local.app_target_api_tagging_arns, local.app_retired_http_api_arns)
   }
 }
 
 data "aws_iam_policy_document" "terraform_drift_runner_app_provider_runtime" {
   count = local.terraform_drift_enabled ? 1 : 0
+
 
   statement {
     sid    = "ReadExactAppAsyncRuntime"
@@ -774,7 +668,7 @@ data "aws_iam_policy_document" "terraform_drift_runner_app_provider_runtime" {
     ]
     resources = concat(
       [local.app_target_lambda_arn_pattern, "${local.app_target_lambda_arn_pattern}:*"],
-      local.app_signature_verifier_alias_arns,
+      [local.app_signature_verifier_lambda_arn, "${local.app_signature_verifier_lambda_arn}:*"],
     )
   }
 
@@ -811,12 +705,12 @@ data "aws_iam_policy_document" "terraform_drift_runner_app_provider_runtime" {
 resource "aws_iam_policy" "terraform_drift_runner_app_provider" {
   for_each = local.terraform_drift_runner_app_provider_policy_configuration
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management]
 
   name = each.value.name
   policy = {
     core    = data.aws_iam_policy_document.terraform_drift_runner_app_provider_core[0].json
     runtime = data.aws_iam_policy_document.terraform_drift_runner_app_provider_runtime[0].json
+    batch   = data.aws_iam_policy_document.app_batch_read.json
   }[each.key]
   tags = local.common_tags
 }
@@ -824,7 +718,6 @@ resource "aws_iam_policy" "terraform_drift_runner_app_provider" {
 resource "aws_iam_role_policy_attachment" "terraform_drift_runner_app_provider" {
   for_each = local.terraform_drift_runner_app_provider_policy_configuration
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 
   role       = aws_iam_role.terraform_drift_runner["app"].name
   policy_arn = aws_iam_policy.terraform_drift_runner_app_provider[each.key].arn
@@ -1033,289 +926,4 @@ check "terraform_drift_runner_role_inline_policy_quotas" {
     )
     error_message = "Each Terraform drift runner role must remain within IAM's aggregate 10,240-character inline-policy quota."
   }
-}
-
-resource "aws_codebuild_project" "terraform_drift_bootstrap" {
-  count = local.terraform_drift_enabled ? 1 : 0
-
-  depends_on = [terraform_data.terraform_report_only_execution_authorization_propagation]
-
-  name                   = local.terraform_drift_runner_project_names.bootstrap
-  service_role           = aws_iam_role.terraform_drift_runner["bootstrap"].arn
-  build_timeout          = 30
-  concurrent_build_limit = 1
-  source_version         = var.control_source_sha
-
-  artifacts {
-    type = "NO_ARTIFACTS"
-  }
-
-  environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:8.0"
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
-
-    environment_variable {
-      name  = "AWS_ACCOUNT_ID"
-      value = var.aws_account_id
-    }
-    environment_variable {
-      name  = "AWS_DEFAULT_REGION"
-      value = var.aws_region
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_SOURCE_CONNECTION_ARN"
-      value = aws_codeconnections_connection.source[0].arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_TARGET_KEY"
-      value = local.deployment_target.targetKey
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_ROOT"
-      value = "bootstrap"
-    }
-    environment_variable {
-      name  = "TERRAFORM_AUTHORITY_BUCKET"
-      value = local.terraform_authority_bucket_name
-    }
-    environment_variable {
-      name  = "TERRAFORM_AUTHORITY_KMS_KEY_ARN"
-      value = aws_kms_key.terraform_authority[0].arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_REPORT_PREFIX"
-      value = local.terraform_drift_report_prefix
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_BUCKET"
-      value = aws_s3_bucket.state.bucket
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_KMS_KEY_ARN"
-      value = aws_kms_key.state.arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_KMS_ALIAS"
-      value = var.state_kms_alias
-    }
-  }
-
-  logs_config {
-    cloudwatch_logs {
-      group_name  = module.terraform_drift_codebuild_log_groups.log_groups[local.terraform_drift_runner_project_names.bootstrap].name
-      stream_name = "bootstrap"
-    }
-  }
-
-  source {
-    type                = "GITHUB"
-    location            = local.deployment_target.repositoryUrl
-    git_clone_depth     = 0
-    insecure_ssl        = false
-    report_build_status = false
-    buildspec           = "infra/framework/buildspecs/terraform-drift-runner.yml"
-
-    git_submodules_config {
-      fetch_submodules = false
-    }
-
-    auth {
-      type     = "CODECONNECTIONS"
-      resource = aws_codeconnections_connection.source[0].arn
-    }
-  }
-
-  tags = local.common_tags
-}
-
-resource "aws_codebuild_project" "terraform_drift_foundation" {
-  count = local.terraform_drift_enabled ? 1 : 0
-
-  depends_on = [terraform_data.terraform_report_only_execution_authorization_propagation]
-
-  name                   = local.terraform_drift_runner_project_names.foundation
-  service_role           = aws_iam_role.terraform_drift_runner["foundation"].arn
-  build_timeout          = 30
-  concurrent_build_limit = 1
-  source_version         = var.control_source_sha
-
-  artifacts {
-    type = "NO_ARTIFACTS"
-  }
-
-  environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:8.0"
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
-
-    environment_variable {
-      name  = "AWS_ACCOUNT_ID"
-      value = var.aws_account_id
-    }
-    environment_variable {
-      name  = "AWS_DEFAULT_REGION"
-      value = var.aws_region
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_SOURCE_CONNECTION_ARN"
-      value = aws_codeconnections_connection.source[0].arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_TARGET_KEY"
-      value = local.deployment_target.targetKey
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_ROOT"
-      value = "foundation"
-    }
-    environment_variable {
-      name  = "TERRAFORM_AUTHORITY_BUCKET"
-      value = local.terraform_authority_bucket_name
-    }
-    environment_variable {
-      name  = "TERRAFORM_AUTHORITY_KMS_KEY_ARN"
-      value = aws_kms_key.terraform_authority[0].arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_REPORT_PREFIX"
-      value = local.terraform_drift_report_prefix
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_BUCKET"
-      value = aws_s3_bucket.state.bucket
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_KMS_KEY_ARN"
-      value = aws_kms_key.state.arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_KMS_ALIAS"
-      value = var.state_kms_alias
-    }
-  }
-
-  logs_config {
-    cloudwatch_logs {
-      group_name  = module.terraform_drift_codebuild_log_groups.log_groups[local.terraform_drift_runner_project_names.foundation].name
-      stream_name = "foundation"
-    }
-  }
-
-  source {
-    type                = "GITHUB"
-    location            = local.deployment_target.repositoryUrl
-    git_clone_depth     = 0
-    insecure_ssl        = false
-    report_build_status = false
-    buildspec           = "infra/framework/buildspecs/terraform-drift-runner.yml"
-
-    git_submodules_config {
-      fetch_submodules = false
-    }
-
-    auth {
-      type     = "CODECONNECTIONS"
-      resource = aws_codeconnections_connection.source[0].arn
-    }
-  }
-
-  tags = merge(local.common_tags, { StateScope = "foundation" })
-}
-
-resource "aws_codebuild_project" "terraform_drift_app" {
-  count = local.terraform_drift_enabled ? 1 : 0
-
-  depends_on = [terraform_data.terraform_report_only_execution_authorization_propagation]
-
-  name                   = local.terraform_drift_runner_project_names.app
-  service_role           = aws_iam_role.terraform_drift_runner["app"].arn
-  build_timeout          = 30
-  concurrent_build_limit = 1
-  source_version         = var.control_source_sha
-
-  artifacts {
-    type = "NO_ARTIFACTS"
-  }
-
-  environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:8.0"
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
-
-    environment_variable {
-      name  = "AWS_ACCOUNT_ID"
-      value = var.aws_account_id
-    }
-    environment_variable {
-      name  = "AWS_DEFAULT_REGION"
-      value = var.aws_region
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_SOURCE_CONNECTION_ARN"
-      value = aws_codeconnections_connection.source[0].arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_TARGET_KEY"
-      value = local.deployment_target.targetKey
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_ROOT"
-      value = "app"
-    }
-    environment_variable {
-      name  = "TERRAFORM_AUTHORITY_BUCKET"
-      value = local.terraform_authority_bucket_name
-    }
-    environment_variable {
-      name  = "TERRAFORM_AUTHORITY_KMS_KEY_ARN"
-      value = aws_kms_key.terraform_authority[0].arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_DRIFT_REPORT_PREFIX"
-      value = local.terraform_drift_report_prefix
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_BUCKET"
-      value = aws_s3_bucket.state.bucket
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_KMS_KEY_ARN"
-      value = aws_kms_key.state.arn
-    }
-    environment_variable {
-      name  = "TERRAFORM_STATE_KMS_ALIAS"
-      value = var.state_kms_alias
-    }
-  }
-
-  logs_config {
-    cloudwatch_logs {
-      group_name  = module.terraform_drift_codebuild_log_groups.log_groups[local.terraform_drift_runner_project_names.app].name
-      stream_name = "app"
-    }
-  }
-
-  source {
-    type                = "GITHUB"
-    location            = local.deployment_target.repositoryUrl
-    git_clone_depth     = 0
-    insecure_ssl        = false
-    report_build_status = false
-    buildspec           = "infra/framework/buildspecs/terraform-drift-runner.yml"
-
-    git_submodules_config {
-      fetch_submodules = false
-    }
-
-    auth {
-      type     = "CODECONNECTIONS"
-      resource = aws_codeconnections_connection.source[0].arn
-    }
-  }
-
-  tags = merge(local.common_tags, { StateScope = "app" })
 }

@@ -20,7 +20,7 @@ function normalizePrefix(prefix: string): string {
   return trimmed ? `${trimmed}/` : '';
 }
 
-export function asS3Key(value: string): S3Key {
+function asS3Key(value: string): S3Key {
   if (value.length === 0) {
     throw new Error('s3Key must not be empty');
   }

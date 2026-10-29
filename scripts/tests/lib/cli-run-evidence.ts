@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, lstat, open, readFile } from 'node:fs/promises';
+import { access, lstat, open, readFile, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { CliRunEvidence } from '@stark-ballot/test-support/testing/cli-artifacts';
@@ -86,22 +86,30 @@ async function command(commandName: string, args: string[], cwd: string): Promis
   return stdout;
 }
 
+async function hashEvidenceStream(
+  file: FileHandle,
+  maxBytes: number,
+): Promise<{ hash: ReturnType<typeof createHash>; size: number }> {
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(Math.min(maxBytes, 1024 * 1024));
+  const deadline = Date.now() + 5000;
+  let size = 0;
+  for (;;) {
+    const { bytesRead } = await file.read(buffer);
+    if (!bytesRead) break;
+    size += bytesRead;
+    if (size > maxBytes || Date.now() > deadline) throw new Error('Evidence file limit exceeded');
+    hash.update(buffer.subarray(0, bytesRead));
+  }
+  return { hash, size };
+}
+
 async function fileHash(filePath: string, maxBytes: number): Promise<string> {
   const file = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await file.stat();
     if (!before.isFile() || before.size > maxBytes) throw new Error('Unsupported evidence file');
-    const hash = createHash('sha256');
-    const buffer = Buffer.alloc(Math.min(maxBytes, 1024 * 1024));
-    const deadline = Date.now() + 5000;
-    let size = 0;
-    for (;;) {
-      const { bytesRead } = await file.read(buffer);
-      if (!bytesRead) break;
-      size += bytesRead;
-      if (size > maxBytes || Date.now() > deadline) throw new Error('Evidence file limit exceeded');
-      hash.update(buffer.subarray(0, bytesRead));
-    }
+    const { hash, size } = await hashEvidenceStream(file, maxBytes);
     const after = await file.stat();
     if (size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
       throw new Error('Evidence file changed during collection');
@@ -121,6 +129,14 @@ async function sourceHash(projectRoot: string, sourcePath: string): Promise<stri
     }
   }
   return fileHash(path.join(projectRoot, sourcePath), MAX_SOURCE_BYTES);
+}
+
+function isExcludedEvidenceSource(entry: string, roots: readonly string[]): boolean {
+  return (
+    !roots.some((root) => entry.startsWith(`${root}/`)) ||
+    !SAFE_SOURCE_PATH.test(entry) ||
+    entry.split('/').some((part) => part.startsWith('.') || /(?:secret|credential|private|\.local\.)/i.test(part))
+  );
 }
 
 async function collectSource(
@@ -155,11 +171,7 @@ async function collectSource(
       issues.push('source_untracked_limit');
     }
     for (const entry of sources.slice(0, MAX_UNTRACKED_SOURCES)) {
-      if (
-        !roots.some((root) => entry.startsWith(`${root}/`)) ||
-        !SAFE_SOURCE_PATH.test(entry) ||
-        entry.split('/').some((part) => part.startsWith('.') || /(?:secret|credential|private|\.local\.)/i.test(part))
-      ) {
+      if (isExcludedEvidenceSource(entry, roots)) {
         source.complete = false;
         issues.push('source_untracked_excluded');
         continue;
@@ -206,15 +218,10 @@ async function binaryHash(candidates: string[]): Promise<string | null> {
   return null;
 }
 
-/** Collect only bounded, allowlisted conditions; raw process errors, environment and diff never leave here. */
-export async function collectCliRunEvidence(options: CollectCliRunEvidenceOptions): Promise<CliRunEvidence> {
-  const initial = initialCliRunEvidence(options);
-  const environment = options.environment ?? process.env;
-  const issues: string[] = [];
-  const source = await collectSource(options, issues);
+async function declaredPnpmVersion(projectRoot: string, issues: string[]): Promise<string | null> {
   let pnpmDeclared: string | null = null;
   try {
-    const manifest: unknown = JSON.parse(await readFile(path.join(options.projectRoot, 'package.json'), 'utf8'));
+    const manifest: unknown = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
     if (typeof manifest === 'object' && manifest !== null && 'packageManager' in manifest) {
       const value = manifest.packageManager;
       if (typeof value === 'string') pnpmDeclared = /^pnpm@(\d+\.\d+\.\d+)(?:\+|$)/.exec(value)?.[1] ?? null;
@@ -223,7 +230,13 @@ export async function collectCliRunEvidence(options: CollectCliRunEvidenceOption
   } catch {
     issues.push('pnpm_declaration_unavailable');
   }
-  const pnpmObserved = await observedVersion('pnpm', options.projectRoot, issues);
+  return pnpmDeclared;
+}
+
+async function collectBinaryHashes(
+  options: CollectCliRunEvidenceOptions,
+  environment: NodeJS.ProcessEnv,
+): Promise<{ hostHash: string | null; verifierHash: string | null }> {
   const hostHash =
     options.useRealZkVM && !options.externalServer
       ? await binaryHash([path.join(options.projectRoot, 'zkvm/target/release/host')])
@@ -235,14 +248,46 @@ export async function collectCliRunEvidence(options: CollectCliRunEvidenceOption
         path.join(options.projectRoot, 'verifier-service/target/debug/verifier-service'),
       ])
     : null;
-  if (environment['RAYON_NUM_THREADS'] && initial.runtime.rayonThreads.configured === null) {
-    issues.push('rayon_setting_invalid');
-  }
-  if (environment['CLI_FINALIZE_TIMEOUT_MS'] && initial.runtime.finalizeTimeoutMs.requested === null) {
-    issues.push('finalize_timeout_invalid');
-  }
+  return { hostHash, verifierHash };
+}
+
+function collectMissingBinaryIssues(
+  options: CollectCliRunEvidenceOptions,
+  hostHash: string | null,
+  verifierHash: string | null,
+  issues: string[],
+): void {
   if (options.useRealZkVM && !options.externalServer && !hostHash) issues.push('host_binary_unavailable');
   if (options.useRealZkVM && !verifierHash) issues.push('verifier_binary_unavailable');
+}
+
+function collectRuntimeEvidenceIssues(
+  options: CollectCliRunEvidenceOptions,
+  environment: NodeJS.ProcessEnv,
+  runtime: CliRunEvidence['runtime'],
+  hostHash: string | null,
+  verifierHash: string | null,
+  issues: string[],
+): void {
+  if (environment['RAYON_NUM_THREADS'] && runtime.rayonThreads.configured === null) {
+    issues.push('rayon_setting_invalid');
+  }
+  if (environment['CLI_FINALIZE_TIMEOUT_MS'] && runtime.finalizeTimeoutMs.requested === null) {
+    issues.push('finalize_timeout_invalid');
+  }
+  collectMissingBinaryIssues(options, hostHash, verifierHash, issues);
+}
+
+/** Collect only bounded, allowlisted conditions; raw process errors, environment and diff never leave here. */
+export async function collectCliRunEvidence(options: CollectCliRunEvidenceOptions): Promise<CliRunEvidence> {
+  const initial = initialCliRunEvidence(options);
+  const environment = options.environment ?? process.env;
+  const issues: string[] = [];
+  const source = await collectSource(options, issues);
+  const pnpmDeclared = await declaredPnpmVersion(options.projectRoot, issues);
+  const pnpmObserved = await observedVersion('pnpm', options.projectRoot, issues);
+  const { hostHash, verifierHash } = await collectBinaryHashes(options, environment);
+  collectRuntimeEvidenceIssues(options, environment, initial.runtime, hostHash, verifierHash, issues);
   return {
     ...initial,
     source,

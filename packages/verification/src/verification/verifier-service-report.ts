@@ -1,8 +1,6 @@
 import { s, type Infer } from '@stark-ballot/validation/schema';
 import { documentOpenApiRefinement } from '@stark-ballot/validation/schema-openapi';
 
-export const VERIFIER_SERVICE_STATUS_VALUES = ['success', 'dev_mode', 'failed'] as const;
-export type VerifierServiceStatus = (typeof VERIFIER_SERVICE_STATUS_VALUES)[number];
 export type VerifierServiceExitCode = 0 | 2 | 3;
 
 const IMAGE_ID_PATTERN = /^0x[0-9a-f]{64}$/;
@@ -18,29 +16,23 @@ function isRfc3339Timestamp(value: string): boolean {
     return false;
   }
 
-  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
-  if (
-    year === undefined ||
-    month === undefined ||
-    day === undefined ||
-    hour === undefined ||
-    minute === undefined ||
-    second === undefined
-  ) {
-    return false;
-  }
+  return (
+    isValidCalendarDate(Number(match[1]), Number(match[2]), Number(match[3])) &&
+    Number(match[4]) <= 23 &&
+    Number(match[5]) <= 59 &&
+    Number(match[6]) <= 59 &&
+    hasValidTimestampOffset(match)
+  );
+}
 
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
   const daysByMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   const maximumDay = daysByMonth[month - 1];
-  if (maximumDay === undefined || day < 1 || day > maximumDay || hour > 23 || minute > 59 || second > 59) {
-    return false;
-  }
+  return maximumDay !== undefined && day >= 1 && day <= maximumDay;
+}
 
-  const zone = match[7];
-  if (zone === 'Z') {
-    return true;
-  }
-
+function hasValidTimestampOffset(match: RegExpExecArray): boolean {
+  if (match[7] === 'Z') return true;
   const offsetHour = Number(match[8]);
   const offsetMinute = Number(match[9]);
   return Number.isInteger(offsetHour) && offsetHour <= 23 && Number.isInteger(offsetMinute) && offsetMinute <= 59;
@@ -92,20 +84,38 @@ const commonWireShape = {
   receipt_path: basenamePathSchema,
 } as const;
 
+const successReceiptShape = { receipt_image_id: verifierReportImageIdSchema, dev_mode_receipt: s.literal(false) };
+const devModeReceiptShape = {
+  receipt_image_id: verifierReportImageIdSchema.nullable(),
+  dev_mode_receipt: s.literal(true),
+  errors: errorsSchema.optional(),
+};
+const failedReceiptShape = {
+  receipt_image_id: verifierReportImageIdSchema.nullable(),
+  dev_mode_receipt: s.boolean(),
+  errors: errorsSchema,
+};
+
+type ReportImageIds = { receipt_image_id: string | null; expected_image_id: string };
+type ReportRefinementContext = { addIssue(issue: { message: string }): void };
+function requireSuccessfulReceiptImageId(report: ReportImageIds, context: ReportRefinementContext): void {
+  if (report.receipt_image_id !== report.expected_image_id)
+    context.addIssue({ message: 'Successful report receipt ImageID must match the expected ImageID' });
+}
+function requireDevelopmentReceiptImageId(report: ReportImageIds, context: ReportRefinementContext): void {
+  if (report.receipt_image_id !== null && report.receipt_image_id !== report.expected_image_id)
+    context.addIssue({ message: 'Dev-mode report receipt ImageID must match the expected ImageID when present' });
+}
+
 const verifierServiceSuccessWireReportSchema = documentOpenApiRefinement(
   s
     .object({
       status: s.literal('success'),
       ...commonWireShape,
-      receipt_image_id: verifierReportImageIdSchema,
-      dev_mode_receipt: s.literal(false),
+      ...successReceiptShape,
     })
     .strict()
-    .superRefine((report, context) => {
-      if (report.receipt_image_id !== report.expected_image_id) {
-        context.addIssue({ message: 'Successful report receipt ImageID must match the expected ImageID' });
-      }
-    }),
+    .superRefine(requireSuccessfulReceiptImageId),
   'A successful report has a receipt_image_id equal to expected_image_id.',
 );
 
@@ -114,16 +124,10 @@ const verifierServiceDevModeWireReportSchema = documentOpenApiRefinement(
     .object({
       status: s.literal('dev_mode'),
       ...commonWireShape,
-      receipt_image_id: verifierReportImageIdSchema.nullable(),
-      dev_mode_receipt: s.literal(true),
-      errors: errorsSchema.optional(),
+      ...devModeReceiptShape,
     })
     .strict()
-    .superRefine((report, context) => {
-      if (report.receipt_image_id !== null && report.receipt_image_id !== report.expected_image_id) {
-        context.addIssue({ message: 'Dev-mode report receipt ImageID must match the expected ImageID when present' });
-      }
-    }),
+    .superRefine(requireDevelopmentReceiptImageId),
   'When present, a dev-mode receipt_image_id equals expected_image_id.',
 );
 
@@ -131,9 +135,7 @@ const verifierServiceFailedWireReportSchema = s
   .object({
     status: s.literal('failed'),
     ...commonWireShape,
-    receipt_image_id: verifierReportImageIdSchema.nullable(),
-    dev_mode_receipt: s.boolean(),
-    errors: errorsSchema,
+    ...failedReceiptShape,
   })
   .strict();
 
@@ -148,15 +150,10 @@ const verifierServiceSuccessReportSchema = documentOpenApiRefinement(
     .object({
       status: s.literal('success'),
       ...commonReportShape,
-      receipt_image_id: verifierReportImageIdSchema,
-      dev_mode_receipt: s.literal(false),
+      ...successReceiptShape,
     })
     .strict()
-    .superRefine((report, context) => {
-      if (report.receipt_image_id !== report.expected_image_id) {
-        context.addIssue({ message: 'Successful report receipt ImageID must match the expected ImageID' });
-      }
-    }),
+    .superRefine(requireSuccessfulReceiptImageId),
   'A successful report has a receipt_image_id equal to expected_image_id.',
 );
 
@@ -165,16 +162,10 @@ const verifierServiceDevModeReportSchema = documentOpenApiRefinement(
     .object({
       status: s.literal('dev_mode'),
       ...commonReportShape,
-      receipt_image_id: verifierReportImageIdSchema.nullable(),
-      dev_mode_receipt: s.literal(true),
-      errors: errorsSchema.optional(),
+      ...devModeReceiptShape,
     })
     .strict()
-    .superRefine((report, context) => {
-      if (report.receipt_image_id !== null && report.receipt_image_id !== report.expected_image_id) {
-        context.addIssue({ message: 'Dev-mode report receipt ImageID must match the expected ImageID when present' });
-      }
-    }),
+    .superRefine(requireDevelopmentReceiptImageId),
   'When present, a dev-mode receipt_image_id equals expected_image_id.',
 );
 
@@ -182,13 +173,11 @@ const verifierServiceFailedReportSchema = s
   .object({
     status: s.literal('failed'),
     ...commonReportShape,
-    receipt_image_id: verifierReportImageIdSchema.nullable(),
-    dev_mode_receipt: s.boolean(),
-    errors: errorsSchema,
+    ...failedReceiptShape,
   })
   .strict();
 
-export const verifierServiceReportSchema = s.union([
+const verifierServiceReportSchema = s.union([
   verifierServiceSuccessReportSchema,
   verifierServiceDevModeReportSchema,
   verifierServiceFailedReportSchema,
@@ -244,6 +233,15 @@ export function parseVerifierServiceReport(input: unknown): VerifierServiceRepor
   return verifierServiceReportSchema.parse(input) as VerifierServiceReport;
 }
 
+export function projectVerifierReportMetadata(report: VerifierServiceReport) {
+  return {
+    verifier_version: report.verifier_version,
+    verified_at: report.verified_at,
+    duration_ms: report.duration_ms,
+    expected_image_id: report.expected_image_id,
+  };
+}
+
 export function projectVerifierServiceWireReport(
   report: VerifierServiceSuccessWireReport,
 ): VerifierServiceSuccessReport;
@@ -253,12 +251,7 @@ export function projectVerifierServiceWireReport(
 export function projectVerifierServiceWireReport(report: VerifierServiceFailedWireReport): VerifierServiceFailedReport;
 export function projectVerifierServiceWireReport(report: VerifierServiceWireReport): VerifierServiceReport;
 export function projectVerifierServiceWireReport(report: VerifierServiceWireReport): VerifierServiceReport {
-  const common = {
-    verifier_version: report.verifier_version,
-    verified_at: report.verified_at,
-    duration_ms: report.duration_ms,
-    expected_image_id: report.expected_image_id,
-  };
+  const common = projectVerifierReportMetadata(report);
 
   switch (report.status) {
     case 'success':

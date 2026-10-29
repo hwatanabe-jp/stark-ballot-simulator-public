@@ -8,7 +8,7 @@ import type {
 } from '@stark-ballot/domain/types/sessionRecords';
 import { asVoteIndex, type VoteIndex } from '@stark-ballot/domain/types/identifiers';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 
 export interface CanonicalCtSessionProjection {
@@ -21,7 +21,7 @@ export interface CanonicalCtSessionProjection {
 
 type CtVoteRecord = Pick<StoredVoteRecord, 'commit'> & Partial<Pick<StoredVoteRecord, 'voteId' | 'timestamp'>>;
 
-export const USER_VOTE_REQUIRED_BEFORE_BOT_VOTES = 'USER_VOTE_REQUIRED_BEFORE_BOT_VOTES';
+const USER_VOTE_REQUIRED_BEFORE_BOT_VOTES = 'USER_VOTE_REQUIRED_BEFORE_BOT_VOTES';
 export const NON_CANONICAL_CT_VOTE_INDICES = 'NON_CANONICAL_CT_VOTE_INDICES';
 
 export function assertCanonicalCtVoteIndices(indices: Iterable<number>): VoteIndex {
@@ -59,7 +59,7 @@ function cloneRootSnapshot(snapshot: RootSnapshot): RootSnapshot {
 }
 
 function normalizePersistedRootSnapshot(value: unknown): RootSnapshot | null {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return null;
   }
 
@@ -109,7 +109,7 @@ export function parsePersistedRootHistory(value: unknown): RootSnapshot[] | unde
   return normalized;
 }
 
-export function resolveCanonicalUserVoteIndex(
+function resolveCanonicalUserVoteIndex(
   votes: ReadonlyMap<number, CtVoteRecord>,
   explicitUserVoteIndex: number | undefined,
 ): VoteIndex | undefined {
@@ -159,11 +159,11 @@ export function deriveBotCountFromVotes(
   return Math.max(votes.size - 1, 0);
 }
 
-export function getNextVoteIndex(votes: ReadonlyMap<number, CtVoteRecord>): VoteIndex {
+function getNextVoteIndex(votes: ReadonlyMap<number, CtVoteRecord>): VoteIndex {
   return assertCanonicalCtVoteIndices(votes.keys());
 }
 
-export function rebuildCanonicalBulletinFromVotes(voting: Pick<SessionVotingRecord, 'votes' | 'bulletin'>): {
+function rebuildCanonicalBulletinFromVotes(voting: Pick<SessionVotingRecord, 'votes' | 'bulletin'>): {
   bulletin: SimpleBulletinBoard;
   reconstructedHistory: RootSnapshot[];
 } {
@@ -208,7 +208,7 @@ function rebuildCanonicalHistoryFromVotes(votes: ReadonlyMap<number, CtVoteRecor
   return reconstructedHistory;
 }
 
-export function mergePersistedRootHistory(
+function mergePersistedRootHistory(
   reconstructedHistory: RootSnapshot[],
   persistedHistory: RootSnapshot[] | undefined,
 ): RootSnapshot[] {

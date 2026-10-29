@@ -1,4 +1,10 @@
-import { getRecordProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import {
+  getObjectProperty,
+  getStringProperty,
+  getStringArrayProperty,
+  isNonNegativeSafeInteger,
+  isNonNullObject,
+} from '@stark-ballot/validation/unknown-value-guards';
 import { toCanonicalRfc6962Proof } from '@stark-ballot/merkle/rfc6962-proof';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import type { KnowledgeData, InclusionProof } from './types';
@@ -62,7 +68,7 @@ function isKnowledgeKey(value: string): value is keyof KnowledgeData {
 }
 
 function normalizeTallyCounts(value: unknown): KnowledgeData['tally.counts'] | undefined {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return undefined;
   }
 
@@ -90,13 +96,12 @@ function normalizeVerificationReportSummary(
 ): KnowledgeData['verification.reportSummary'] | undefined {
   const status = value['status'];
   const durationMs = value['duration_ms'];
-  const errors = value['errors'];
+  const errors = getStringArrayProperty(value, 'errors');
   if (
     typeof status !== 'string' ||
     status.length === 0 ||
-    (durationMs !== undefined &&
-      (typeof durationMs !== 'number' || !Number.isSafeInteger(durationMs) || durationMs < 0)) ||
-    (errors !== undefined && (!Array.isArray(errors) || !errors.every((error) => typeof error === 'string')))
+    (durationMs !== undefined && !isNonNegativeSafeInteger(durationMs)) ||
+    (value['errors'] !== undefined && errors === undefined)
   ) {
     return undefined;
   }
@@ -108,7 +113,7 @@ function normalizeVerificationReportSummary(
 }
 
 function normalizeCanonicalJournalKnowledge(raw: Record<string, unknown>): Partial<KnowledgeData> {
-  const journalValue = getRecordProperty(raw, 'journal');
+  const journalValue = getObjectProperty(raw, 'journal');
   if (!isSupportedZkVMJournal(journalValue)) {
     return {};
   }
@@ -132,6 +137,95 @@ function normalizeCanonicalJournalKnowledge(raw: Record<string, unknown>): Parti
   return normalized;
 }
 
+function normalizeVoteReceipt(receipt: Record<string, unknown>): KnowledgeData['user.voteReceipt'] | undefined {
+  const voteId = getStringProperty(receipt, 'voteId');
+  const commitment = getStringProperty(receipt, 'commitment');
+  const bulletinIndex = receipt['bulletinIndex'];
+  const bulletinRootAtCast = getStringProperty(receipt, 'bulletinRootAtCast');
+  const castAtMs = receipt['castAtMs'];
+  const inputCommitment = getStringProperty(receipt, 'inputCommitment');
+
+  if (voteId && commitment && typeof bulletinIndex === 'number' && bulletinRootAtCast && typeof castAtMs === 'number') {
+    return {
+      voteId,
+      commitment,
+      bulletinIndex,
+      bulletinRootAtCast,
+      timestamp: castAtMs,
+      ...(inputCommitment ? { inputCommitment } : {}),
+    } satisfies KnowledgeData['user.voteReceipt'];
+  }
+  return undefined;
+}
+
+function normalizeNestedKnowledge(key: string, value: unknown): KnowledgeCandidate {
+  const mappings = NESTED_MAPPINGS[key];
+  if (!mappings || !isNonNullObject(value)) return {};
+  const normalized: KnowledgeCandidate = {};
+  for (const [nestedKey, targetKey] of Object.entries(mappings)) {
+    const nestedValue = value[nestedKey];
+    if (nestedValue !== undefined && nestedValue !== null) normalized[targetKey] = nestedValue;
+  }
+  if (key === 'userVote' && isNonNullObject(value['proof'])) {
+    const proof = normalizeInclusionProof(value['proof']);
+    if (proof) normalized['user.merklePath'] = proof;
+  }
+  return normalized;
+}
+
+function normalizeTallyKnowledge(tally: Record<string, unknown>): KnowledgeCandidate {
+  const normalized: KnowledgeCandidate = {};
+  const counts = normalizeTallyCounts(tally['counts']);
+  if (counts) normalized['tally.counts'] = counts;
+  if (tally['totalVotes'] !== undefined) normalized['tally.totalVotes'] = tally['totalVotes'];
+  if (tally['tamperedCount'] !== undefined) normalized['tally.tamperedCount'] = tally['tamperedCount'];
+  return normalized;
+}
+
+function normalizeProofKnowledge(value: unknown): KnowledgeCandidate {
+  if (!isNonNullObject(value) || !('leafIndex' in value)) return {};
+  const proof = normalizeInclusionProof(value);
+  return proof ? { 'user.merklePath': proof } : {};
+}
+
+function normalizeReportKnowledge(value: unknown): KnowledgeCandidate {
+  if (!isNonNullObject(value)) return {};
+  const summary = normalizeVerificationReportSummary(value);
+  return summary ? { 'verification.reportSummary': summary } : {};
+}
+
+function normalizeReceiptKnowledge(value: unknown): KnowledgeCandidate {
+  if (!isNonNullObject(value)) return {};
+  const receipt = normalizeVoteReceipt(value);
+  return receipt ? { 'user.voteReceipt': receipt } : {};
+}
+
+function normalizeStructuredKnowledge(key: string, value: unknown): KnowledgeCandidate | undefined {
+  switch (key) {
+    case 'proof':
+      return normalizeProofKnowledge(value);
+    case 'tally':
+      return isNonNullObject(value) ? normalizeTallyKnowledge(value) : {};
+    case 'verificationSteps':
+      return Array.isArray(value) ? { 'verification.steps': value } : {};
+    case 'verificationReport':
+      return normalizeReportKnowledge(value);
+    case 'voteReceipt':
+      return normalizeReceiptKnowledge(value);
+    default:
+      return undefined;
+  }
+}
+
+function normalizeKnowledgeField(key: string, value: unknown): KnowledgeCandidate {
+  if (value === undefined || value === null) return {};
+  if (key in NESTED_MAPPINGS) return normalizeNestedKnowledge(key, value);
+  const structured = normalizeStructuredKnowledge(key, value);
+  if (structured !== undefined) return structured;
+  const canonicalKey = normalizeFieldName(key);
+  return isKnowledgeKey(canonicalKey) ? { [canonicalKey]: value } : {};
+}
+
 /**
  * Normalize raw API keys; the knowledge store admits the resulting values
  *
@@ -141,129 +235,37 @@ function normalizeCanonicalJournalKnowledge(raw: Record<string, unknown>): Parti
  */
 export function normalizeKnowledgeData(raw: Record<string, unknown>): KnowledgeCandidate {
   const normalized: KnowledgeCandidate = {};
-
+  // Preserve payload order for overlapping projections; the admitted journal wins last.
   for (const [key, value] of Object.entries(raw)) {
-    if (value === undefined || value === null) {
-      continue;
-    }
-
-    // Handle nested mappings
-    if (key in NESTED_MAPPINGS) {
-      const nestedMappings = NESTED_MAPPINGS[key];
-      if (!nestedMappings || !isRecord(value)) {
-        continue;
-      }
-      const nestedObj = value;
-
-      for (const [nestedKey, targetKey] of Object.entries(nestedMappings)) {
-        const nestedValue = nestedObj[nestedKey];
-        if (nestedValue !== undefined && nestedValue !== null) {
-          normalized[targetKey] = nestedValue;
-        }
-      }
-
-      // Handle proof inside userVote
-      if (key === 'userVote' && isRecord(nestedObj['proof'])) {
-        const proof = nestedObj['proof'];
-        const normalizedProof = normalizeInclusionProof(proof);
-        if (normalizedProof) {
-          normalized['user.merklePath'] = normalizedProof;
-        }
-      }
-
-      continue;
-    }
-
-    // Handle direct field mappings
-    const canonicalKey = normalizeFieldName(key);
-
-    // Special handling for proof objects
-    if (key === 'proof' && isRecord(value) && 'leafIndex' in value) {
-      const normalizedProof = normalizeInclusionProof(value);
-      if (normalizedProof) {
-        normalized['user.merklePath'] = normalizedProof;
-      }
-      continue;
-    }
-
-    // Special handling for tally object
-    if (key === 'tally' && isRecord(value)) {
-      const tally = value;
-      const counts = normalizeTallyCounts(tally['counts']);
-      if (counts) {
-        normalized['tally.counts'] = counts;
-      }
-      if (tally['totalVotes'] !== undefined) {
-        normalized['tally.totalVotes'] = tally['totalVotes'];
-      }
-      if (tally['tamperedCount'] !== undefined) {
-        normalized['tally.tamperedCount'] = tally['tamperedCount'];
-      }
-      continue;
-    }
-
-    // Special handling for verificationSteps
-    if (key === 'verificationSteps' && Array.isArray(value)) {
-      normalized['verification.steps'] = value;
-      continue;
-    }
-
-    // Special handling for verificationReport
-    if (key === 'verificationReport' && isRecord(value)) {
-      const summary = normalizeVerificationReportSummary(value);
-      if (summary) {
-        normalized['verification.reportSummary'] = summary;
-      }
-      continue;
-    }
-
-    // Special handling for voteReceipt (canonical fields only)
-    if (key === 'voteReceipt' && isRecord(value)) {
-      const receipt = value;
-      const voteId = typeof receipt['voteId'] === 'string' ? receipt['voteId'] : undefined;
-      const commitment = typeof receipt['commitment'] === 'string' ? receipt['commitment'] : undefined;
-      const bulletinIndex = typeof receipt['bulletinIndex'] === 'number' ? receipt['bulletinIndex'] : undefined;
-      const bulletinRootAtCast =
-        typeof receipt['bulletinRootAtCast'] === 'string' ? receipt['bulletinRootAtCast'] : undefined;
-      const castAtMs = typeof receipt['castAtMs'] === 'number' ? receipt['castAtMs'] : undefined;
-      const inputCommitment = typeof receipt['inputCommitment'] === 'string' ? receipt['inputCommitment'] : undefined;
-
-      if (
-        voteId &&
-        commitment &&
-        typeof bulletinIndex === 'number' &&
-        bulletinRootAtCast &&
-        typeof castAtMs === 'number'
-      ) {
-        normalized['user.voteReceipt'] = {
-          voteId,
-          commitment,
-          bulletinIndex,
-          bulletinRootAtCast,
-          timestamp: castAtMs,
-          ...(inputCommitment ? { inputCommitment } : {}),
-        } satisfies KnowledgeData['user.voteReceipt'];
-      }
-      continue;
-    }
-
-    // Apply mapping for primitive values
-    if (isKnowledgeKey(canonicalKey)) {
-      normalized[canonicalKey] = value;
-    }
+    Object.assign(normalized, normalizeKnowledgeField(key, value));
   }
-
-  return {
-    ...normalized,
-    ...normalizeCanonicalJournalKnowledge(raw),
-  };
+  return { ...normalized, ...normalizeCanonicalJournalKnowledge(raw) };
 }
 
 /**
  * Get phase for a given knowledge key
  */
+const RESULT_KNOWLEDGE_KEYS = new Set<keyof KnowledgeData>([
+  'scenarioId',
+  'missingSlots',
+  'invalidPresentedSlots',
+  'rejectedRecords',
+  'validVotes',
+  'excludedSlots',
+  'totalExpected',
+  'bulletinRoot',
+  'treeSize',
+  'sthDigest',
+  'seenBitmapRoot',
+  'includedBitmapRoot',
+  'inputCommitment',
+  'imageId',
+  'receiptPublication',
+  'proofBundleStatus',
+]);
+
 export function getPhaseForKey(key: keyof KnowledgeData): string {
-  if (key === 'sessionId' || key === 'electionId' || key === 'electionConfigHash' || key === 'logId') {
+  if (['sessionId', 'electionId', 'electionConfigHash', 'logId'].includes(key)) {
     return 'session';
   }
 
@@ -280,27 +282,7 @@ export function getPhaseForKey(key: keyof KnowledgeData): string {
     return 'vote';
   }
 
-  if (
-    key.startsWith('tally.') ||
-    key === 'scenarioId' ||
-    key === 'missingSlots' ||
-    key === 'invalidPresentedSlots' ||
-    key === 'rejectedRecords' ||
-    key === 'validVotes' ||
-    key === 'excludedSlots' ||
-    key === 'totalExpected' ||
-    key === 'bulletinRoot' ||
-    key === 'treeSize' ||
-    key === 'sthDigest' ||
-    key === 'seenBitmapRoot' ||
-    key === 'includedBitmapRoot' ||
-    key === 'inputCommitment' ||
-    key === 'imageId' ||
-    key === 'receiptPublication' ||
-    key === 'proofBundleStatus'
-  ) {
-    return 'result';
-  }
+  if (key.startsWith('tally.') || RESULT_KNOWLEDGE_KEYS.has(key)) return 'result';
 
   if (
     key.startsWith('verification.') ||

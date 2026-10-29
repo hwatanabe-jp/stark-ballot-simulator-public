@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  clearBrowserPublicEnvForTests,
-  setBrowserPublicEnvForTests,
-} from '@stark-ballot/runtime-config/env/browserPublic';
+  clearPublicRuntimeEnvForTests,
+  setPublicRuntimeEnvForTests,
+} from '@stark-ballot/runtime-config/env/public-runtime-config';
 import { apiFetch } from './apiFetch';
 import { handleLocalApiRequest } from '@stark-ballot/web/mock-api/fetcher';
 
@@ -20,12 +20,12 @@ describe('apiFetch browser runtime profile', () => {
   });
 
   afterEach(() => {
-    clearBrowserPublicEnvForTests();
+    clearPublicRuntimeEnvForTests();
     vi.unstubAllGlobals();
   });
 
   it('routes local-demo requests to the in-browser mock API', async () => {
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'local-demo');
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'local-demo');
     const response = new Response(null, { status: 204 });
     vi.mocked(handleLocalApiRequest).mockResolvedValue(response);
 
@@ -37,7 +37,7 @@ describe('apiFetch browser runtime profile', () => {
   it.each(['static-mock-e2e', 'local-proof-development', 'local-proof-production'] as const)(
     'routes %s requests to the same-origin API',
     async (profile) => {
-      setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', profile);
+      setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', profile);
       const response = new Response(null, { status: 204 });
       mockFetch.mockResolvedValue(response);
 
@@ -48,7 +48,7 @@ describe('apiFetch browser runtime profile', () => {
   );
 
   it('fails closed before dispatch when the selector is retired', async () => {
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'local-mock');
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'local-mock');
 
     await expect(apiFetch('/api/sessions')).rejects.toThrow(
       'VITE_RUNTIME_PROFILE must select a supported semantic runtime profile',

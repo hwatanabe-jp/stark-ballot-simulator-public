@@ -56,15 +56,7 @@ export class VoteRateLimiter {
     const record = this.buckets.get(ipAddress);
 
     if (!record || now - record.windowStart >= this.windowMs) {
-      if (this.buckets.size >= this.maxBuckets) {
-        this.cleanupExpired(now);
-        if (this.buckets.size >= this.maxBuckets) {
-          const oldestKey = this.buckets.keys().next().value;
-          if (oldestKey) {
-            this.buckets.delete(oldestKey);
-          }
-        }
-      }
+      this.makeRoomForBucket(now);
       this.buckets.set(ipAddress, { windowStart: now, count: 1 });
       return;
     }
@@ -77,15 +69,7 @@ export class VoteRateLimiter {
     let record = this.buckets.get(ipAddress);
 
     if (!record || now - record.windowStart >= this.windowMs) {
-      if (this.buckets.size >= this.maxBuckets) {
-        this.cleanupExpired(now);
-        if (this.buckets.size >= this.maxBuckets) {
-          const oldestKey = this.buckets.keys().next().value;
-          if (oldestKey) {
-            this.buckets.delete(oldestKey);
-          }
-        }
-      }
+      this.makeRoomForBucket(now);
       record = { windowStart: now, count: 0 };
     }
 
@@ -106,6 +90,18 @@ export class VoteRateLimiter {
 
   getActiveBucketCount(): number {
     return this.buckets.size;
+  }
+
+  private makeRoomForBucket(now: number): void {
+    if (this.buckets.size >= this.maxBuckets) {
+      this.cleanupExpired(now);
+      if (this.buckets.size >= this.maxBuckets) {
+        const oldestKey = this.buckets.keys().next().value;
+        if (oldestKey) {
+          this.buckets.delete(oldestKey);
+        }
+      }
+    }
   }
 
   private cleanupExpired(now: number): void {

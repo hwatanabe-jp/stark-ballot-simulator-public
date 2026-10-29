@@ -1,11 +1,10 @@
 import { types } from 'node:util';
 
-import { bindAppAcceptanceSelection } from './app-acceptance-ledger.js';
 import { snapshotDataTree } from './descriptor-snapshot.js';
 import { canonicalRecordJson, deepFreeze, parseGitCommitSha, requireExactKeys, requireString } from './internal.js';
 import { resolveAllowedDeploymentTarget } from './index.js';
 
-export const APP_DEPLOYMENT_STATUS_TTL_DAYS = 30;
+const APP_DEPLOYMENT_STATUS_TTL_DAYS = 30;
 export const APP_DEPLOYMENT_STATUS_MAX_BYTES = 4096;
 
 /** @typedef {ReturnType<typeof resolveAllowedDeploymentTarget>} AllowedDeploymentTarget */
@@ -22,19 +21,9 @@ const STATUS_KEYS = [
 ];
 const SOURCE_KEYS = ['commitUrl', 'shortSha'];
 const PROVER_KEYS = ['imageDigestPrefix', 'imageId', 'methodVersion'];
-const BOUND_SELECTION_KEYS = [
-  'acceptance',
-  'acceptanceKey',
-  'acceptanceObservation',
-  'pointer',
-  'pointerObservation',
-  'selectionType',
-  'targetKey',
-];
 const DEPLOYMENT_ID_PATTERN = /^dep_[0-9a-f]{32}$/u;
 const SHORT_SHA_PATTERN = /^[0-9a-f]{12}$/u;
 const IMAGE_DIGEST_PREFIX_PATTERN = /^sha256:[0-9a-f]{12}$/u;
-const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const IMAGE_ID_PATTERN = /^0x[0-9a-f]{64}$/u;
 const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const TTL_MILLISECONDS = APP_DEPLOYMENT_STATUS_TTL_DAYS * 24 * 60 * 60 * 1_000;
@@ -53,7 +42,7 @@ const TTL_MILLISECONDS = APP_DEPLOYMENT_STATUS_TTL_DAYS * 24 * 60 * 60 * 1_000;
  *   readonly deploymentId: string;
  *   readonly source: AppDeploymentStatusSource;
  *   readonly prover: AppDeploymentStatusProver;
- *   readonly deploymentMode: 'normal' | 'rollback';
+ *   readonly deploymentMode: 'normal';
  *   readonly planDisposition: 'changed' | 'empty';
  *   readonly smokeOutcome: 'passed';
  *   readonly acceptedAt: string;
@@ -82,12 +71,7 @@ function rejectProxies(value, label, ancestors = new Set()) {
   }
   ancestors.add(value);
   try {
-    let keys;
-    try {
-      keys = Reflect.ownKeys(value);
-    } catch (error) {
-      throw new Error(`${label} must contain only inspectable data.`, { cause: error });
-    }
+    const keys = inspectStatusOwnKeys(value, label);
     for (const key of keys) {
       let descriptor;
       try {
@@ -206,7 +190,7 @@ export function admitAppDeploymentStatus(value, expectedTargetKey) {
   const source = admitSource(status['source'], target);
   const prover = admitProver(status['prover']);
   const deploymentMode = status['deploymentMode'];
-  if (deploymentMode !== 'normal' && deploymentMode !== 'rollback') {
+  if (deploymentMode !== 'normal') {
     throw new Error('App deployment status deployment mode is invalid.');
   }
   const planDisposition = status['planDisposition'];
@@ -239,97 +223,29 @@ export function admitAppDeploymentStatus(value, expectedTargetKey) {
 }
 
 /**
- * Rebind one exact App acceptance selection before projecting display data.
- * Both pointer-head and retained-history selections are valid inputs; the
- * publication boundary decides which projection may become current.
- *
- * @param {unknown} value
- * @param {AllowedDeploymentTarget} target
- * @returns {import('./app-acceptance-ledger.js').BoundAppAcceptanceSelection}
- */
-function admitBoundSelection(value, target) {
-  const selection = exactKeys(
-    snapshotInput(value, 'Bound App acceptance selection'),
-    BOUND_SELECTION_KEYS,
-    'Bound App acceptance selection',
-  );
-  const rebound = bindAppAcceptanceSelection(
-    {
-      pointer: selection['pointer'],
-      pointerObservation: selection['pointerObservation'],
-      recordKey: selection['acceptanceKey'],
-      record: selection['acceptance'],
-      recordObservation: selection['acceptanceObservation'],
-    },
-    target.targetKey,
-  );
-  if (selection['selectionType'] !== rebound.selectionType || selection['targetKey'] !== rebound.targetKey) {
-    throw new Error('Bound App acceptance selection metadata is detached from its pointer and record.');
-  }
-  return rebound;
-}
-
-/**
- * Project deterministic display data from one exact bound App acceptance.
- *
- * @param {unknown} value
+ * Project the established public DTO from one successful App checkpoint.
+ * Stored checkpoint bytes are admitted once at their read boundary.
+ * @param {import('./root-checkpoint.js').RootCheckpoint} value
  * @param {unknown} expectedTargetKey
  * @returns {AppDeploymentStatus}
  */
 export function projectAppDeploymentStatus(value, expectedTargetKey) {
-  const target = resolveAllowedDeploymentTarget(
-    requireString(expectedTargetKey, 'App deployment status expected target'),
-  );
-  const selection = admitBoundSelection(value, target);
-  const acceptance = selection.acceptance;
-  const selectedSourceSha = parseGitCommitSha(
-    acceptance.selectedApplicationSourceSha,
-    'App deployment status selected source SHA',
-  );
-  const releaseAuthority = /** @type {Readonly<Record<string, unknown>>} */ (acceptance.releaseAuthority);
-  const proverImage = exactKeys(
-    releaseAuthority['proverImage'],
-    ['imageDigest', 'imageUri'],
-    'App deployment status Prover image authority',
-  );
-  const imageDigest = requireString(
-    proverImage['imageDigest'],
-    'App deployment status Prover image digest',
-    IMAGE_DIGEST_PATTERN,
-  );
-  const zkvm = exactKeys(
-    releaseAuthority['zkvm'],
-    [
-      'applicationZkvmContractHash',
-      'expectedImageId',
-      'failureMarkerContractSha256',
-      'imageIdMappingSha256',
-      'imageIdVariant',
-      'methodVersion',
-      'proverZkvmContractHash',
-      'zkvmContractHash',
-    ],
-    'App deployment status Prover zkVM authority',
-  );
-  const smoke = /** @type {Readonly<Record<string, unknown>>} */ (acceptance.smoke);
-  if (smoke['result'] !== 'passed') {
-    throw new Error('App deployment status requires passed smoke evidence.');
-  }
-  const acceptedAt = canonicalTimestamp(acceptance.acceptedAt, 'App deployment status acceptance timestamp');
+  const target = resolveAllowedDeploymentTarget(requireString(expectedTargetKey, 'App status target'));
+  const checkpoint = value;
+  if (checkpoint.targetKey !== target.targetKey) throw new Error('App status target mismatch.');
+  if (checkpoint.root !== 'app') throw new Error('App status requires an App checkpoint.');
+  const { sourceSha, acceptedAt, outputs } = checkpoint;
   return admitAppDeploymentStatus(
     {
-      deploymentId: acceptance.deploymentId,
-      source: {
-        shortSha: selectedSourceSha.slice(0, 12),
-        commitUrl: `${target.repositoryUrl}/commit/${selectedSourceSha}`,
-      },
+      deploymentId: outputs.deploymentId,
+      source: { shortSha: sourceSha.slice(0, 12), commitUrl: `${target.repositoryUrl}/commit/${sourceSha}` },
       prover: {
-        imageDigestPrefix: `sha256:${imageDigest.slice('sha256:'.length, 'sha256:'.length + 12)}`,
-        imageId: zkvm['expectedImageId'],
-        methodVersion: zkvm['methodVersion'],
+        imageDigestPrefix: outputs.proverImageDigest.slice(0, 19),
+        imageId: outputs.imageId,
+        methodVersion: outputs.methodVersion,
       },
-      deploymentMode: acceptance.deploymentMode,
-      planDisposition: acceptance.planDisposition,
+      deploymentMode: 'normal',
+      planDisposition: outputs.planDisposition,
       smokeOutcome: 'passed',
       acceptedAt,
       updatedAt: acceptedAt,
@@ -386,4 +302,15 @@ export function canonicalAppDeploymentStatusJson(value, expectedTargetKey) {
     throw new Error('Canonical App deployment status body exceeds its byte limit.');
   }
   return body;
+}
+
+/** @param {object} value @param {string} label */
+function inspectStatusOwnKeys(value, label) {
+  let keys;
+  try {
+    keys = Reflect.ownKeys(value);
+  } catch (error) {
+    throw new Error(`${label} must contain only inspectable data.`, { cause: error });
+  }
+  return keys;
 }

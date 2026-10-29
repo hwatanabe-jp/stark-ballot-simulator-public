@@ -25,11 +25,21 @@ tasks:
   test:
     dependsOn: []
     concurrency: 1
+  # Cache the root's complete type gate as one unit. The default input set
+  # includes all tracked and untracked, non-ignored files below the root,
+  # covering shared configs, workspace sources, patches, and generated contracts.
+  type-system:verify:
+    dependsOn: []
+    outputs: []
+    env: [NODE_OPTIONS, NODE_PATH, CI]
+
+pipelines:
+  local-types: [type-system:verify]
 
 # Keep transient registry latency below 30 seconds out of otherwise clean CI
 # logs. Fetch timeout, retries, and integrity admission remain unchanged.
 fetchWarnTimeoutMs: 30000
-# testcontainers 12.1.0 still resolves archiver 7 -> archiver-utils 5.0.2,
+# testcontainers 12.2.1 still resolves archiver 7 -> archiver-utils 5.0.2,
 # whose latest release requires glob 10. Keep the exact reviewed warning muted
 # until that upstream dependency range admits a supported glob release.
 allowedDeprecatedVersions:
@@ -37,14 +47,13 @@ allowedDeprecatedVersions:
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
 trustPolicy: no-downgrade
+# Installs and dependency mutations remove exact exceptions no longer used.
+trustPolicyExcludePrune: true
 trustPolicyExclude:
   # Reviewed legacy transitive dependencies that predate current npm trust
   # evidence expectations. Keep these pinned to exact versions so future trust
   # downgrades still fail closed.
-  - 'chokidar@4.0.3'
-  - 'graphql@15.10.2'
   - 'semver@6.3.1'
-  - 'ua-parser-js@1.0.41'
 
 # Keep GitHub Actions on the same update path as registry dependencies. pnpm
 # preserves exact commit pins and refreshes the release tag comments.
@@ -53,55 +62,48 @@ update:
 
 catalogs:
   aws-sdk:
-    '@aws-sdk/client-codebuild': 3.1130.0
-    '@aws-sdk/client-codepipeline': 3.1130.0
-    '@aws-sdk/client-dynamodb': 3.1130.0
-    '@aws-sdk/client-ecs': 3.1130.0
-    '@aws-sdk/client-s3': 3.1130.0
-    '@aws-sdk/client-secrets-manager': 3.1130.0
-    '@aws-sdk/client-sfn': 3.1130.0
-    '@aws-sdk/client-sqs': 3.1130.0
-    '@aws-sdk/client-ssm': 3.1130.0
-    '@aws-sdk/client-sts': 3.1130.0
-    '@aws-sdk/lib-dynamodb': 3.1130.0
+    '@aws-sdk/client-dynamodb': 3.1156.0
+    '@aws-sdk/client-s3': 3.1156.0
+    '@aws-sdk/client-secrets-manager': 3.1156.0
+    '@aws-sdk/client-sfn': 3.1156.0
+    '@aws-sdk/client-sqs': 3.1156.0
+    '@aws-sdk/client-ssm': 3.1156.0
+    '@aws-sdk/lib-dynamodb': 3.1156.0
   crypto-testing:
     '@noble/hashes': 2.4.0
-    fast-check: '4.9.0'
+    fast-check: '4.10.2'
   react:
-    '@marsidev/react-turnstile': 1.6.1
+    '@marsidev/react-turnstile': 1.6.3
     '@testing-library/react': 16.3.3
-    '@testing-library/user-event': 14.6.7
-    lucide-react: 1.44.0
-    react: '19.3.0'
-    react-dom: '19.3.0'
-    react-router: 8.3.1
+    '@testing-library/user-event': 14.6.8
+    lucide-react: 1.61.0
+    react: '19.3.1'
+    react-dom: '19.3.1'
+    react-router: 8.5.0
   storybook:
-    '@storybook/react': 10.6.0
-    storybook: 10.6.0
-    '@storybook/react-vite': 10.6.0
+    '@storybook/react': 10.6.3
+    storybook: 10.6.3
+    '@storybook/react-vite': 10.6.3
   testing:
-    oxfmt: 0.67.0
-    oxc-parser: '0.149.0'
-    '@vitest/coverage-v8': '5.0.0'
+    oxfmt: 0.74.0
+    oxc-parser: '0.155.0'
+    '@vitest/coverage-v8': '5.0.5'
     typescript: '7.0.2'
-    vitest: '5.0.0'
+    vitest: '5.0.5'
 
-# Tinybench's published declaration uses a DOM-only timestamp name even though
-# performance.now() returns number. Keep Node test projects free of DOM globals.
-# Vitest's declaration patch fixes bundled imports and exact optional types;
+# Vitest's declaration patch fixes exact optional types;
 # jest-dom augments Vitest's current Matchers interface. These patches leave
 # runtime code and strict TypeScript checking unchanged.
 # Storybook restores the line positions of two bundled type-error directives.
 patchedDependencies:
-  '@storybook/react@10.6.0': patches/@storybook__react@10.6.0.patch
+  '@storybook/react@10.6.3': patches/@storybook__react@10.6.3.patch
+  vitest@5.0.5: patches/vitest@5.0.5.patch
   '@testing-library/jest-dom@7.0.1': patches/@testing-library__jest-dom@7.0.1.patch
-  tinybench@6.1.4: patches/tinybench@6.1.4.patch
-  vitest@5.0.0: patches/vitest@5.0.0.patch
 
 overrides:
-  '@smithy/types': 4.16.1
-  'brace-expansion@^1.0.0': 1.1.18
-  'brace-expansion@^2.0.0': 2.1.4
+  '@smithy/types': 4.19.0
+  'brace-expansion@^1.0.0': 1.1.21
+  'brace-expansion@^2.0.0': 2.1.7
   'js-yaml@^4.0.0': 4.3.2
 
 peerDependencyRules:

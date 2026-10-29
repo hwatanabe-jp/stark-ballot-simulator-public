@@ -1,3 +1,4 @@
+import { normalizeHexString } from '@stark-ballot/zkvm-contract/zkvm/hex';
 import { hasCoherentPublicTamperScenarioProjection } from '@stark-ballot/verification/scenario-projection';
 import {
   VERIFICATION_CHECK_IDS,
@@ -29,7 +30,6 @@ import {
 } from '@stark-ballot/verification/presentation-policy';
 import { hasCanonicalVerificationSteps } from '@stark-ballot/verification/steps';
 import { VERIFICATION_STATUS_VALUES } from '@stark-ballot/verification/shared/types';
-import { normalizeHexString } from '@stark-ballot/zkvm-contract/zkvm/hex';
 import {
   hasCoherentCurrentZkVMJournalSemantics,
   hasCoherentZkVMVoteSlotPartition,
@@ -56,6 +56,48 @@ import {
   voteChoiceSchema,
 } from './primitives';
 import { inclusionProofSchema, voteReceiptSchema } from './votes';
+
+type FieldComparison = (journalValue: unknown, publicValue: unknown) => boolean;
+
+const sameValue: FieldComparison = (journalValue, publicValue) => journalValue === publicValue;
+const sameHex: FieldComparison = (journalValue, publicValue) =>
+  typeof journalValue === 'string' &&
+  typeof publicValue === 'string' &&
+  normalizeHexString(journalValue) === normalizeHexString(publicValue);
+const sameTallyEntries: FieldComparison = (journalValue, publicValue) =>
+  Array.isArray(journalValue) &&
+  Array.isArray(publicValue) &&
+  journalValue.every((value, index) => value === publicValue[index]);
+const optionalImageIdMatches: FieldComparison = (journalValue, publicValue) =>
+  journalValue === undefined || sameHex(journalValue, publicValue);
+
+const JOURNAL_FIELD_COMPARISONS = {
+  electionId: sameValue,
+  electionConfigHash: sameHex,
+  bulletinRoot: sameHex,
+  verifiedTally: sameTallyEntries,
+  missingSlots: sameValue,
+  invalidPresentedSlots: sameValue,
+  rejectedRecords: sameValue,
+  totalExpected: sameValue,
+  treeSize: sameValue,
+  sthDigest: sameHex,
+  seenBitmapRoot: sameHex,
+  includedBitmapRoot: sameHex,
+  excludedSlots: sameValue,
+  inputCommitment: sameHex,
+  seenIndicesCount: sameValue,
+  imageId: optionalImageIdMatches,
+};
+
+/** Callers own exhaustive field inventories; comparisons retain each field's wire semantics. */
+export function journalFieldMatches(
+  field: keyof typeof JOURNAL_FIELD_COMPARISONS,
+  journalValue: unknown,
+  publicValue: unknown,
+): boolean {
+  return JOURNAL_FIELD_COMPARISONS[field](journalValue, publicValue);
+}
 
 export const PUBLIC_VERIFICATION_EVIDENCE_VALUES = VERIFICATION_EVIDENCE_VALUES;
 export const PUBLIC_VERIFICATION_CHECK_IDS = VERIFICATION_CHECK_IDS;
@@ -281,45 +323,9 @@ function hasCoherentIncludedJournalProofAuthority(
   ..._coverage: [VerificationJournalProofAuthoritySharedFieldCoverage] extends [never] ? [] : [never]
 ): boolean {
   void _coverage;
-  return VERIFICATION_JOURNAL_PROOF_AUTHORITY_SHARED_FIELDS.every((field) => {
-    const journalValue = journal[field];
-    const proofValue = proofAuthority[field];
-    switch (field) {
-      case 'imageId':
-        return (
-          journalValue === undefined ||
-          (typeof journalValue === 'string' &&
-            typeof proofValue === 'string' &&
-            normalizeHexString(journalValue) === normalizeHexString(proofValue))
-        );
-      case 'electionConfigHash':
-      case 'bulletinRoot':
-      case 'sthDigest':
-      case 'seenBitmapRoot':
-      case 'includedBitmapRoot':
-      case 'inputCommitment':
-        return (
-          typeof journalValue === 'string' &&
-          typeof proofValue === 'string' &&
-          normalizeHexString(journalValue) === normalizeHexString(proofValue)
-        );
-      case 'verifiedTally':
-        return (
-          Array.isArray(journalValue) &&
-          Array.isArray(proofValue) &&
-          journalValue.every((value, index) => value === proofValue[index])
-        );
-      case 'electionId':
-      case 'missingSlots':
-      case 'invalidPresentedSlots':
-      case 'rejectedRecords':
-      case 'totalExpected':
-      case 'treeSize':
-      case 'excludedSlots':
-      case 'seenIndicesCount':
-        return journalValue === proofValue;
-    }
-  });
+  return VERIFICATION_JOURNAL_PROOF_AUTHORITY_SHARED_FIELDS.every((field) =>
+    journalFieldMatches(field, journal[field], proofAuthority[field]),
+  );
 }
 
 const verificationSummarySchema = publicObject({
@@ -335,19 +341,19 @@ const verificationStageStatusesSchema = publicObject({
   stark_verification: s.enum(VERIFICATION_STEP_STATUS_VALUES),
 });
 
+const EXPECTED_DISPLAY_STATUS_BY_SOURCE = new Map<string | null, string>([
+  ['hard_failure', 'failed'],
+  ['pending', 'warning'],
+  ['unavailable', 'warning'],
+  ['corrupt', 'failed'],
+]);
+
 const verificationDisplaySchema = publicObject({
   readiness: s.enum(VERIFICATION_DISPLAY_READINESS_VALUES),
   source: s.enum(VERIFICATION_DISPLAY_SOURCE_VALUES).nullable(),
   status: s.enum(VERIFICATION_DISPLAY_STATUS_VALUES).nullable(),
   renderedStatus: s.enum(VERIFICATION_DISPLAY_STATUS_VALUES).nullable(),
 }).superRefine((display, context) => {
-  const expectedStatusBySource = {
-    hard_failure: 'failed',
-    pending: 'warning',
-    unavailable: 'warning',
-    corrupt: 'failed',
-  } as const;
-
   if (display.readiness === 'ready') {
     if (display.renderedStatus !== display.status) {
       context.addIssue({ message: 'Ready verification display must render its resolved status' });
@@ -362,15 +368,9 @@ const verificationDisplaySchema = publicObject({
   if (display.source === 'explicit_server_failure' && display.status === 'verified') {
     context.addIssue({ message: 'Explicit server failure cannot resolve to verified' });
   }
-  if (
-    display.source === 'hard_failure' ||
-    display.source === 'pending' ||
-    display.source === 'unavailable' ||
-    display.source === 'corrupt'
-  ) {
-    if (display.status !== expectedStatusBySource[display.source]) {
-      context.addIssue({ message: 'Verification display status contradicts its source' });
-    }
+  const expectedStatus = EXPECTED_DISPLAY_STATUS_BY_SOURCE.get(display.source);
+  if (expectedStatus !== undefined && display.status !== expectedStatus) {
+    context.addIssue({ message: 'Verification display status contradicts its source' });
   }
 });
 documentOpenApiRefinement(
@@ -500,7 +500,7 @@ export const verificationJournalRepresentationSchema = s.union([
   }),
 ]);
 
-export const availableVerificationResourceSchema = publicObject({
+const availableVerificationResourceObject = publicObject({
   availability: s.literal('available'),
   finalizationId: finalizationIdSchema,
   proofAuthority: verificationProofAuthoritySchema,
@@ -509,8 +509,17 @@ export const availableVerificationResourceSchema = publicObject({
   verification: verificationChecksAndStepsSchema,
   voterEvidence: verificationVoterEvidenceSchema,
   journal: verificationJournalRepresentationSchema,
-}).superRefine((resource, context) => {
-  const verificationReport = resource.verifierResult.report;
+});
+
+type AvailableResource = Infer<typeof availableVerificationResourceObject>;
+type ResourceReport = AvailableResource['verifierResult']['report'];
+type VerificationIssueCollector = { addIssue(issue: { message: string }): void };
+
+function checkResourceVerificationEvidence(
+  resource: AvailableResource,
+  verificationReport: ResourceReport,
+  context: VerificationIssueCollector,
+): void {
   const devModeEvidence =
     resource.verifierResult.status === 'dev_mode' || verificationReport?.dev_mode_receipt === true;
   if (!hasCanonicalVerificationCheckEvidence(resource.verification.checks, devModeEvidence)) {
@@ -550,34 +559,13 @@ export const availableVerificationResourceSchema = publicObject({
   ) {
     context.addIssue({ message: 'Presentation policy contradicts its admitted verification evidence' });
   }
-  if (!hasCanonicalVerificationSteps(resource.verification.steps)) {
-    context.addIssue({ message: 'Verification step inventory contradicts the canonical projection' });
-  }
-  if (!hasCoherentVerificationReportExpectedImageId(verificationReport, resource.proofAuthority.imageId)) {
-    context.addIssue({ message: 'Verifier report expected ImageID contradicts proof authority' });
-  }
-  if (
-    resource.voterEvidence.availability === 'available' &&
-    !hasCoherentAvailableVoterEvidence({
-      voterEvidence: resource.voterEvidence,
-      proofAuthority: resource.proofAuthority,
-    })
-  ) {
-    context.addIssue({ message: 'Available voter evidence contains contradictory identity or range facts' });
-  }
-  if (
-    !hasCoherentPublicTamperScenarioProjection({
-      scenarioId: resource.presentation.scenarioId,
-      tamperDetected: resource.presentation.tamperDetected,
-      tamperedCount: resource.presentation.tally.tamperedCount,
-      proof: resource.proofAuthority,
-      counts: resource.presentation.tally.counts,
-      tamperSummary: resource.presentation.tamperSummary,
-      botVotesSummary: resource.presentation.botVotesSummary,
-    })
-  ) {
-    context.addIssue({ message: 'Presentation tamper facts contradict its scenario or detection result' });
-  }
+}
+
+function checkFullyVerifiedResource(
+  resource: AvailableResource,
+  verificationReport: ResourceReport,
+  context: VerificationIssueCollector,
+): void {
   if (resource.presentation.policy.fullyVerifiedLabelEligible === true) {
     if (
       !hasCoherentFullyVerifiedPresentationEvidence({
@@ -614,6 +602,9 @@ export const availableVerificationResourceSchema = publicObject({
       context.addIssue({ message: 'Fully verified presentation contradicts admitted verification evidence' });
     }
   }
+}
+
+function checkResourceRepresentation(resource: AvailableResource, context: VerificationIssueCollector): void {
   for (const step of resource.verification.steps) {
     if (resource.presentation.policy.stageStatuses[step.id] !== step.status) {
       context.addIssue({ message: 'Verification step status contradicts presentation stage status' });
@@ -625,7 +616,44 @@ export const availableVerificationResourceSchema = publicObject({
   ) {
     context.addIssue({ message: 'Included journal contradicts proof authority' });
   }
-});
+}
+
+export const availableVerificationResourceSchema = availableVerificationResourceObject.superRefine(
+  (resource, context) => {
+    const verificationReport = resource.verifierResult.report;
+    checkResourceVerificationEvidence(resource, verificationReport, context);
+    if (!hasCanonicalVerificationSteps(resource.verification.steps)) {
+      context.addIssue({ message: 'Verification step inventory contradicts the canonical projection' });
+    }
+    if (!hasCoherentVerificationReportExpectedImageId(verificationReport, resource.proofAuthority.imageId)) {
+      context.addIssue({ message: 'Verifier report expected ImageID contradicts proof authority' });
+    }
+    if (
+      resource.voterEvidence.availability === 'available' &&
+      !hasCoherentAvailableVoterEvidence({
+        voterEvidence: resource.voterEvidence,
+        proofAuthority: resource.proofAuthority,
+      })
+    ) {
+      context.addIssue({ message: 'Available voter evidence contains contradictory identity or range facts' });
+    }
+    if (
+      !hasCoherentPublicTamperScenarioProjection({
+        scenarioId: resource.presentation.scenarioId,
+        tamperDetected: resource.presentation.tamperDetected,
+        tamperedCount: resource.presentation.tally.tamperedCount,
+        proof: resource.proofAuthority,
+        counts: resource.presentation.tally.counts,
+        tamperSummary: resource.presentation.tamperSummary,
+        botVotesSummary: resource.presentation.botVotesSummary,
+      })
+    ) {
+      context.addIssue({ message: 'Presentation tamper facts contradict its scenario or detection result' });
+    }
+    checkFullyVerifiedResource(resource, verificationReport, context);
+    checkResourceRepresentation(resource, context);
+  },
+);
 documentOpenApiRefinement(
   availableVerificationResourceSchema,
   'The complete public resource has coherent canonical checks, proof authority, voter evidence, journal, tamper facts, verifier result, and fail-closed presentation policy.',

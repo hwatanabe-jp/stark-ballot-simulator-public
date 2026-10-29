@@ -9,7 +9,7 @@ import {
   parseVerifierServiceWireReport,
   projectVerifierServiceWireReport,
 } from '@stark-ballot/verification/verifier-service-report';
-import { createTestInput, createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
+import { createMockZkvmInput, createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import {
@@ -25,7 +25,7 @@ const FINALIZATION_ID = asFinalizationId('01JCGXZ8M00000000000000000');
 const EXPECTED_IMAGE_ID = '0x' + '11'.repeat(32);
 
 function createProofBundleOptions(verificationMode: NonNullable<ProofBundleOptions['verificationMode']>) {
-  const zkvmInput = createTestInput({ voteCount: 1, totalExpected: 1, treeSize: 1 });
+  const zkvmInput = createMockZkvmInput({ voteCount: 1, totalExpected: 1, treeSize: 1 });
 
   return {
     sessionId: SESSION_ID,

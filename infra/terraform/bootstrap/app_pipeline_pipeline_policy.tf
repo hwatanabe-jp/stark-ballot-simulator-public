@@ -64,8 +64,6 @@ data "aws_iam_policy_document" "app_pipeline" {
 resource "aws_iam_role_policy" "app_pipeline" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_codebuild_project.app_execution_authority]
-
   name   = "${local.app_pipeline_role_name}-policy"
   role   = aws_iam_role.app_pipeline[0].id
   policy = data.aws_iam_policy_document.app_pipeline[0].json

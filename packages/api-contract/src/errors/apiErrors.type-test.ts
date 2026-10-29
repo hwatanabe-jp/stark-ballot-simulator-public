@@ -53,3 +53,5 @@ type Expect<Value extends true> = Value;
 export type ErrorDetailsProjectionAssertion = Expect<
   Equal<Pick<ErrorDetails, keyof RuntimeErrorDetailsProjection>, RuntimeErrorDetailsProjection>
 >;
+
+export type ErrorDetailsCatalogAssertion = Expect<Equal<keyof ErrorDetails, keyof RuntimeErrorDetailsProjection>>;

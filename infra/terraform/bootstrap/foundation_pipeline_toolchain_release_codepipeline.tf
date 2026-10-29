@@ -1,9 +1,10 @@
 resource "aws_codepipeline" "development_toolchain_release" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  name          = local.toolchain_release_pipeline_name
-  pipeline_type = "V2"
-  role_arn      = aws_iam_role.foundation_pipeline[0].arn
+  name           = local.toolchain_release_pipeline_name
+  pipeline_type  = "V2"
+  execution_mode = "QUEUED"
+  role_arn       = aws_iam_role.foundation_pipeline[0].arn
 
   artifact_store {
     location = aws_s3_bucket.foundation_pipeline_artifacts[0].bucket
@@ -13,6 +14,12 @@ resource "aws_codepipeline" "development_toolchain_release" {
       id   = aws_kms_key.foundation_pipeline_artifacts[0].arn
       type = "KMS"
     }
+  }
+
+  variable {
+    name          = "PromotionMode"
+    default_value = "current"
+    description   = "Explicit initial mode requires absent promotion; current mode requires an existing version."
   }
 
   variable {
@@ -86,6 +93,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
 
       configuration = {
         EnvironmentVariables = jsonencode([
+          { name = "IMAGE_PROMOTION_MODE", value = "#{variables.PromotionMode}", type = "PLAINTEXT" },
           {
             name  = "REQUESTED_SOURCE_SHA"
             value = "#{variables.RequestedSourceSha}"
@@ -153,11 +161,7 @@ resource "aws_codepipeline" "development_toolchain_release" {
 
       configuration = {
         EnvironmentVariables = jsonencode([
-          {
-            name  = "TOOLCHAIN_ACCEPTED_POINTER_KEY"
-            value = local.deployment_shared_names.toolchainAcceptedPointerKey
-            type  = "PLAINTEXT"
-          },
+          { name = "IMAGE_PROMOTION_MODE", value = "#{variables.PromotionMode}", type = "PLAINTEXT" },
           {
             name  = "REQUESTED_SOURCE_SHA"
             value = "#{variables.RequestedSourceSha}"

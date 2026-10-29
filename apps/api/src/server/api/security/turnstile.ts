@@ -109,36 +109,28 @@ function shouldBypassTurnstile(profile: ResolvedRuntimeProfile): boolean {
   return profile.turnstile.mode === 'bypass' && profile.turnstile.bypassEligible;
 }
 
+const TRUSTED_PROXY_ALIASES = new Map<string, TrustedProxyMode>([
+  ['api-gateway', 'api-gateway'],
+  ['apigateway', 'api-gateway'],
+  ['apigw', 'api-gateway'],
+  ['aws', 'api-gateway'],
+  ['true', 'api-gateway'],
+  ['1', 'api-gateway'],
+  ['yes', 'api-gateway'],
+  ['on', 'api-gateway'],
+  ['cloudflare', 'cloudflare'],
+  ['cf', 'cloudflare'],
+  ['both', 'both'],
+  ['all', 'both'],
+  ['any', 'both'],
+  ['none', 'none'],
+  ['false', 'none'],
+  ['0', 'none'],
+  ['off', 'none'],
+]);
+
 function parseTrustedProxyMode(raw: string | undefined): TrustedProxyMode {
-  if (raw && raw.trim().length > 0) {
-    const normalized = raw.trim().toLowerCase();
-    switch (normalized) {
-      case 'api-gateway':
-      case 'apigateway':
-      case 'apigw':
-      case 'aws':
-      case 'true':
-      case '1':
-      case 'yes':
-      case 'on':
-        return 'api-gateway';
-      case 'cloudflare':
-      case 'cf':
-        return 'cloudflare';
-      case 'both':
-      case 'all':
-      case 'any':
-        return 'both';
-      case 'none':
-      case 'false':
-      case '0':
-      case 'off':
-        return 'none';
-      default:
-        return 'none';
-    }
-  }
-  return 'none';
+  return TRUSTED_PROXY_ALIASES.get(raw?.trim().toLowerCase() ?? '') ?? 'none';
 }
 
 function resolveTrustedProxyMode(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): TrustedProxyMode {
@@ -254,6 +246,13 @@ export function extractTurnstileToken(payload: unknown): string | undefined {
   return typeof token === 'string' && token.trim().length > 0 ? token : undefined;
 }
 
+function normalizeBracketedAddress(value: string): string | null {
+  const bracketEnd = value.indexOf(']');
+  if (bracketEnd <= 1) return null;
+  const ipv6 = value.slice(1, bracketEnd);
+  return isIP(ipv6) === 6 ? ipv6 : null;
+}
+
 function normalizeIpCandidate(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -264,14 +263,7 @@ function normalizeIpCandidate(value: string | null | undefined): string | null {
     return null;
   }
 
-  if (trimmed.startsWith('[')) {
-    const bracketEnd = trimmed.indexOf(']');
-    if (bracketEnd > 1) {
-      const ipv6 = trimmed.slice(1, bracketEnd);
-      return isIP(ipv6) === 6 ? ipv6 : null;
-    }
-    return null;
-  }
+  if (trimmed.startsWith('[')) return normalizeBracketedAddress(trimmed);
 
   if (isIP(trimmed) > 0) {
     return trimmed;

@@ -8,7 +8,6 @@ Usage:
   scripts/security/scan-public-safety.sh --staged
   scripts/security/scan-public-safety.sh --all
   scripts/security/scan-public-safety.sh --root <dir> --all
-  scripts/security/scan-public-safety.sh --framework --root <dir> --all
   scripts/security/scan-public-safety.sh --files <file>...
 
 Scans text files for high-confidence secrets and publishable-repo safety leaks.
@@ -19,8 +18,6 @@ EOF
 mode="staged"
 explicit_files=()
 scan_root=""
-framework_mode=false
-scanner_repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -39,10 +36,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --all)
       mode="all"
-      shift
-      ;;
-    --framework)
-      framework_mode=true
       shift
       ;;
     --files)
@@ -355,10 +348,6 @@ PERL
 
 issues_file="$(mktemp)"
 trap 'rm -f -- "$issues_file"' EXIT
-framework_issues_file="$(mktemp)"
-trap 'rm -f -- "$issues_file" "$framework_issues_file"' EXIT
-framework_errors_file="$(mktemp)"
-trap 'rm -f -- "$issues_file" "$framework_issues_file" "$framework_errors_file"' EXIT
 
 scan_worktree_path() {
   local path="$1"
@@ -429,45 +418,7 @@ case "$mode" in
     ;;
 esac
 
-if [ "$framework_mode" = true ]; then
-  if [ "$mode" != "all" ] || [ -z "$scan_root" ]; then
-    echo "--framework requires --root <dir> --all." >&2
-    exit 2
-  fi
-  if [ ! -f "$scanner_repository_root/scripts/security/framework-template-safety.ts" ]; then
-    echo "Framework mode is available only in the private source repository." >&2
-    exit 2
-  fi
-  framework_runner="$scanner_repository_root/node_modules/.bin/tsx"
-  if [ ! -x "$framework_runner" ]; then
-    echo "Framework template safety scan could not complete." >&2
-    exit 2
-  fi
-  framework_status=0
-  "$framework_runner" \
-    "$scanner_repository_root/scripts/security/framework-template-safety.ts" --root "$repo_root" \
-    >"$framework_issues_file" 2>"$framework_errors_file" || framework_status=$?
-  framework_success_marker='Framework template safety scan passed.'
-  if [ "$framework_status" -eq 0 ]; then
-    if [ -s "$framework_errors_file" ] || \
-      ! cmp -s <(printf '%s\n' "$framework_success_marker") "$framework_issues_file"; then
-      echo "Framework template safety scan could not complete." >&2
-      exit 2
-    fi
-  elif [ "$framework_status" -eq 1 ]; then
-    framework_finding_pattern='^.+:[1-9][0-9]* framework_[a-z0-9_]+$'
-    if [ -s "$framework_errors_file" ] || \
-      ! LC_ALL=C grep -Eq "$framework_finding_pattern" "$framework_issues_file" || \
-      LC_ALL=C grep -Evq "$framework_finding_pattern" "$framework_issues_file"; then
-      echo "Framework template safety scan could not complete." >&2
-      exit 2
-    fi
-    cat "$framework_issues_file" >>"$issues_file"
-  else
-    echo "Framework template safety scan could not complete." >&2
-    exit 2
-  fi
-fi
+
 
 if [ -s "$issues_file" ]; then
   echo "Public safety scan failed. Replace real values with placeholders before committing." >&2
@@ -476,8 +427,4 @@ if [ -s "$issues_file" ]; then
   exit 1
 fi
 
-if [ "$framework_mode" = true ]; then
-  echo "Public safety scan passed ($mode, framework)."
-else
-  echo "Public safety scan passed ($mode)."
-fi
+echo "Public safety scan passed ($mode)."

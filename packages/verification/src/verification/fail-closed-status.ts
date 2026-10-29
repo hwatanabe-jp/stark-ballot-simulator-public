@@ -4,9 +4,9 @@ import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import {
   getNumberArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { hasLegacyJournalCountAliases, isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import type { ZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/types';
@@ -95,12 +95,8 @@ function hasTreeSizeMismatch(input: FailClosedVerificationStatusInput): boolean 
 }
 
 function hasImageIdMismatch(input: FailClosedVerificationStatusInput): boolean {
-  const claimedImageId =
-    typeof input.claimedImageId === 'string' && input.claimedImageId.length > 0 ? input.claimedImageId : undefined;
-  const comparisonImageId =
-    typeof input.comparisonImageId === 'string' && input.comparisonImageId.length > 0
-      ? input.comparisonImageId
-      : undefined;
+  const claimedImageId = nonemptyImageId(input.claimedImageId);
+  const comparisonImageId = nonemptyImageId(input.comparisonImageId);
 
   if (
     claimedImageId &&
@@ -110,8 +106,20 @@ function hasImageIdMismatch(input: FailClosedVerificationStatusInput): boolean {
     return true;
   }
 
-  const expectedImageId = input.verificationReport?.expected_image_id;
-  const receiptImageId = input.verificationReport?.receipt_image_id;
+  return hasReportImageIdMismatch(input.verificationReport, claimedImageId, comparisonImageId);
+}
+
+function nonemptyImageId(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function hasReportImageIdMismatch(
+  report: FailClosedVerificationStatusInput['verificationReport'],
+  claimedImageId: string | undefined,
+  comparisonImageId: string | undefined,
+): boolean {
+  const expectedImageId = report?.expected_image_id;
+  const receiptImageId = report?.receipt_image_id;
   if (typeof expectedImageId !== 'string' || receiptImageId === undefined) {
     return false;
   }
@@ -124,6 +132,14 @@ function hasImageIdMismatch(input: FailClosedVerificationStatusInput): boolean {
   if (normalizeHexString(expectedImageId) !== normalizedReceipt) {
     return true;
   }
+  return hasClaimedOrComparisonMismatch(normalizedReceipt, claimedImageId, comparisonImageId);
+}
+
+function hasClaimedOrComparisonMismatch(
+  normalizedReceipt: string,
+  claimedImageId: string | undefined,
+  comparisonImageId: string | undefined,
+): boolean {
   if (claimedImageId && normalizeHexString(claimedImageId) !== normalizedReceipt) {
     return true;
   }
@@ -200,8 +216,8 @@ export function sanitizeFinalizationResultVerificationStatus<T extends Finalizat
 }
 
 function parseTallyFromRecord(payload: Record<string, unknown>): FinalizationTallyStatusCarrier | undefined {
-  const tally = getRecordProperty(payload, 'tally');
-  const counts = getRecordProperty(tally, 'counts');
+  const tally = getObjectProperty(payload, 'tally');
+  const counts = getObjectProperty(tally, 'counts');
   if (!counts) {
     return undefined;
   }
@@ -232,11 +248,11 @@ function parseVerificationReportFromRecord(
   payload: Record<string, unknown>,
   verificationResult: Record<string, unknown> | undefined,
 ): FailClosedVerificationStatusInput['verificationReport'] {
-  const nestedReport = getRecordProperty(verificationResult, 'report');
-  const topLevelReport = getRecordProperty(payload, 'verificationReport');
+  const nestedReport = getObjectProperty(verificationResult, 'report');
+  const topLevelReport = getObjectProperty(payload, 'verificationReport');
   const report = nestedReport ?? topLevelReport;
 
-  if (!isRecord(report)) {
+  if (!isNonNullObject(report)) {
     return undefined;
   }
 
@@ -250,7 +266,7 @@ function parseVerificationReportFromRecord(
 
 export function sanitizeFinalizationPayloadVerificationStatus<T extends object>(payload: T): T {
   const record = payload as Record<string, unknown>;
-  const verificationResult = getRecordProperty(record, 'verificationResult');
+  const verificationResult = getObjectProperty(record, 'verificationResult');
   const topLevelStatus = toVerificationStatus(getStringProperty(record, 'verificationStatus'));
   const nestedStatus = toVerificationStatus(getStringProperty(verificationResult, 'status'));
   const currentStatus = topLevelStatus ?? nestedStatus;
@@ -258,7 +274,7 @@ export function sanitizeFinalizationPayloadVerificationStatus<T extends object>(
     return payload;
   }
 
-  const journalCandidate = getRecordProperty(record, 'journal');
+  const journalCandidate = getObjectProperty(record, 'journal');
   const journal = isSupportedZkVMJournal(journalCandidate) ? journalCandidate : undefined;
   const nextStatus = resolveFailClosedVerificationStatus({
     currentStatus,

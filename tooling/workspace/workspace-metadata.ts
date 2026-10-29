@@ -94,7 +94,7 @@ export const runtimeProfiles = {
   '@stark-ballot/zkvm-contract': { runtimeKind: 'node', testEnvironment: 'node' },
 } as const satisfies WorkspaceRuntimeProfileTable;
 
-export const repositoryToolProfiles: Readonly<
+const repositoryToolProfiles: Readonly<
   Record<string, WorkspaceRuntimeProfile & { readonly roots: readonly string[] }>
 > = {
   'repo:infra': {

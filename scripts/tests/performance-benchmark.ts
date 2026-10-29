@@ -23,24 +23,22 @@ type BenchmarkRow = {
 const DEFAULT_ITERATIONS = 20;
 const WARMUP_ITERATIONS = 3;
 
+function isIterationFlag(value: string): boolean {
+  if (!value) return false;
+  return value === '--iterations' || value === '-n' || value.startsWith('--iterations=');
+}
+
+function readIterationArgument(argv: string[]): string | undefined {
+  const index = argv.findIndex(isIterationFlag);
+  const token = argv[index];
+  if (!token) return undefined;
+  if (token.startsWith('--iterations=')) return token.slice('--iterations='.length);
+  return argv[index + 1];
+}
+
 function parseIterationCount(): number {
   const argv = process.argv.slice(2).filter((value) => value !== '--');
-  let rawIterations: string | undefined;
-
-  for (let index = 0; index < argv.length; index++) {
-    const value = argv[index];
-    if (!value) {
-      continue;
-    }
-    if (value === '--iterations' || value === '-n') {
-      rawIterations = argv[index + 1];
-      break;
-    }
-    if (value.startsWith('--iterations=')) {
-      rawIterations = value.slice('--iterations='.length);
-      break;
-    }
-  }
+  const rawIterations = readIterationArgument(argv);
 
   if (!rawIterations) {
     return DEFAULT_ITERATIONS;
@@ -131,6 +129,7 @@ async function runBenchmarks(iterations: number): Promise<BenchmarkRow[]> {
   for (let index = 0; index < 512; index++) {
     merkleTree.append(index.toString(16).padStart(64, '0'));
   }
+  const historicalRoot = merkleTree.getRootAtSize(250);
 
   const batchItems = Array.from({ length: 1_000 }, (_, index) => index);
 
@@ -146,6 +145,17 @@ async function runBenchmarks(iterations: number): Promise<BenchmarkRow[]> {
       const proof = merkleTree.getInclusionProof(100, 512);
       if (proof.proofNodes.length === 0) {
         throw new Error('Merkle proof benchmark sanity check failed');
+      }
+    }),
+    measureSync('ct-merkle.clearCache + getRootAtSize(250)', iterations, () => {
+      merkleTree.clearCache();
+      if (merkleTree.getRootAtSize(250) !== historicalRoot) {
+        throw new Error('Uncached historical root benchmark sanity check failed');
+      }
+    }),
+    measureSync('ct-merkle.getRootAtSize(250), cached', iterations, () => {
+      if (merkleTree.getRootAtSize(250) !== historicalRoot) {
+        throw new Error('Cached historical root benchmark sanity check failed');
       }
     }),
     measureAsync('batch-processor.processBatch(1000 items)', iterations, async () => {

@@ -1,5 +1,11 @@
 # zkVM Hardening Integrated Implementation Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: implemented through the local x86_64 post-change benchmark boundary.** This
 > document defines the integrated repository plan for the next zkVM
 > hardening program. It supersedes temporary local planning notes for

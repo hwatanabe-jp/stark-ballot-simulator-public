@@ -1,5 +1,6 @@
 resource "aws_codebuild_project" "toolchain_release_candidate" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.toolchain_release_candidate_project_name
   service_role  = aws_iam_role.foundation_toolchain_release_candidate_build[0].arn
@@ -31,15 +32,7 @@ resource "aws_codebuild_project" "toolchain_release_candidate" {
       value = local.foundation_risc0_toolchain_ecr_repository_name
     }
 
-    environment_variable {
-      name  = "TOOLCHAIN_RELEASE_BUCKET"
-      value = local.foundation_release_manifest_bucket_name
-    }
 
-    environment_variable {
-      name  = "SOURCE_REPOSITORY"
-      value = local.deployment_target.repositoryUrl
-    }
   }
 
   logs_config {
@@ -60,7 +53,8 @@ resource "aws_codebuild_project" "toolchain_release_candidate" {
 }
 
 resource "aws_codebuild_project" "toolchain_release_update_accepted_pointer" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.toolchain_release_update_accepted_pointer_project_name
   service_role  = aws_iam_role.foundation_toolchain_release_update_accepted_pointer_build[0].arn
@@ -91,10 +85,6 @@ resource "aws_codebuild_project" "toolchain_release_update_accepted_pointer" {
       value = local.foundation_release_manifest_bucket_name
     }
 
-    environment_variable {
-      name  = "TOOLCHAIN_RELEASE_BUCKET"
-      value = local.foundation_release_manifest_bucket_name
-    }
 
     environment_variable {
       name  = "IMAGE_REPO_NAME"

@@ -8,31 +8,36 @@ import {
   getArrayProperty,
   getNumberProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 
 function readJsonRecord(path: string, label: string): Record<string, unknown> {
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-  if (!isRecord(parsed)) {
+  if (!isNonNullObject(parsed)) {
     throw new Error(`${label} must be a JSON object`);
   }
   return parsed;
 }
 
-function parseVote(value: unknown): InputCommitmentVote {
-  if (!isRecord(value)) {
+function requireVoteRecord(value: unknown): Record<string, unknown> {
+  if (!isNonNullObject(value)) {
     throw new Error('public-input vote must be an object');
   }
 
-  const index = getNumberProperty(value, 'index');
-  const commitment = getStringProperty(value, 'commitment');
-  const merklePath = getArrayProperty(value, 'merklePath');
-  if (
-    index === undefined ||
-    commitment === undefined ||
-    merklePath === undefined ||
-    !merklePath.every((node): node is string => typeof node === 'string')
-  ) {
+  return value;
+}
+
+function isStringMerklePath(value: unknown[] | undefined): value is string[] {
+  return value !== undefined && value.every((node): node is string => typeof node === 'string');
+}
+
+function parseVote(value: unknown): InputCommitmentVote {
+  const record = requireVoteRecord(value);
+
+  const index = getNumberProperty(record, 'index');
+  const commitment = getStringProperty(record, 'commitment');
+  const merklePath = getArrayProperty(record, 'merklePath');
+  if (index === undefined || commitment === undefined || !isStringMerklePath(merklePath)) {
     throw new Error('public-input vote has an invalid input-commitment projection');
   }
 
@@ -55,13 +60,18 @@ function requireNumber(record: Record<string, unknown>, key: string): number {
   return value;
 }
 
-function main(): void {
-  const [sourceJournalPath, sourcePublicInputPath, outputJournalPath, outputPublicInputPath] = process.argv.slice(2);
-  if (!sourceJournalPath || !sourcePublicInputPath || !outputJournalPath || !outputPublicInputPath) {
+function requireFixturePathPair(first: string | undefined, second: string | undefined): [string, string] {
+  if (!first || !second) {
     throw new Error(
       'Usage: entrypoint-duplicate-index-fixture <journal> <public-input> <output-journal> <output-public-input>',
     );
   }
+  return [first, second];
+}
+
+function main(): void {
+  const [sourceJournalPath, sourcePublicInputPath] = requireFixturePathPair(process.argv[2], process.argv[3]);
+  const [outputJournalPath, outputPublicInputPath] = requireFixturePathPair(process.argv[4], process.argv[5]);
 
   const journal = readJsonRecord(sourceJournalPath, 'journal');
   const publicInput = readJsonRecord(sourcePublicInputPath, 'public-input');

@@ -1,3 +1,4 @@
+import { isNonArrayObject } from './record-guards.js';
 /** @typedef {'default' | 'x86_64'} ImageIdVariant */
 
 /** @typedef {'unknown_method' | 'variant_unconfirmed'} ImageIdVariantResolutionReason */
@@ -103,19 +104,11 @@ export class ImageIdVariantResolutionError extends Error {
 
 /**
  * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
-function isRecord(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
  * @param {string} label
  * @returns {Record<string, unknown>}
  */
 function requireRecord(value, label) {
-  if (!isRecord(value)) {
+  if (!isNonArrayObject(value)) {
     throw new ImageIdMappingValidationError(`${label} must be an object.`);
   }
   return value;

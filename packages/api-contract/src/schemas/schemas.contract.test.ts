@@ -655,6 +655,29 @@ const collectLeafValuePaths = (value: unknown, base: string[] = []): string[] =>
   return [formatPath(base)];
 };
 
+function makeDeepStrictObject(schema: AnyObjectSchema): AnySchema {
+  const shape = getObjectShape(schema);
+  const strictShape: Record<string, AnySchema> = {};
+  for (const key of Object.keys(shape)) {
+    strictShape[key] = makeDeepStrict(strictDefined(shape[key]));
+  }
+  const base = s.object(strictShape);
+  let next: AnyObjectSchema = base;
+  const descriptor = getSchemaDescriptor(schema);
+  if (descriptor.kind !== 'ObjectSchema') {
+    throw new Error(`Expected object schema descriptor, received ${descriptor.kind}`);
+  }
+  if (!(descriptor.catchall instanceof s.NeverSchema)) {
+    next = next.catchall(makeDeepStrict(descriptor.catchall));
+  }
+  if (descriptor.unknownKeys === 'passthrough') {
+    next = next.passthrough();
+  } else {
+    next = next.strict();
+  }
+  return next;
+}
+
 const makeDeepStrict = (schema: AnySchema): AnySchema => {
   if (schema instanceof s.OptionalSchema) {
     return makeDeepStrict(getInnerType(schema)).optional();
@@ -668,28 +691,7 @@ const makeDeepStrict = (schema: AnySchema): AnySchema => {
   if (isArraySchema(schema)) {
     return s.array(makeDeepStrict(getArrayItem(schema)));
   }
-  if (isObjectSchema(schema)) {
-    const shape = getObjectShape(schema);
-    const strictShape: Record<string, AnySchema> = {};
-    for (const key of Object.keys(shape)) {
-      strictShape[key] = makeDeepStrict(strictDefined(shape[key]));
-    }
-    const base = s.object(strictShape);
-    let next: AnyObjectSchema = base;
-    const descriptor = getSchemaDescriptor(schema);
-    if (descriptor.kind !== 'ObjectSchema') {
-      throw new Error(`Expected object schema descriptor, received ${descriptor.kind}`);
-    }
-    if (!(descriptor.catchall instanceof s.NeverSchema)) {
-      next = next.catchall(makeDeepStrict(descriptor.catchall));
-    }
-    if (descriptor.unknownKeys === 'passthrough') {
-      next = next.passthrough();
-    } else {
-      next = next.strict();
-    }
-    return next;
-  }
+  if (isObjectSchema(schema)) return makeDeepStrictObject(schema);
   return schema;
 };
 
@@ -1474,24 +1476,22 @@ describe('api response schemas', () => {
     expect(result.success).toBe(false);
   });
 
-  it('enforces normalized hex32 fields in fixtures', () => {
+  it.each(CONTRACT_FIXTURES)('enforces normalized hex32 fields in $name', ({ name, schema, fixture }) => {
     const failures: string[] = [];
-    for (const { name, schema, fixture } of CONTRACT_FIXTURES) {
-      const paths = collectHex32Paths(schema);
-      const uniquePaths = Array.from(new Map(paths.map((path) => [path.segments.join('.'), path])).values());
-      for (const path of uniquePaths) {
-        const values = collectValues(fixture, path.segments);
-        if (values.length === 0) {
+    const paths = collectHex32Paths(schema);
+    const uniquePaths = Array.from(new Map(paths.map((path) => [path.segments.join('.'), path])).values());
+    for (const path of uniquePaths) {
+      const values = collectValues(fixture, path.segments);
+      if (values.length === 0) {
+        continue;
+      }
+      for (const value of values) {
+        if (typeof value !== 'string') {
+          failures.push(`${name}:${formatHexPath(path.segments)} expected string, got ${typeof value}`);
           continue;
         }
-        for (const value of values) {
-          if (typeof value !== 'string') {
-            failures.push(`${name}:${formatHexPath(path.segments)} expected string, got ${typeof value}`);
-            continue;
-          }
-          if (!HEX32_NORMALIZED.test(value)) {
-            failures.push(`${name}:${formatHexPath(path.segments)} not normalized (${value})`);
-          }
+        if (!HEX32_NORMALIZED.test(value)) {
+          failures.push(`${name}:${formatHexPath(path.segments)} not normalized (${value})`);
         }
       }
     }
@@ -1510,35 +1510,33 @@ describe('api response schemas', () => {
     expect(failures).toEqual([]);
   });
 
-  it('rejects unknown public response fields with exported schemas', () => {
+  it.each(CONTRACT_FIXTURES)('rejects unknown public response fields in $name', ({ name, schema, fixture }) => {
     const failures: string[] = [];
-    for (const { name, schema, fixture } of CONTRACT_FIXTURES) {
-      const rootResult = schema.safeParse({
-        ...(fixture as Record<string, unknown>),
-        unexpectedPublicField: true,
-      });
-      if (rootResult.success) {
-        failures.push(`${name}: accepted unexpected root field`);
-      }
+    const rootResult = schema.safeParse({
+      ...(fixture as Record<string, unknown>),
+      unexpectedPublicField: true,
+    });
+    if (rootResult.success) {
+      failures.push(`${name}: accepted unexpected root field`);
+    }
 
-      if (
-        fixture &&
-        typeof fixture === 'object' &&
-        'data' in fixture &&
-        fixture.data &&
-        typeof fixture.data === 'object' &&
-        !Array.isArray(fixture.data)
-      ) {
-        const dataResult = schema.safeParse({
-          ...(fixture as Record<string, unknown>),
-          data: {
-            ...(fixture.data as Record<string, unknown>),
-            unexpectedPublicDataField: true,
-          },
-        });
-        if (dataResult.success) {
-          failures.push(`${name}: accepted unexpected data field`);
-        }
+    if (
+      fixture &&
+      typeof fixture === 'object' &&
+      'data' in fixture &&
+      fixture.data &&
+      typeof fixture.data === 'object' &&
+      !Array.isArray(fixture.data)
+    ) {
+      const dataResult = schema.safeParse({
+        ...(fixture as Record<string, unknown>),
+        data: {
+          ...(fixture.data as Record<string, unknown>),
+          unexpectedPublicDataField: true,
+        },
+      });
+      if (dataResult.success) {
+        failures.push(`${name}: accepted unexpected data field`);
       }
     }
     expect(failures).toEqual([]);

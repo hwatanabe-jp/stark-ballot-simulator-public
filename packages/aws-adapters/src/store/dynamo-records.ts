@@ -1,3 +1,10 @@
+import { parseRootSnapshotFields } from './root-snapshot-admission';
+import {
+  isNonArrayObject as isRecord,
+  hasExactOwnKeys as hasExactKeys,
+  isNonNegativeSafeInteger,
+  isPositiveSafeInteger,
+} from '@stark-ballot/validation/unknown-value-guards';
 /** Exact persisted record admission and keys. No AWS calls or secret decryption. */
 
 import {
@@ -265,27 +272,8 @@ const RECEIPT_ITEM_KEYS = new Set([
   'expiresAt',
 ]);
 const RECEIPT_COUNTER_KEYS = new Set(['sessionId', 'itemType', 'nextBoardIndex']);
-const ROOT_SNAPSHOT_KEYS = new Set(['timestamp', 'root', 'treeSize']);
-const ROOT_SNAPSHOT_WITH_SIGNATURE_KEYS = new Set(['timestamp', 'root', 'treeSize', 'signature']);
 const USER_NOT_CAST_KEYS = new Set(['status']);
 const USER_CAST_KEYS = new Set(['status', 'voteIndex']);
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.size && keys.every((key) => expected.has(key));
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return isNonNegativeSafeInteger(value) && value > 0;
-}
 
 export function isExpiredItem(value: unknown): boolean {
   return (
@@ -379,23 +367,12 @@ export function decodeLifecycleRevision(value: FinalizationLifecycleRevision): E
 }
 
 function parseRootSnapshot(value: unknown): RootSnapshot | undefined {
-  if (
-    !isRecord(value) ||
-    (!hasExactKeys(value, ROOT_SNAPSHOT_KEYS) && !hasExactKeys(value, ROOT_SNAPSHOT_WITH_SIGNATURE_KEYS))
-  ) {
+  const fields = parseRootSnapshotFields(value);
+  if (!fields) {
     return undefined;
   }
-  const timestamp = value['timestamp'];
-  const root = value['root'];
-  const treeSize = value['treeSize'];
-  const signature = value['signature'];
-  if (
-    !isNonNegativeSafeInteger(timestamp) ||
-    !isPositiveSafeInteger(treeSize) ||
-    typeof root !== 'string' ||
-    !isValidHexString(root, 32) ||
-    (signature !== undefined && typeof signature !== 'string')
-  ) {
+  const { timestamp, root, treeSize, signature } = fields;
+  if (!isPositiveSafeInteger(treeSize) || !isValidHexString(root, 32)) {
     return undefined;
   }
   return {
@@ -450,6 +427,18 @@ export function parseIdentityItem(value: unknown, expectedSessionId?: SessionId)
   };
 }
 
+function parseRootHistory(history: readonly unknown[]): RootSnapshot[] | undefined {
+  const bulletinRootHistory: RootSnapshot[] = [];
+  for (const entry of history) {
+    const snapshot = parseRootSnapshot(entry);
+    if (!snapshot) {
+      return undefined;
+    }
+    bulletinRootHistory.push(snapshot);
+  }
+  return bulletinRootHistory;
+}
+
 function parsePersistedVotingRecord(value: unknown, expectedSessionId: SessionId): PersistedVotingRecord | undefined {
   if (!isRecord(value) || !hasExactKeys(value, PERSISTED_VOTING_KEYS)) {
     return undefined;
@@ -468,13 +457,9 @@ function parsePersistedVotingRecord(value: unknown, expectedSessionId: SessionId
   ) {
     return undefined;
   }
-  const bulletinRootHistory: RootSnapshot[] = [];
-  for (const entry of history) {
-    const snapshot = parseRootSnapshot(entry);
-    if (!snapshot) {
-      return undefined;
-    }
-    bulletinRootHistory.push(snapshot);
+  const bulletinRootHistory = parseRootHistory(history);
+  if (!bulletinRootHistory) {
+    return undefined;
   }
   return {
     sessionId: expectedSessionId,
@@ -574,24 +559,48 @@ export function parseCurrentFinalizationItem(
   };
 }
 
+type VersionedFinalizationHeader = Pick<
+  FinalizationItem,
+  'sessionId' | 'ownerSessionId' | 'finalizationId' | 'revision' | 'expiresAt'
+>;
+
+function hasVersionedFinalizationHeader(
+  value: unknown,
+  expectedSessionId: SessionId,
+  expectedFinalizationId: FinalizationId,
+  keys: ReadonlySet<string>,
+  itemType: 'FINALIZATION' | 'VERIFICATION_RESULT' | 'FINALIZATION_RUNTIME' | 'VERIFICATION_DELIVERY',
+  key: (sessionId: string, finalizationId: string) => string,
+): value is Record<string, unknown> & VersionedFinalizationHeader {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, keys) &&
+    value['itemType'] === itemType &&
+    value['sessionId'] === key(expectedSessionId, expectedFinalizationId) &&
+    value['ownerSessionId'] === expectedSessionId &&
+    value['finalizationId'] === expectedFinalizationId &&
+    isPositiveSafeInteger(value['revision']) &&
+    isNonNegativeSafeInteger(value['expiresAt']) &&
+    !isExpiredItem(value)
+  );
+}
+
 export function parseFinalizationItem(
   value: unknown,
   expectedSessionId: SessionId,
   expectedFinalizationId: FinalizationId,
 ): FinalizationItem | undefined {
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, FINALIZATION_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION' ||
-    value['sessionId'] !== finalizationKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
+    !hasVersionedFinalizationHeader(
+      value,
+      expectedSessionId,
+      expectedFinalizationId,
+      FINALIZATION_ITEM_KEYS,
+      'FINALIZATION',
+      finalizationKey,
+    )
+  )
     return undefined;
-  }
   const record = finalizationRecordCodec.decode(value['record']);
   if (!record || record.sessionId !== expectedSessionId || record.finalizationId !== expectedFinalizationId) {
     return undefined;
@@ -613,18 +622,16 @@ export function parseVerificationItem(
   expectedFinalizationId: FinalizationId,
 ): VerificationItem | undefined {
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, VERIFICATION_ITEM_KEYS) ||
-    value['itemType'] !== 'VERIFICATION_RESULT' ||
-    value['sessionId'] !== verificationKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
+    !hasVersionedFinalizationHeader(
+      value,
+      expectedSessionId,
+      expectedFinalizationId,
+      VERIFICATION_ITEM_KEYS,
+      'VERIFICATION_RESULT',
+      verificationKey,
+    )
+  )
     return undefined;
-  }
   const record = parseVerificationResultRecord(value['record']);
   if (!record || record.sessionId !== expectedSessionId || record.finalizationId !== expectedFinalizationId) {
     return undefined;
@@ -766,18 +773,16 @@ export function parseRuntimeMetadataItem(
   expectedFinalizationId: FinalizationId,
 ): RuntimeMetadataItem | undefined {
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, METADATA_ITEM_KEYS) ||
-    value['itemType'] !== 'FINALIZATION_RUNTIME' ||
-    value['sessionId'] !== runtimeMetadataKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
+    !hasVersionedFinalizationHeader(
+      value,
+      expectedSessionId,
+      expectedFinalizationId,
+      METADATA_ITEM_KEYS,
+      'FINALIZATION_RUNTIME',
+      runtimeMetadataKey,
+    )
+  )
     return undefined;
-  }
   const metadata = parseAwsFinalizationRuntimeMetadata(value['metadata']);
   return metadata
     ? {
@@ -798,18 +803,16 @@ export function parseDeliveryMetadataItem(
   expectedFinalizationId: FinalizationId,
 ): DeliveryMetadataItem | undefined {
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, METADATA_ITEM_KEYS) ||
-    value['itemType'] !== 'VERIFICATION_DELIVERY' ||
-    value['sessionId'] !== deliveryMetadataKey(expectedSessionId, expectedFinalizationId) ||
-    value['ownerSessionId'] !== expectedSessionId ||
-    value['finalizationId'] !== expectedFinalizationId ||
-    !isPositiveSafeInteger(value['revision']) ||
-    !isNonNegativeSafeInteger(value['expiresAt']) ||
-    isExpiredItem(value)
-  ) {
+    !hasVersionedFinalizationHeader(
+      value,
+      expectedSessionId,
+      expectedFinalizationId,
+      METADATA_ITEM_KEYS,
+      'VERIFICATION_DELIVERY',
+      deliveryMetadataKey,
+    )
+  )
     return undefined;
-  }
   const metadata = parseAwsVerificationDeliveryMetadata(value['metadata']);
   return metadata
     ? {

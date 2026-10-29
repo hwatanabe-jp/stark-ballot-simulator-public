@@ -3,7 +3,7 @@ export type Language = 'ja' | 'en';
 export const LANGUAGE_STORAGE_KEY = 'stark-ballot-lang';
 export const LANGUAGE_COOKIE_NAME = 'stark-ballot-lang';
 
-export function normalizeLanguage(value: string | null | undefined): Language | null {
+function normalizeLanguage(value: string | null | undefined): Language | null {
   if (!value) {
     return null;
   }

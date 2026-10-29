@@ -1,5 +1,6 @@
 resource "aws_codebuild_project" "prover_release_toolchain_resolver" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.prover_release_toolchain_resolver_project_name
   service_role  = aws_iam_role.foundation_prover_release_toolchain_resolver_build[0].arn
@@ -55,7 +56,8 @@ resource "aws_codebuild_project" "prover_release_toolchain_resolver" {
 }
 
 resource "aws_codebuild_project" "prover_release_candidate" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.prover_release_candidate_project_name
   service_role  = aws_iam_role.foundation_prover_release_candidate_build[0].arn
@@ -112,7 +114,8 @@ resource "aws_codebuild_project" "prover_release_candidate" {
 }
 
 resource "aws_codebuild_project" "prover_release_update_accepted_pointer" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.foundation_pipeline_enabled ? 1 : 0
 
   name          = local.prover_release_update_accepted_pointer_project_name
   service_role  = aws_iam_role.foundation_prover_release_update_accepted_pointer_build[0].arn

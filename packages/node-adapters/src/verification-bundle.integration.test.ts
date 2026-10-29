@@ -15,9 +15,9 @@ import type { ZkVMExecutionResult } from '@stark-ballot/zkvm-contract/zkvm/host-
 import {
   getArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { extractZipFromFile } from './zip';
 import { buildCloseStatement, buildElectionManifest } from '@stark-ballot/verification/public-audit-artifacts';
@@ -98,7 +98,7 @@ const baseSeenBitmap = Array.from({ length: 64 }, () => true);
 
 function parseJsonRecord(content: string, label: string): Record<string, unknown> {
   const payload: unknown = JSON.parse(content);
-  if (!isRecord(payload)) {
+  if (!isNonNullObject(payload)) {
     throw new Error(`Expected ${label} to be a record`);
   }
   return payload;
@@ -251,7 +251,7 @@ describe('verification-bundle', () => {
       const inputContent = await fs.readFile(result.inputPath, 'utf-8');
       const inputData = parseJsonRecord(inputContent, 'input');
       // Input is serialized to Rust format (snake_case, byte arrays)
-      const electionId = getRecordProperty(inputData, 'election_id') ?? inputData['election_id'];
+      const electionId = getObjectProperty(inputData, 'election_id') ?? inputData['election_id'];
       expect(electionId).toBeDefined();
       expect(Array.isArray(electionId)).toBe(true);
 
@@ -320,7 +320,7 @@ describe('verification-bundle', () => {
       const publicVotes = getArrayProperty(publicInputData, 'votes');
       expect(Array.isArray(publicVotes)).toBe(true);
       const firstVote = Array.isArray(publicVotes) ? publicVotes[0] : null;
-      if (!isRecord(firstVote)) {
+      if (!isNonNullObject(firstVote)) {
         throw new Error('Expected public input vote to be a record');
       }
       expect(getStringProperty(firstVote, 'commitment')).toBe('0x' + '5'.repeat(64));
@@ -496,7 +496,7 @@ describe('verification-bundle', () => {
 
       const inputContent = await fs.readFile(result.inputPath, 'utf-8');
       const inputData = parseJsonRecord(inputContent, 'input');
-      const electionConfigRecord = getRecordProperty(inputData, 'election_config');
+      const electionConfigRecord = getObjectProperty(inputData, 'election_config');
       expect(electionConfigRecord).toEqual({
         totalExpected: 64,
         choices: ['A', 'B', 'C', 'D', 'Legacy'],

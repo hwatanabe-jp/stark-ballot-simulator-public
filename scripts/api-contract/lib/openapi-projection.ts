@@ -61,6 +61,40 @@ function mergeParameterOverlay(
   return { ...projection, ...overlay };
 }
 
+function appendLocationParameters(
+  route: ApiRouteContract,
+  reference: OpenApiRouteReference,
+  location: 'path' | 'query' | 'header',
+  context: {
+    requestKey: 'params' | 'query' | 'headers';
+    requestSchema: AnySchema;
+    parameters: OpenApiDocument[];
+    usedOverlays: Set<string>;
+  },
+): void {
+  const { requestKey, requestSchema, parameters, usedOverlays } = context;
+  for (const [name, fieldSchema, optional] of schemaFields(requestSchema, `${route.routeId}.${requestKey}`)) {
+    if (location === 'header' && name.toLowerCase() === 'x-session-capability') {
+      continue;
+    }
+    const overlayKey: `${typeof location}:${string}` = `${location}:${name}`;
+    const overlay = reference.parameterOverlays?.[overlayKey];
+    if (overlay !== undefined) usedOverlays.add(overlayKey);
+    parameters.push({
+      name,
+      in: location,
+      required: location === 'path' || !optional,
+      description: parameterDescription(name, location),
+      schema: mergeParameterOverlay(
+        route,
+        overlayKey,
+        projectSchemaForOpenApi(fieldSchema, `${route.routeId}.${requestKey}.${name}`, 'input'),
+        overlay,
+      ),
+    });
+  }
+}
+
 function projectParameters(route: ApiRouteContract, reference: OpenApiRouteReference): readonly OpenApiDocument[] {
   const parameters: OpenApiDocument[] = [];
   const usedOverlays = new Set<string>();
@@ -72,26 +106,7 @@ function projectParameters(route: ApiRouteContract, reference: OpenApiRouteRefer
   for (const [requestKey, location] of locations) {
     const requestSchema = route.request[requestKey];
     if (requestSchema === undefined) continue;
-    for (const [name, fieldSchema, optional] of schemaFields(requestSchema, `${route.routeId}.${requestKey}`)) {
-      if (location === 'header' && name.toLowerCase() === 'x-session-capability') {
-        continue;
-      }
-      const overlayKey: `${typeof location}:${string}` = `${location}:${name}`;
-      const overlay = reference.parameterOverlays?.[overlayKey];
-      if (overlay !== undefined) usedOverlays.add(overlayKey);
-      parameters.push({
-        name,
-        in: location,
-        required: location === 'path' || !optional,
-        description: parameterDescription(name, location),
-        schema: mergeParameterOverlay(
-          route,
-          overlayKey,
-          projectSchemaForOpenApi(fieldSchema, `${route.routeId}.${requestKey}.${name}`, 'input'),
-          overlay,
-        ),
-      });
-    }
+    appendLocationParameters(route, reference, location, { requestKey, requestSchema, parameters, usedOverlays });
   }
   const unusedOverlays = Object.keys(reference.parameterOverlays ?? {}).filter((key) => !usedOverlays.has(key));
   if (unusedOverlays.length > 0) {
@@ -134,7 +149,7 @@ function successSchema(route: ApiRouteContract, response: RouteResponse): OpenAp
   throw new Error(`Route ${route.routeId} response ${response.status} lacks a reviewed OpenAPI projection`);
 }
 
-function projectSuccessResponse(route: ApiRouteContract, response: RouteResponse): OpenApiDocument {
+function projectRetainedReportResponse(route: ApiRouteContract, response: RouteResponse): OpenApiDocument | undefined {
   if (
     route.routeId === 'sessions.finalizations.artifacts.report.get' &&
     response.status === 200 &&
@@ -157,6 +172,12 @@ function projectSuccessResponse(route: ApiRouteContract, response: RouteResponse
       ),
     };
   }
+  return undefined;
+}
+
+function projectSuccessResponse(route: ApiRouteContract, response: RouteResponse): OpenApiDocument {
+  const retainedReport = projectRetainedReportResponse(route, response);
+  if (retainedReport !== undefined) return retainedReport;
   const schema = successSchema(route, response);
   return {
     description: response.status === 304 ? 'The selected representation has not changed.' : 'Successful response.',
@@ -178,7 +199,18 @@ function errorResponseKey(error: ApiContractPublicErrorResponse): string {
   return error.status === 'upstream-response-status' ? 'default' : String(error.status);
 }
 
-function projectErrorResponses(route: ApiRouteContract): Readonly<Record<string, OpenApiDocument>> {
+function appendUpstreamErrors(
+  grouped: Map<string, ApiContractPublicErrorResponse[]>,
+  upstreamSelected: readonly ApiContractPublicErrorResponse[],
+): void {
+  if (upstreamSelected.length > 0) {
+    for (const [status, errors] of grouped) {
+      if (status !== 'default') grouped.set(status, [...errors, ...upstreamSelected]);
+    }
+  }
+}
+
+function groupErrorResponses(route: ApiRouteContract): Map<string, ApiContractPublicErrorResponse[]> {
   const grouped = new Map<string, ApiContractPublicErrorResponse[]>();
   const upstreamSelected: ApiContractPublicErrorResponse[] = [];
   for (const error of route.publicErrors.responses) {
@@ -191,11 +223,12 @@ function projectErrorResponses(route: ApiRouteContract): Readonly<Record<string,
     if (key === 'default') upstreamSelected.push(error);
     grouped.set(key, [...(grouped.get(key) ?? []), error]);
   }
-  if (upstreamSelected.length > 0) {
-    for (const [status, errors] of grouped) {
-      if (status !== 'default') grouped.set(status, [...errors, ...upstreamSelected]);
-    }
-  }
+  appendUpstreamErrors(grouped, upstreamSelected);
+  return grouped;
+}
+
+function projectErrorResponses(route: ApiRouteContract): Readonly<Record<string, OpenApiDocument>> {
+  const grouped = groupErrorResponses(route);
   return Object.fromEntries(
     [...grouped.entries()]
       .sort(([left], [right]) => compareText(left, right))

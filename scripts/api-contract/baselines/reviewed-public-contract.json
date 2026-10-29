@@ -1,7 +1,7 @@
 {
   "capturedAt": "1970-01-01T00:00:00.000Z",
   "comparatorType": "public-contract-baseline",
-  "contractHash": "6e975258e1d68d1fdbd20517426fabf4acb818b9306906cbe93952c6d9333e81",
+  "contractHash": "c1f1cfab6b599ea7cb8d5971db87f11c15615c6174c2de287c66da88aaebcc87",
   "dirtyStatus": "dirty",
   "mountedBehavior": [
     {
@@ -272,6 +272,31 @@
     },
     {
       "body": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "headers": {
+        "accept-ranges": null,
+        "access-control-allow-headers": null,
+        "access-control-allow-methods": null,
+        "access-control-allow-origin": null,
+        "cache-control": null,
+        "content-disposition": null,
+        "content-range": null,
+        "content-type": "text/plain; charset=UTF-8",
+        "etag": null,
+        "vary": "Origin",
+        "x-request-id": "public-contract-baseline:lambda.current-finalization.head.not-supported",
+        "x-stark-bundle-range-chunk-size": null
+      },
+      "method": "HEAD",
+      "mode": "lambda",
+      "path": "/api/sessions/session-baseline-mounted/finalizations/current",
+      "probeId": "lambda.current-finalization.head.not-supported",
+      "status": 404
+    },
+    {
+      "body": {
         "bytes": 2165,
         "jsonKeys": ["data", "meta"],
         "jsonRequestId": "public-contract-baseline:lambda.current-finalization.succeeded.no-store",
@@ -433,8 +458,13 @@
       "status": "exempt"
     },
     {
+      "caseId": "head-rejected-before-get",
+      "probeIds": ["lambda.current-finalization.head.not-supported"],
+      "status": "probed"
+    },
+    {
       "caseId": "include-journal-query",
-      "exemption": "The include=journal representation selector is covered by mounted verification-resource success/fail-closed cases in `apps/api/src/server/api/routes/hono.public-contract.test.ts`, malformed-query admission in `apps/api/src/server/api/routes/hono.test.ts`, and CLI response handling in `packages/test-support/src/testing/__tests__/cli-test-helpers.finalize.test.ts`.",
+      "exemption": "The include=journal representation selector is covered by mounted verification-resource success/fail-closed cases in `apps/api/src/server/api/routes/hono.public-contract.test.ts`, malformed-query admission in `apps/api/src/server/api/routes/hono.test.ts`, and CLI response handling in `packages/test-support/src/testing/cli-test-helpers.finalize.test.ts`.",
       "status": "exempt"
     },
     {
@@ -449,7 +479,7 @@
     },
     {
       "caseId": "progress-read-flow",
-      "exemption": "GET /api/sessions/:sessionId/progress requires bot-progress mutation state that the mounted comparator does not create; projection, browser consumption, and CLI handling are covered by `apps/api/src/server/api/routes/hono.test.ts`, `apps/web/src/components/vote/BotVotingProgress.test.tsx`, and `packages/test-support/src/testing/__tests__/cli-test-helpers.progress.test.ts`.",
+      "exemption": "GET /api/sessions/:sessionId/progress requires bot-progress mutation state that the mounted comparator does not create; projection, browser consumption, and CLI handling are covered by `apps/api/src/server/api/routes/hono.test.ts`, `apps/web/src/components/vote/BotVotingProgress.test.tsx`, and `packages/test-support/src/testing/cli-test-helpers.progress.test.ts`.",
       "status": "exempt"
     },
     {
@@ -479,22 +509,22 @@
     },
     {
       "caseId": "verification-observation-flow",
-      "exemption": "POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations rebuilds server verification authority and performs a durable exact-finalization CAS; strict handler and integration behavior is covered by `apps/api/src/server/api/handlers/verificationObservation.test.ts` and `apps/api/src/server/api/routes/hono.public-contract.test.ts`, while browser and mock admission are covered by `apps/web/src/routes/verify/hooks/useVerificationObservation.test.tsx` and `apps/web/src/mock-api/__tests__/fetcher.test.ts`.",
+      "exemption": "POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations rebuilds server verification authority and performs a durable exact-finalization CAS; strict handler and integration behavior is covered by `apps/api/src/server/api/handlers/verificationObservation.test.ts` and `apps/api/src/server/api/routes/hono.public-contract.test.ts`, while browser and mock admission are covered by `apps/web/src/routes/verify/hooks/useVerificationObservation.test.tsx` and `apps/web/src/mock-api/fetcher.test.ts`.",
       "status": "exempt"
     },
     {
       "caseId": "verification-resource-flow",
-      "exemption": "GET /api/sessions/:sessionId/finalizations/:finalizationId/verification success and fail-closed projections require full finalized artifacts that the mounted comparator avoids duplicating; both projections are exercised by `apps/api/src/server/api/routes/hono.public-contract.test.ts`, with CLI response admission covered by `packages/test-support/src/testing/__tests__/cli-test-helpers.finalize.test.ts` and browser polling by `apps/web/src/verification/stark-verification-polling.test.ts`.",
+      "exemption": "GET /api/sessions/:sessionId/finalizations/:finalizationId/verification success and fail-closed projections require full finalized artifacts that the mounted comparator avoids duplicating; both projections are exercised by `apps/api/src/server/api/routes/hono.public-contract.test.ts`, with CLI response admission covered by `packages/test-support/src/testing/cli-test-helpers.finalize.test.ts` and browser polling by `apps/web/src/verification/stark-verification-polling.test.ts`.",
       "status": "exempt"
     },
     {
       "caseId": "verification-run-flow",
-      "exemption": "POST /api/sessions/:sessionId/finalizations/:finalizationId/verification invokes verifier-service orchestration and verifier-result persistence; idempotent, queued, completed, rollback, and fail-closed cases are covered by `apps/api/src/server/api/handlers/verificationRun.test.ts`, the gated CLI contract by `scripts/__tests__/develop-gated-smoke.test.ts`, and both direct browser POST callers by `scripts/api-contract/public-contract-baseline.test.ts`.",
+      "exemption": "POST /api/sessions/:sessionId/finalizations/:finalizationId/verification invokes verifier-service orchestration and verifier-result persistence; idempotent, queued, completed, rollback, and fail-closed cases are covered by `apps/api/src/server/api/handlers/verificationRun.test.ts`, the gated CLI contract by `scripts/tests/develop-gated-smoke.test.ts`, and both direct browser POST callers by `scripts/api-contract/public-contract-baseline.test.ts`.",
       "status": "exempt"
     },
     {
       "caseId": "vote-success-flow",
-      "exemption": "Successful POST /api/sessions/:sessionId/votes depends on issued session state, Turnstile/rate-limit mutable state, and vote-store mutation; success and admission are covered by `apps/api/src/server/api/handlers/vote.test.ts`, `apps/web/src/components/vote/VoteForm.test.tsx`, and `scripts/api-contract/public-contract-baseline.test.ts`.",
+      "exemption": "Successful POST /api/sessions/:sessionId/votes depends on issued session state, Turnstile/rate-limit mutable state, and vote-store mutation; success waits for bot persistence; identical-opening retries recover the original receipt, including after bot failure or response loss. These intentional replay semantics and admission are covered by `apps/api/src/server/api/handlers/vote.test.ts`, `apps/web/src/components/vote/VoteForm.test.tsx`, and `scripts/api-contract/public-contract-baseline.test.ts`.",
       "status": "exempt"
     }
   ],
@@ -1816,7 +1846,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "affb9a775bbbff0c5721edf4f489a981acd77841db71dce620e22456f2195623"
+            "fingerprint": "d4f576bb50ec926195cff6842bbee042e00aceb38ffd4a19bf6017eaf0ce8666"
           },
           "status": 200
         }
@@ -2616,7 +2646,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886"
+            "fingerprint": "763b118f03b4f7393b6729da9949af9a53516f83830a643fa4cc333f9a80e5fb"
           },
           "status": 200
         },
@@ -2624,7 +2654,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886"
+            "fingerprint": "763b118f03b4f7393b6729da9949af9a53516f83830a643fa4cc333f9a80e5fb"
           },
           "status": 202
         }
@@ -2761,7 +2791,7 @@
           "content": "json",
           "schema": {
             "algorithm": "json-wire-admission",
-            "fingerprint": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886"
+            "fingerprint": "763b118f03b4f7393b6729da9949af9a53516f83830a643fa4cc333f9a80e5fb"
           },
           "status": 200
         }
@@ -2811,6 +2841,7 @@
           "PAYLOAD_TOO_LARGE",
           "SESSION_NOT_FOUND",
           "SESSION_NOT_FINALIZED",
+          "FINALIZATION_NOT_CURRENT",
           "GLOBAL_LIMIT_EXCEEDED",
           "ZKVM_RATE_LIMIT_EXCEEDED"
         ],
@@ -2874,6 +2905,12 @@
             "status": 400
           },
           {
+            "code": "FINALIZATION_NOT_CURRENT",
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope",
+            "status": 409
+          },
+          {
             "code": "GLOBAL_LIMIT_EXCEEDED",
             "contentType": "application/json",
             "envelope": "standard-error-envelope",
@@ -2914,6 +2951,14 @@
             "fingerprint": "e00b1786887e117c0415ed00ad84300243774a850db933aaa8425b1508b67fb2"
           },
           "status": 200
+        },
+        {
+          "content": "json",
+          "schema": {
+            "algorithm": "json-wire-admission",
+            "fingerprint": "e00b1786887e117c0415ed00ad84300243774a850db933aaa8425b1508b67fb2"
+          },
+          "status": 202
         }
       ],
       "routeId": "sessions.finalizations.verification.post",
@@ -3260,13 +3305,13 @@
   "schemaAuthorityFingerprints": {
     "packages/api-contract/src/schemas/artifacts.ts": "8d7a80e18e7ee0fe11d54f1ec62fa78a4190e95b741146e350f8015551a0afb6",
     "packages/api-contract/src/schemas/bulletin.ts": "aa6aa89801954c14df9b04f5c6b30d667f64fd74c95b7fd6b6b31b179c4dd2ba",
-    "packages/api-contract/src/schemas/errors.ts": "ca67e08866138b17902343b9f522b85e3558eb23fb8f57fd8c38a1bde11a7a57",
-    "packages/api-contract/src/schemas/finalizations.ts": "76c0da75c2ad1257f3b5e6ed4cb2be135e12e802c79a60cbe15684cef6252dd1",
+    "packages/api-contract/src/schemas/errors.ts": "2dcc90e3c48dea9d133f0d730e27417084cdbfae3e2f7c804f38f1b97652cd5f",
+    "packages/api-contract/src/schemas/finalizations.ts": "8fa2fe455192d42f333567feb208c7b3bc3d38bbd32b52de5d6127edcf2c4b59",
     "packages/api-contract/src/schemas/index.ts": "2f657f8833eb661006e944aa86e84c3750af2eda67ff42200560a58762e39f09",
-    "packages/api-contract/src/schemas/primitives.ts": "367a4090558e6ad44a16b67289e446cee4b735486e1a7a1e15eaee58dd7a8121",
+    "packages/api-contract/src/schemas/primitives.ts": "3ca13c3515be8be088bf53f952fcd95f9d35d51736451c25817b69cd71ffc1b1",
     "packages/api-contract/src/schemas/progress.ts": "24e51b84f7253ec688e174c867dde32fbf8b5a70e95acc850990bc3c6ab3c619",
     "packages/api-contract/src/schemas/sessions.ts": "d9f99879d0459e1a0886d4a1ce54689ac2e1a74bb4c5a716e5b64250eec68adb",
-    "packages/api-contract/src/schemas/verification.ts": "beefca6840488422b7627b3d9fb94a6ce73f0533684e77697c5768547b2aaf78",
+    "packages/api-contract/src/schemas/verification.ts": "d5bed1f44b136b082b99a8dc980f0847cea89346db4252f4e4e0a01aa85b57e0",
     "packages/api-contract/src/schemas/votes.ts": "120d5e7f78e060aedea9f39a227ca1d7b5aa52ad99bbcbddfa68ce9422ccb5ab",
     "packages/crypto-primitives/src/hex.ts": "cce214a2eb93b6502f1784f10df30ab573907f1ae256eea781dd457d19d357c7",
     "packages/crypto-primitives/src/index.ts": "6207df5cfc5d1070acfec43695581cf41157d207a8e149817f41d5e1a633297a",
@@ -3277,7 +3322,8 @@
     "packages/merkle/src/rfc6962-proof.ts": "60d37e3bf2155e927261fbb4c5ce7fc837262779fdb4f0cf126f1a42579bb9ad",
     "packages/validation/src/definedProperties.ts": "f77755491daa420490ad06270bd55f86c2ff176082e18a09da2f33d552e0ccae",
     "packages/validation/src/safe-verifier-segment.ts": "9484a08bad254c0e0907f1b6d3fca3b25c2c62361d468271ae4a1d8b4fe3f91d",
-    "packages/validation/src/schema.ts": "d64a0dec39ddc98932ce0303d87141943e3d18f454bc999733a8abb10506177a",
+    "packages/validation/src/schema-openapi.ts": "c7e6d364a98fd04b699a16d2bde1e2c9794d150edd713652f5f45c959a97c15f",
+    "packages/validation/src/schema.ts": "adeaaa318a84c7c2ec983e5c46e17c561cafdc88312301716800019abbe84d3a",
     "packages/validation/src/unknown-value-guards.ts": "0a5bbc19aedb54fad8ba2be73b7487e936086fb970cb0f1c7e8ecd2395d25b14",
     "packages/verification/src/merkle/bitmap-merkle-tree.ts": "6e7b0fefc22d2844d9f905573070f97b2a6c79fe3f0354a4a7f18c47218e21a2",
     "packages/verification/src/shared/constants.ts": "dd92f092bb2d3da9cec46ef40558dde74e7cdcbbc7fa7fa5f4bbf9e24ae5bd48",
@@ -3287,32 +3333,32 @@
     "packages/verification/src/verification/build-verification-checks.ts": "f9f23804b6e86c4826a9e0181bbfe0726ec7d8b68969338dd1e35cdd01634787",
     "packages/verification/src/verification/build-verification-steps.ts": "7e265c74bf85cadb11da413b0d5c943990dd837f0428e5707c7c2cf2d29470a0",
     "packages/verification/src/verification/consistency-proof-types.ts": "3ca5ea1e8076f85478fcbefe1a6eba2fede790b5cac692455fe180a65fbf0e6a",
-    "packages/verification/src/verification/consistency-verifier.ts": "b27f4ea0ea129068d8dec868227511cd8cd84b44b8972317f996fca92f5e9478",
+    "packages/verification/src/verification/consistency-verifier.ts": "1d4f29bf94981ff3ba4d1d85a514cb7411db82395c74ffc4720538273ca61377",
     "packages/verification/src/verification/engine/admit-evidence.ts": "e99315e30c4ae9e406334bc11437de348759f180f94b5aacbd05076036328c12",
     "packages/verification/src/verification/engine/derive-stages.ts": "892dd945e34a84705b32632d82c9bdb6e8007e9a35ff2a5587e1c875698219b0",
     "packages/verification/src/verification/engine/evaluate-checks.ts": "2be7fbaff670fdbdc029a42fe15fc23d2c832a3fe28a98edf3532683573d54a5",
-    "packages/verification/src/verification/engine/types.ts": "fe157129b05f3b4774c0e792b32b5c83c4f651d4280cdd6cf6988fd4017689a5",
+    "packages/verification/src/verification/engine/types.ts": "ad9a5735dc68cf3f11167fd1b202ab290b2ac0f707e5d0dda11bf368f6ff8413",
     "packages/verification/src/verification/evidence-acquisition.ts": "98706974833100026b24436c080469bcfca736513e31059964744ee722d77e65",
     "packages/verification/src/verification/excluded-count.ts": "bf8840f408a2f9f90b3d67e0c67aa5c610cdeda45c6301745cd0ae4c790301ab",
     "packages/verification/src/verification/fail-closed-status.ts": "687a7d6229f4466e02c9b86f71dc100b02d8ed387dbebaf51c3abc4da51d492f",
     "packages/verification/src/verification/finalization-tamper.ts": "ff20eb0a7772081f9c00ae5b470aad892e995c358ef3fc557bad86c23254e859",
     "packages/verification/src/verification/index-identifiers.ts": "e0115f06a30571ba5c8dbef160fd82ea39502ef0dc63fc9c5c67961f0038179f",
-    "packages/verification/src/verification/local-cast-checks.ts": "12363b8123451b69f8ef5cae27e1f0d25c92ce6ba1a092e975439ce98aa72bc0",
+    "packages/verification/src/verification/local-cast-checks.ts": "6c03b8b83c9426c76e38f0d83e9d60f4e00589aeaae69cbd8ea743503ee70330",
     "packages/verification/src/verification/merkle.ts": "e36983192593aab806e5cc3048c224b45a4d0796ddc70a23a233ff1c054ef2d8",
     "packages/verification/src/verification/public-audit-artifact-consistency.ts": "653ab966d52fab986f3e4d9c5635622e0058c3ce4beeb773879a51a3169321c8",
-    "packages/verification/src/verification/public-audit-artifacts.ts": "3f9eed99a39a0c084b415cca527196bb7a10acea96184ff1452ea7f6162161ae",
+    "packages/verification/src/verification/public-audit-artifacts.ts": "fa33e5d5552c9aae736961fa236cd76950f0834d19d9f47da0d85b08e4d38393",
     "packages/verification/src/verification/public-input-contract.ts": "46459ddbc571116aa0bae9c0f97a66fd8f5404c8f24d5d75ece2d21ef108fefc",
-    "packages/verification/src/verification/public-verification-result.ts": "a3f1d8833f75212d28df45ca6ccda5bb19fa5aa3881a852a024e3f279d5e8618",
+    "packages/verification/src/verification/public-verification-result.ts": "ead449dbfa04c0690d600f9ce25a7adc9d12cee63437af51ea6c827517209cf4",
     "packages/verification/src/verification/scenario-projection.ts": "3e50ddba923bc302c7dbe3d113e935dade0913830397399738a54a9851573825",
     "packages/verification/src/verification/step-types.ts": "a4fb32a09301c42791c132ca8b05a6521f3cbf98b625fa46b206204d3a534382",
     "packages/verification/src/verification/sth-verifier.ts": "29c93f8c1644699d770b860a8cf0b58a19f434e46be6c2f6bdc9d6722e28afd9",
     "packages/verification/src/verification/verification-checks.ts": "0d7048d08bf856e8e1c7e49c83274e5f595c0998d7fbc00deb24ec0b2ebffba5",
-    "packages/verification/src/verification/verification-presentation-policy.ts": "4d32de654030cdb73a3a0057937894e7fba7d7366566a6337b4ca30fb8d86a91",
-    "packages/verification/src/verification/verification-summary.ts": "8707e018d63499ca831688c5bcd6d5b2975866e3f5c081083981be307c729c2c",
-    "packages/verification/src/verification/verifier-service-report.ts": "a4958e38023a567e831b2afd4750ce89d6580fdeccc46bef0f076c2062e6a5bb",
+    "packages/verification/src/verification/verification-presentation-policy.ts": "7fcbdeb834abe166a381e9b6fd2cd0f4135986d5c449f6fdfbf465280848fc1b",
+    "packages/verification/src/verification/verification-summary.ts": "ea2e2837c7e20e3d2b0fae6c78cfe79a52dd396a30e0b0f588fefb03cd315165",
+    "packages/verification/src/verification/verifier-service-report.ts": "48fd25c199cf73331595afc2698355f0c70db53cf923bddfd390706810b70588",
     "packages/zkvm-contract/src/zkvm/bitmap-core.ts": "4df2c0ca2c1a72041f5c677571832c7ad131fecf501c3d7c4a7751d724c261e4",
     "packages/zkvm-contract/src/zkvm/contract-constants.ts": "dd92f092bb2d3da9cec46ef40558dde74e7cdcbbc7fa7fa5f4bbf9e24ae5bd48",
-    "packages/zkvm-contract/src/zkvm/election-config.ts": "69f007330722d5aedf2f36e1b5e8facdcb6c50825958972991b427386ae8539d",
+    "packages/zkvm-contract/src/zkvm/election-config.ts": "9e54e3204f949ea79794dd7cbdfdc66e25256913d9d7f3728fb7cec37adee16d",
     "packages/zkvm-contract/src/zkvm/guards.ts": "46cb33c3acacdfd7dd1a954cb587c6a7152f81854d0362ff56e9d05b30a25244",
     "packages/zkvm-contract/src/zkvm/hex.ts": "736d2ff002d2b29e46261bed142a90a98f8a07982046a527342a0c2f4d7fa261",
     "packages/zkvm-contract/src/zkvm/identifiers.ts": "6d15a401bea5b05868c0d1dead32a4fb3e336ee441dbedfa14d2b18b1ea5e3f7",
@@ -3412,14 +3458,14 @@
       "CurrentFinalizationBitmapProofParamsSchema": "7f8e8d253d9640a9629169d96e27c0fc3e886f83bd540252ff95bf23efa39c0b",
       "CurrentFinalizationInputCommitmentParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
       "CurrentFinalizationParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
-      "CurrentFinalizationResponseSchema": "affb9a775bbbff0c5721edf4f489a981acd77841db71dce620e22456f2195623",
+      "CurrentFinalizationResponseSchema": "d4f576bb50ec926195cff6842bbee042e00aceb38ffd4a19bf6017eaf0ce8666",
       "FinalizationArtifactParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
       "FinalizationCancelParamsSchema": "648c6f81ebc9454a7577703842e4d4a67c4fb7c603e873df83aacf9da3e8b85e",
       "FinalizationCancelRequestSchema": "db1d6093683e846264c00a6fc3d7b6cc5c244ff51d15e0aec88542d384f57b0b",
       "FinalizationCreateParamsSchema": "356d6892b95da01d68be739d75b5b66e7d964a55c219af3261a9d4ae9e07d5eb",
       "FinalizationCreateRequestSchema": "6fdf9db4ebd2eac6eae2785b5624c93da1f95d10aa7652600e63fd210eb0b705",
-      "FinalizationResourceSchema": "33a7624c6bb5c5409984657c43310c3fbf8dd9276046fabd51e0f0cacb457856",
-      "FinalizationResponseSchema": "d45e7f8b05a2bbc0621cb8c11be5f1f110c194ed73f094d38e170d709305f886",
+      "FinalizationResourceSchema": "562d851a1ff1aafbb03af475f141fe0deda76e70119e4e9f4f7c0ef7131da04c",
+      "FinalizationResponseSchema": "763b118f03b4f7393b6729da9949af9a53516f83830a643fa4cc333f9a80e5fb",
       "InputCommitmentResponseSchema": "ca87e702865a8f6c353e11d584548894b0f6ace462e5ef7d7beeb7f52c13fdaf",
       "PathSessionCapabilityHeadersSchema": "019566474f13e6604011bbf708bf100673cfcf6babe85c1e8f3a84d76e070905",
       "ProgressResponseSchema": "8b7068fb3da81775889ffa79bacedee5f507921ce7cb216b8abcc6e8e780cf29",
@@ -3443,5 +3489,5 @@
     }
   },
   "sourceRef": "HEAD",
-  "sourceSha": "b1526c7e1bc6"
+  "sourceSha": "fdf849b15394"
 }

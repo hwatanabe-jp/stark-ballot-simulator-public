@@ -1,5 +1,5 @@
 import type { FinalizeScenarioData } from '@stark-ballot/test-support/testing/cli-test-helpers';
-import { getStringArrayProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getStringArrayProperty, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import {
   getVerificationRequiredCheckIdsForStep,
@@ -44,7 +44,7 @@ const CLI_REQUIRED_VERIFY_STEP_IDS = [
   'counted_as_recorded',
   'stark_verification',
 ] as const satisfies readonly VerificationStepId[];
-export const CLI_REQUIRED_VERIFY_CHECK_IDS = CLI_REQUIRED_VERIFY_STEP_IDS.flatMap((stepId) =>
+const CLI_REQUIRED_VERIFY_CHECK_IDS = CLI_REQUIRED_VERIFY_STEP_IDS.flatMap((stepId) =>
   getVerificationRequiredCheckIdsForStep(stepId, { sthSourcesConfigured: false }),
 );
 const CLI_REQUIRED_COUNTED_STAGE_CHECK_IDS = getVerificationRequiredCheckIdsForStep('counted_as_recorded', {
@@ -61,18 +61,18 @@ function isVerificationStepStatus(value: unknown): value is VerificationStepStat
 }
 
 function isVerificationCheckLike(value: unknown): value is Pick<VerificationCheck, 'id' | 'status'> {
-  return isRecord(value) && isVerificationCheckId(value['id']) && isVerificationStepStatus(value['status']);
+  return isNonNullObject(value) && isVerificationCheckId(value['id']) && isVerificationStepStatus(value['status']);
 }
 
 function isNumberRecord(value: unknown): value is Record<string, number> {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return false;
   }
   return Object.values(value).every((entry) => typeof entry === 'number');
 }
 
 function getNumberProperty(value: unknown, key: string): number | undefined {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return undefined;
   }
   const candidate = value[key];
@@ -80,7 +80,7 @@ function getNumberProperty(value: unknown, key: string): number | undefined {
 }
 
 function getStringProperty(value: unknown, key: string): string | undefined {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return undefined;
   }
   const candidate = value[key];
@@ -94,7 +94,29 @@ function isTallyDetail(value: unknown): value is {
   totalVotes?: number;
   tamperedCount?: number;
 } {
-  return isRecord(value) && isNumberRecord(value['counts']);
+  return isNonNullObject(value) && isNumberRecord(value['counts']);
+}
+
+function resolveTallyRoot(data: FinalizeScenarioData, tallyDetail: unknown): string | undefined {
+  return (
+    getStringProperty(tallyDetail, 'merkleRoot') ??
+    getStringProperty(tallyDetail, 'bulletinRoot') ??
+    getStringProperty(data, 'merkleRoot') ??
+    getStringProperty(data, 'bulletinRoot')
+  );
+}
+
+function resolveTallyCounts(data: FinalizeScenarioData, tallyDetail: unknown, counts: Record<string, number>) {
+  const computedTotal = Object.values(counts).reduce((sum, value) => sum + value, 0);
+  const totalVotes =
+    getNumberProperty(tallyDetail, 'totalVotes') ??
+    (typeof data.totalVotes === 'number' ? data.totalVotes : undefined) ??
+    computedTotal;
+  const tamperedCount =
+    getNumberProperty(tallyDetail, 'tamperedCount') ??
+    (typeof data.tamperedCount === 'number' ? data.tamperedCount : undefined) ??
+    0;
+  return { totalVotes, tamperedCount };
 }
 
 export function resolveTallyResult(data: FinalizeScenarioData): ResolvedTallyResult | null {
@@ -106,25 +128,13 @@ export function resolveTallyResult(data: FinalizeScenarioData): ResolvedTallyRes
     return null;
   }
 
-  const merkleRoot =
-    (tallyDetail && typeof tallyDetail.merkleRoot === 'string' ? tallyDetail.merkleRoot : undefined) ??
-    (tallyDetail && typeof tallyDetail.bulletinRoot === 'string' ? tallyDetail.bulletinRoot : undefined) ??
-    (typeof data['merkleRoot'] === 'string' ? data['merkleRoot'] : undefined) ??
-    (typeof data.bulletinRoot === 'string' ? data.bulletinRoot : undefined);
+  const merkleRoot = resolveTallyRoot(data, tallyDetail);
 
   if (!merkleRoot) {
     return null;
   }
 
-  const computedTotal = Object.values(counts).reduce((sum, value) => sum + value, 0);
-  const totalVotes =
-    getNumberProperty(tallyDetail, 'totalVotes') ??
-    (typeof data.totalVotes === 'number' ? data.totalVotes : undefined) ??
-    computedTotal;
-  const tamperedCount =
-    getNumberProperty(tallyDetail, 'tamperedCount') ??
-    (typeof data.tamperedCount === 'number' ? data.tamperedCount : undefined) ??
-    0;
+  const { totalVotes, tamperedCount } = resolveTallyCounts(data, tallyDetail, counts);
 
   return {
     counts,
@@ -150,11 +160,11 @@ export function resolveReceiptPayload(data: FinalizeScenarioData): ReceiptPayloa
 
 export function resolveUserVoteProof(data: FinalizeScenarioData): UserVoteProofSummary | null {
   const userVote = data.userVote;
-  if (!isRecord(userVote)) {
+  if (!isNonNullObject(userVote)) {
     return null;
   }
 
-  const proof = isRecord(userVote.proof) ? userVote.proof : undefined;
+  const proof = isNonNullObject(userVote.proof) ? userVote.proof : undefined;
 
   const commitment = getStringProperty(userVote, 'commitment');
   const merklePath = getStringArrayProperty(userVote, 'merklePath') ?? getStringArrayProperty(proof, 'merklePath');
@@ -230,6 +240,18 @@ export function collectCliVerificationContractErrors(
   const checkStatuses = resolveVerificationCheckStatuses(data);
   const stepStatuses = resolveVerificationStepStatuses(data);
 
+  collectRequiredVerificationErrors(errors, stepStatuses, checkStatuses, requireRequiredChecksSuccess);
+  collectVerificationStageErrors(errors, stepStatuses, checkStatuses);
+  collectJournalContractErrors(errors, data);
+  return errors;
+}
+
+function collectRequiredVerificationErrors(
+  errors: string[],
+  stepStatuses: ReturnType<typeof resolveVerificationStepStatuses>,
+  checkStatuses: ReturnType<typeof resolveVerificationCheckStatuses>,
+  requireRequiredChecksSuccess: boolean,
+): void {
   for (const stepId of CLI_REQUIRED_VERIFY_STEP_IDS) {
     if (!stepStatuses[stepId]) {
       errors.push(`CLI verification payload missing required step ${stepId}`);
@@ -246,7 +268,13 @@ export function collectCliVerificationContractErrors(
       errors.push(`CLI verification required check ${checkId} was ${status}`);
     }
   }
+}
 
+function collectVerificationStageErrors(
+  errors: string[],
+  stepStatuses: ReturnType<typeof resolveVerificationStepStatuses>,
+  checkStatuses: ReturnType<typeof resolveVerificationCheckStatuses>,
+): void {
   if (stepStatuses.counted_as_recorded === 'success') {
     for (const checkId of CLI_REQUIRED_COUNTED_STAGE_CHECK_IDS) {
       const status = checkStatuses[checkId];
@@ -264,7 +292,9 @@ export function collectCliVerificationContractErrors(
       );
     }
   }
+}
 
+function collectJournalContractErrors(errors: string[], data: FinalizeScenarioData): void {
   if (typeof data.journal?.methodVersion === 'number' && data.journal.methodVersion !== CURRENT_METHOD_VERSION) {
     errors.push(
       `CLI verification journal methodVersion ${data.journal.methodVersion} does not match current contract ${CURRENT_METHOD_VERSION}`,
@@ -272,24 +302,30 @@ export function collectCliVerificationContractErrors(
   }
 
   const journal = data.journal;
-  if (journal) {
-    for (const field of CLI_JOURNAL_COUNT_FIELDS) {
-      const journalValue = journal[field];
-      const publicMirrorValue = data[field];
-      if (typeof publicMirrorValue === 'number' && publicMirrorValue !== journalValue) {
-        errors.push(
-          `CLI verification count mismatch: ${field}=${publicMirrorValue} does not match journal.${field}=${journalValue}`,
-        );
-      }
+  if (!journal) return;
+  for (const field of CLI_JOURNAL_COUNT_FIELDS) {
+    collectJournalCountErrors(errors, data, journal, field);
+  }
+}
 
-      const debugMirrorValue = data.debug?.[field];
-      if (typeof debugMirrorValue === 'number' && debugMirrorValue !== journalValue) {
-        errors.push(
-          `CLI verification count mismatch: debug.${field}=${debugMirrorValue} does not match journal.${field}=${journalValue}`,
-        );
-      }
-    }
+function collectJournalCountErrors(
+  errors: string[],
+  data: FinalizeScenarioData,
+  journal: NonNullable<FinalizeScenarioData['journal']>,
+  field: (typeof CLI_JOURNAL_COUNT_FIELDS)[number],
+): void {
+  const journalValue = journal[field];
+  const publicMirrorValue = data[field];
+  if (typeof publicMirrorValue === 'number' && publicMirrorValue !== journalValue) {
+    errors.push(
+      `CLI verification count mismatch: ${field}=${publicMirrorValue} does not match journal.${field}=${journalValue}`,
+    );
   }
 
-  return errors;
+  const debugMirrorValue = data.debug?.[field];
+  if (typeof debugMirrorValue === 'number' && debugMirrorValue !== journalValue) {
+    errors.push(
+      `CLI verification count mismatch: debug.${field}=${debugMirrorValue} does not match journal.${field}=${journalValue}`,
+    );
+  }
 }

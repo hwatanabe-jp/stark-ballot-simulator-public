@@ -108,60 +108,9 @@ export async function applyFinalizationStateUpdatePayload({
       break;
     }
 
-    case 'SUCCEEDED': {
-      if (typeof store.markFinalizationSucceeded !== 'function') {
-        throw new Error('Success handler unavailable');
-      }
-
-      const currentRecord = await store.getFinalizationRecord(payload.sessionId, payload.finalizationId);
-      if (!currentRecord || currentRecord.finalizationId !== payload.finalizationId) {
-        throw new Error('Finalization record unavailable');
-      }
-      const hydratedResult = hydrateFinalizationResultFromJournal(
-        payload.finalizationResult,
-        currentRecord.scenarioContext,
-      );
-
-      if (!hydratedResult?.journal) {
-        if (typeof store.markFinalizationFailed !== 'function') {
-          throw new Error('Canonical finalization result required');
-        }
-
-        emitWriterUpdateAttempt(payload, 'failed', 'FINALIZATION_RESULT_INVALID');
-        const failedRecord = await store.markFinalizationFailed(payload.sessionId, {
-          finalizationId: payload.finalizationId,
-          queuedAtMs: payload.queuedAtMs,
-          startedAtMs: payload.startedAtMs,
-          failedAtMs: payload.completedAtMs,
-          error: {
-            code: 'FINALIZATION_RESULT_INVALID',
-            message: 'Canonical finalization result is missing proof-bound journal data',
-            category: FinalizationFailureCategory.ARTIFACT,
-          },
-          observability: {
-            source: 'writer_update',
-            reason: 'FINALIZATION_RESULT_INVALID',
-          },
-        });
-        state = failedRecord.state;
-        break;
-      }
-
-      emitWriterUpdateAttempt(payload, 'succeeded');
-      const succeededRecord = await store.markFinalizationSucceeded(payload.sessionId, {
-        finalizationId: payload.finalizationId,
-        queuedAtMs: payload.queuedAtMs,
-        startedAtMs: payload.startedAtMs,
-        completedAtMs: payload.completedAtMs,
-        finalizationResult: hydratedResult,
-        observability: {
-          source: 'writer_update',
-          reason: 'RUNTIME_UPDATE_RECEIVED',
-        },
-      });
-      state = succeededRecord.state;
+    case 'SUCCEEDED':
+      state = await applySucceededFinalizationUpdate(payload, store);
       break;
-    }
 
     case 'FAILED': {
       if (typeof store.markFinalizationFailed !== 'function') {
@@ -210,4 +159,60 @@ export async function applyFinalizationStateUpdatePayload({
     sessionId: payload.sessionId,
     state,
   };
+}
+
+async function applySucceededFinalizationUpdate(
+  payload: Extract<FinalizationStateUpdatePayload, { status: 'SUCCEEDED' }>,
+  store: FinalizationStateUpdateStore,
+): Promise<FinalizationState> {
+  if (typeof store.markFinalizationSucceeded !== 'function') {
+    throw new Error('Success handler unavailable');
+  }
+
+  const currentRecord = await store.getFinalizationRecord(payload.sessionId, payload.finalizationId);
+  if (!currentRecord || currentRecord.finalizationId !== payload.finalizationId) {
+    throw new Error('Finalization record unavailable');
+  }
+  const hydratedResult = hydrateFinalizationResultFromJournal(
+    payload.finalizationResult,
+    currentRecord.scenarioContext,
+  );
+
+  if (!hydratedResult?.journal) {
+    if (typeof store.markFinalizationFailed !== 'function') {
+      throw new Error('Canonical finalization result required');
+    }
+
+    emitWriterUpdateAttempt(payload, 'failed', 'FINALIZATION_RESULT_INVALID');
+    const failedRecord = await store.markFinalizationFailed(payload.sessionId, {
+      finalizationId: payload.finalizationId,
+      queuedAtMs: payload.queuedAtMs,
+      startedAtMs: payload.startedAtMs,
+      failedAtMs: payload.completedAtMs,
+      error: {
+        code: 'FINALIZATION_RESULT_INVALID',
+        message: 'Canonical finalization result is missing proof-bound journal data',
+        category: FinalizationFailureCategory.ARTIFACT,
+      },
+      observability: {
+        source: 'writer_update',
+        reason: 'FINALIZATION_RESULT_INVALID',
+      },
+    });
+    return failedRecord.state;
+  }
+
+  emitWriterUpdateAttempt(payload, 'succeeded');
+  const succeededRecord = await store.markFinalizationSucceeded(payload.sessionId, {
+    finalizationId: payload.finalizationId,
+    queuedAtMs: payload.queuedAtMs,
+    startedAtMs: payload.startedAtMs,
+    completedAtMs: payload.completedAtMs,
+    finalizationResult: hydratedResult,
+    observability: {
+      source: 'writer_update',
+      reason: 'RUNTIME_UPDATE_RECEIVED',
+    },
+  });
+  return succeededRecord.state;
 }

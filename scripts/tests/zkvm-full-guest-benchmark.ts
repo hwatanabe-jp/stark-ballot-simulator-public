@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
-import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
+import { buildCommitmentTree } from './lib/commitment-tree';
 import { addHexPrefix } from '@stark-ballot/crypto-primitives';
 import { serializeZkvmAggregatorInput } from '@stark-ballot/zkvm-contract/zkvm/host-io';
 import { computeCommitment, type ZkVMInput, type VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
@@ -129,6 +129,15 @@ function readOptionValue(argv: string[], index: number, flag: string): string {
   return value;
 }
 
+function applyInlineBenchmarkOption(value: string, setters: ReadonlyMap<string, (value: string) => void>): boolean {
+  const separator = value.indexOf('=');
+  if (separator < 0) return false;
+  const setter = value.startsWith('--') ? setters.get(value.slice(0, separator)) : undefined;
+  if (!setter) return false;
+  setter(value.slice(separator + 1));
+  return true;
+}
+
 export function parseBenchmarkArgs(argv: string[], cwd = process.cwd()): BenchmarkOptions {
   const normalized = argv.filter((value) => value !== '--');
   const options: BenchmarkOptions = {
@@ -138,6 +147,32 @@ export function parseBenchmarkArgs(argv: string[], cwd = process.cwd()): Benchma
     keepArtifacts: false,
     showHelp: false,
   };
+
+  const setIterations = (value: string) => {
+    options.iterations = parsePositiveInteger(value, 'iterations');
+  };
+  const setters = new Map<string, (value: string) => void>([
+    [
+      '--host-bin',
+      (value) => {
+        options.hostBin = path.resolve(cwd, value);
+      },
+    ],
+    ['--iterations', setIterations],
+    ['-n', setIterations],
+    [
+      '--slots',
+      (value) => {
+        options.slots = parsePositiveInteger(value, 'slots');
+      },
+    ],
+    [
+      '--output',
+      (value) => {
+        options.outputPath = path.resolve(cwd, value);
+      },
+    ],
+  ]);
 
   for (let index = 0; index < normalized.length; index += 1) {
     const value = strictDefined(normalized[index], 'argument');
@@ -149,42 +184,13 @@ export function parseBenchmarkArgs(argv: string[], cwd = process.cwd()): Benchma
       options.keepArtifacts = true;
       continue;
     }
-    if (value === '--host-bin') {
-      options.hostBin = path.resolve(cwd, readOptionValue(normalized, index, value));
+    const setter = setters.get(value);
+    if (setter) {
+      setter(readOptionValue(normalized, index, value));
       index += 1;
       continue;
     }
-    if (value.startsWith('--host-bin=')) {
-      options.hostBin = path.resolve(cwd, value.slice('--host-bin='.length));
-      continue;
-    }
-    if (value === '--iterations' || value === '-n') {
-      options.iterations = parsePositiveInteger(readOptionValue(normalized, index, value), 'iterations');
-      index += 1;
-      continue;
-    }
-    if (value.startsWith('--iterations=')) {
-      options.iterations = parsePositiveInteger(value.slice('--iterations='.length), 'iterations');
-      continue;
-    }
-    if (value === '--slots') {
-      options.slots = parsePositiveInteger(readOptionValue(normalized, index, value), 'slots');
-      index += 1;
-      continue;
-    }
-    if (value.startsWith('--slots=')) {
-      options.slots = parsePositiveInteger(value.slice('--slots='.length), 'slots');
-      continue;
-    }
-    if (value === '--output') {
-      options.outputPath = path.resolve(cwd, readOptionValue(normalized, index, value));
-      index += 1;
-      continue;
-    }
-    if (value.startsWith('--output=')) {
-      options.outputPath = path.resolve(cwd, value.slice('--output='.length));
-      continue;
-    }
+    if (applyInlineBenchmarkOption(value, setters)) continue;
     throw new Error(`Unknown option: ${value}`);
   }
 
@@ -220,7 +226,7 @@ function computeElectionConfigHash(slots: number): HexString {
   return toHex(createHash('sha256').update(`stark-ballot:election-config:benchmark:${slots}`).digest());
 }
 
-export function buildFullGuestBenchmarkInput(slots: number): ZkVMInput {
+function buildFullGuestBenchmarkInput(slots: number): ZkVMInput {
   if (!Number.isSafeInteger(slots) || slots <= 0) {
     throw new Error(`slots must be a positive safe integer: ${slots}`);
   }
@@ -229,10 +235,7 @@ export function buildFullGuestBenchmarkInput(slots: number): ZkVMInput {
     { length: slots },
     (_, index) => computeCommitment(ELECTION_ID, index % 5, repeatByteHex((index % 255) + 1)) as HexString,
   );
-  const tree = new RFC6962MerkleTree();
-  for (const commitment of commitments) {
-    tree.append(commitment);
-  }
+  const tree = buildCommitmentTree(commitments);
 
   const votes: VoteWithProof[] = commitments.map((commitment, index) => ({
     commitment,
@@ -348,6 +351,15 @@ function parseImageIdPayload(stdout: string): ImageIdPayload {
   };
 }
 
+function assertHostOutputIdentity(record: Record<string, unknown>): void {
+  if (!Number.isInteger(record['methodVersion']) || Number(record['methodVersion']) <= 0) {
+    throw new Error('Host output artifact is missing methodVersion');
+  }
+  if (typeof record['imageId'] !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(record['imageId'])) {
+    throw new Error('Host output artifact is missing imageId');
+  }
+}
+
 function parseOutputArtifact(raw: string, slots: number): void {
   const parsed: unknown = JSON.parse(raw);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -357,12 +369,7 @@ function parseOutputArtifact(raw: string, slots: number): void {
   if (record['treeSize'] !== slots || record['totalExpected'] !== slots) {
     throw new Error(`Host output artifact must have treeSize and totalExpected ${slots}`);
   }
-  if (!Number.isInteger(record['methodVersion']) || Number(record['methodVersion']) <= 0) {
-    throw new Error('Host output artifact is missing methodVersion');
-  }
-  if (typeof record['imageId'] !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(record['imageId'])) {
-    throw new Error('Host output artifact is missing imageId');
-  }
+  assertHostOutputIdentity(record);
 }
 
 function percentile(sortedValues: number[], percentileValue: number): number {
@@ -444,7 +451,7 @@ async function runProofIteration(options: BenchmarkOptions, iteration: number): 
   }
 }
 
-export async function runBenchmark(options: BenchmarkOptions): Promise<BenchmarkReport> {
+async function runBenchmark(options: BenchmarkOptions): Promise<BenchmarkReport> {
   const hostStats = await stat(options.hostBin).catch(() => undefined);
   if (!hostStats?.isFile()) {
     throw new Error(`Host binary not found: ${options.hostBin}. Build it with pnpm build:zkvm first.`);

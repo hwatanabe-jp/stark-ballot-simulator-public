@@ -347,11 +347,10 @@ function appendQueryValue(search: URLSearchParams, key: string, value: QueryWire
   search.append(key, String(value));
 }
 
-function buildRouteUrlWithBasePath<const TRoute extends RouteLike>(
+function readRoutePathParameters<const TRoute extends RouteLike>(
   route: TRoute,
   options: BuildUrlOptions<TRoute> | undefined,
-  basePath: string,
-): string {
+): Readonly<Record<string, unknown>> {
   let pathParams: Readonly<Record<string, unknown>> = {};
   if (options && 'params' in options && options.params !== undefined) {
     if (!isReadonlyRecord(options.params)) {
@@ -359,6 +358,15 @@ function buildRouteUrlWithBasePath<const TRoute extends RouteLike>(
     }
     pathParams = options.params;
   }
+  return pathParams;
+}
+
+function buildRouteUrlWithBasePath<const TRoute extends RouteLike>(
+  route: TRoute,
+  options: BuildUrlOptions<TRoute> | undefined,
+  basePath: string,
+): string {
+  const pathParams = readRoutePathParameters(route, options);
   const routePath = replacePathParameters(route.path, pathParams);
   const normalizedBasePath = basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
   const path = `${normalizedBasePath}${routePath}`;

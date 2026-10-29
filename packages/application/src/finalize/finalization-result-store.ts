@@ -1,3 +1,4 @@
+import { isNonArrayObject as isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
 import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { parseVerificationResult } from './finalization-storage';
@@ -11,10 +12,6 @@ export interface VerificationResultRecord {
 }
 
 const VERIFICATION_RESULT_RECORD_KEYS = new Set(['sessionId', 'finalizationId', 'verificationResult']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 export function parseVerificationResultRecord(value: unknown): VerificationResultRecord | undefined {
   if (!isRecord(value)) {
@@ -64,4 +61,18 @@ function parseSessionId(value: string): SessionId | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function isTerminalVerificationStatus(status: VerificationResult['status']): boolean {
+  return status === 'success' || status === 'failed' || status === 'dev_mode';
+}
+
+export function createVerificationResultRecord(
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
+  verificationResult: VerificationResult,
+): VerificationResultRecord {
+  const record = parseVerificationResultRecord({ sessionId, finalizationId, verificationResult });
+  if (!record) throw new Error('Invalid verification result record');
+  return record;
 }

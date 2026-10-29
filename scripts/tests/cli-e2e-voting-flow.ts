@@ -26,8 +26,16 @@ import {
   getFinalizeTimeoutMs,
   resolveFinalizationCountDiagnostics,
   type TestResult,
+  type VoteResult,
+  type FinalizeScenarioData,
+  type FinalizationCountDiagnostics,
 } from '@stark-ballot/test-support/testing/cli-test-helpers';
-import { parseContentRange } from '@stark-ballot/api-contract/http/content-range';
+import {
+  admitInitialArtifactRange,
+  admitNextArtifactRange,
+  resolveArtifactChunkSize,
+  readArtifactContentLength,
+} from '@stark-ballot/api-contract/http/artifact-response';
 import type { VoteChoice } from '@stark-ballot/domain/shared/constants';
 import { parseArgs } from 'util';
 import net from 'net';
@@ -57,9 +65,12 @@ import {
   resolveReceiptPayload,
   resolveTallyResult,
   resolveUserVoteProof,
+  type ResolvedTallyResult,
+  type ReceiptPayload,
+  type UserVoteProofSummary,
   shouldFetchVoteProof,
 } from '@stark-ballot/test-support/testing/cli-voting-flow-helpers';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import { parseVerifierServiceWireReport } from '@stark-ballot/verification/verifier-service-report';
 import {
@@ -78,11 +89,12 @@ const MAX_REPORT_DOWNLOAD_BYTES = 4 * 1024 * 1024;
 const BUNDLE_RANGE_CHUNK_HEADER = 'x-stark-bundle-range-chunk-size';
 
 function buildArtifactUrl(
-  baseUrl: string,
+  baseUrl: string | null,
   sessionId: string,
-  finalizationId: string,
+  finalizationId: string | undefined,
   artifact: 'bundle' | 'report',
-): string {
+): string | undefined {
+  if (!baseUrl || !finalizationId || !isSafeVerifierSegment(sessionId)) return undefined;
   const relative = ['api', 'sessions', sessionId, 'finalizations', finalizationId, 'artifacts', artifact].join('/');
   return new URL(`/${relative}`, baseUrl).toString();
 }
@@ -197,7 +209,7 @@ function copyPresentEnvValue(target: NodeJS.ProcessEnv, source: NodeJS.ProcessEn
   }
 }
 
-export function createCliBuildEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+function createCliBuildEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NODE_ENV: 'production' };
   for (const key of CLI_BUILD_RUNTIME_ENV_KEYS) {
     copyPresentEnvValue(env, source, key);
@@ -285,7 +297,7 @@ function isVoteChoice(value: unknown): value is VoteChoice {
 function isBotTamperInfo(
   value: unknown,
 ): value is { originalChoice: VoteChoice; recountedTo: VoteChoice; count: number } {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return false;
   }
   const originalChoice = value['originalChoice'];
@@ -316,6 +328,30 @@ Examples:
   pnpm test:cli:mock -- --user-choice B --all-scenarios
   pnpm test:cli -- --user-choice C --real-zkvm --scenario S0
 `);
+}
+
+interface CliVoteInclusionInput {
+  voteResult: VoteResult;
+  userVoteProof: UserVoteProofSummary | null;
+  tallyResult: ResolvedTallyResult;
+  data: FinalizeScenarioData;
+}
+
+interface CliMerkleEvidence {
+  merklePathToUse: string[];
+  leafIndexToUse: number;
+  treeSizeForProof: number;
+  proofRoot: string;
+}
+
+interface CliScenarioTamperInput {
+  data: FinalizeScenarioData;
+  tallyResult: ResolvedTallyResult;
+  voteResult: VoteResult;
+  userVoteProof: UserVoteProofSummary | null;
+  testCase: (typeof testCases)[0];
+  leafIndexToUse: number;
+  treeSizeForProof: number;
 }
 
 export class CLIVotingTest {
@@ -484,48 +520,14 @@ export class CLIVotingTest {
     console.log('─────────────────────────────────');
 
     try {
-      // Step 1: Create session
-      this.log('Creating session...');
-      const sessionId = await helpers.createSession();
-      this.log(`Session created: ${sessionId}`, 'success');
-
-      // Step 2: Submit user vote
-      const userChoice = this.config.userChoice;
-      this.log(`Submitting user vote: ${userChoice}`);
-      const voteResult = await helpers.submitVote(sessionId, userChoice);
-      this.log(`User vote submitted: ${userChoice} (commitment: ${voteResult.commitment.slice(0, 8)}...)`, 'success');
-      if (this.config.verbose && voteResult.voteId) {
-        this.log(`Vote ID: ${voteResult.voteId}`, 'info');
-      }
-
-      // Step 3: Generate bot votes
-      this.log('Generating bot votes...');
-      await helpers.generateBotVotes(sessionId);
-      this.log('Bot votes generated: 63 votes', 'success');
+      const { sessionId, voteResult } = await this.createVotedSession(helpers);
 
       // Step 4: Apply tamper scenarios and finalize
       if (testCase.scenario.length > 0) {
         this.log(`Applying tamper scenario: ${testCase.scenario.join(', ')}`);
       }
 
-      // Set zkVM mode based on config
-      const runtimeProfile = configureCliRuntimeProfile(this.config);
-      if (!this.config.useRealZkVM) {
-        // Use Mock zkVM (JavaScript implementation)
-        this.log('Using Mock zkVM (JavaScript, no STARK proofs)');
-      } else {
-        // Use Real zkVM (Rust binary)
-        if (this.config.realMode === 'dev') {
-          this.log('Using Real zkVM dev mode (Rust binary, Fake receipts, ~0.04s)');
-        } else {
-          console.log('[CLI] Production STARK proof enabled; expected duration is about 6 minutes per scenario');
-          console.log('─────────────────────────────────────────');
-        }
-
-        console.log(
-          `[CLI] Real zkVM profile: ${runtimeProfile}, EXPECTED_IMAGE_ID=${process.env['EXPECTED_IMAGE_ID']}`,
-        );
-      }
+      const runtimeProfile = this.configureAndDescribeProofProfile();
 
       const zkStartTime = Date.now();
       const scenarioId = testCase.scenario[0] ?? 'S0';
@@ -534,349 +536,71 @@ export class CLIVotingTest {
       this.log(`zkVM executed in ${(zkDuration / 1000).toFixed(1)}s`, 'success');
 
       // Extract results
-      const tallyResult = resolveTallyResult(finalizeResult.data);
-      if (!tallyResult) {
-        throw new Error('Finalization response missing tally data');
-      }
-      const proofPayload = resolveReceiptPayload(finalizeResult.data);
-      if (!proofPayload) {
-        throw new Error('Finalization response missing receipt payload');
-      }
+      const { tallyResult, proofPayload } = requireCliFinalizationPayload(finalizeResult.data);
       const debug = finalizeResult.data.debug;
       const { missingSlots, invalidPresentedSlots, validVotes, excludedSlots } = resolveFinalizationCountDiagnostics(
         finalizeResult.data,
       );
-      let userVoteProof = resolveUserVoteProof(finalizeResult.data);
-      const voteId = voteResult.voteId;
-      if (shouldFetchVoteProof(userVoteProof, voteId)) {
-        try {
-          const fetchedProof = await helpers.fetchVoteProof(voteId, sessionId);
-          userVoteProof = mergeFetchedVoteProof(userVoteProof, fetchedProof, voteResult.commitment);
-          if (this.config.verbose) {
-            this.log(`Fetched finalized vote proof (path length ${fetchedProof.merklePath.length})`, 'info');
-          }
-        } catch (proofError) {
-          const message = proofError instanceof Error ? proofError.message : String(proofError);
-          if (this.config.verbose) {
-            console.warn(`[CLI] Failed to fetch finalized vote proof: ${message}`);
-          }
-        }
-      }
-      const finalMerklePath = userVoteProof?.merklePath; // Get the final Merkle path
+      const userVoteProof = await this.resolveFinalizedVoteProof(helpers, sessionId, voteResult, finalizeResult.data);
 
-      const finalizationMode: 'sync' | 'async' = finalizeResult.meta?.mode === 'async' ? 'async' : 'sync';
-      const finalizationId =
-        finalizeResult.meta?.finalizationId && isSafeVerifierSegment(finalizeResult.meta.finalizationId)
-          ? finalizeResult.meta.finalizationId
-          : undefined;
-      const finalizationHistory = finalizeResult.meta?.finalizationHistory;
-      const finalizationRuntimeDiagnostics = finalizeResult.meta?.runtimeDiagnostics;
+      const { finalizationMode, finalizationId, finalizationHistory, finalizationRuntimeDiagnostics } =
+        resolveCliFinalizationMetadata(finalizeResult.meta);
       const verificationContractErrors = collectCliVerificationContractErrors(finalizeResult.data, {
         requireRequiredChecksSuccess: !testCase.expectedTamper,
       });
 
-      if (finalizationId) {
-        this.log(`Finalization ID: ${finalizationId}`, 'info');
-      }
+      this.reportFinalizationContractErrors(finalizationId, verificationContractErrors, errors);
 
-      for (const contractError of verificationContractErrors) {
-        errors.push(contractError);
-        this.log(contractError, 'error');
-      }
-
-      let verificationBundlePath: string | undefined;
-      let verificationHash: string | undefined;
-      let verificationBundleDelivery: typeof AUTHENTICATED_ENDPOINT_DELIVERY | undefined;
-      let verificationReportHash: string | undefined;
-      let verificationReportPath: string | undefined;
+      const {
+        verificationBundlePath,
+        verificationHash,
+        verificationBundleDelivery,
+        verificationReportHash,
+        verificationReportPath,
+      } = await this.downloadFinalizationArtifacts(sessionId, finalizationId, errors);
       let bundleExtractionDir: string | undefined;
-      if (!finalizationId) {
-        const selectorError = 'Finalization response missing a safe finalizationId';
-        errors.push(selectorError);
-        this.log(selectorError, 'error');
-      }
-      const authenticatedBundleUrl =
-        this.baseUrl && finalizationId && isSafeVerifierSegment(sessionId)
-          ? buildArtifactUrl(this.baseUrl, sessionId, finalizationId, 'bundle')
-          : undefined;
-      const authenticatedReportUrl =
-        this.baseUrl && finalizationId && isSafeVerifierSegment(sessionId)
-          ? buildArtifactUrl(this.baseUrl, sessionId, finalizationId, 'report')
-          : undefined;
-
-      if (authenticatedBundleUrl) {
-        try {
-          const download = await this.downloadAuthenticatedArtifact(sessionId, {
-            kind: 'bundle',
-            url: authenticatedBundleUrl,
-          });
-          verificationBundlePath = download.path;
-          verificationHash = download.hash;
-          verificationBundleDelivery = AUTHENTICATED_ENDPOINT_DELIVERY;
-          this.log(`Authenticated bundle downloaded (sha256=${verificationHash.slice(0, 8)}...)`);
-        } catch (bundleError) {
-          const message = bundleError instanceof Error ? bundleError.message : String(bundleError);
-          errors.push(`Failed to download verification bundle: ${message}`);
-          this.log(`Failed to download verification bundle: ${message}`, 'error');
-        }
-      }
-
-      if (authenticatedReportUrl) {
-        try {
-          const download = await this.downloadAuthenticatedArtifact(sessionId, {
-            kind: 'report',
-            url: authenticatedReportUrl,
-          });
-          verificationReportPath = download.path;
-          verificationReportHash = download.hash;
-          this.log(`Authenticated verification report downloaded (sha256=${verificationReportHash.slice(0, 8)}...)`);
-        } catch (reportError) {
-          const message = reportError instanceof Error ? reportError.message : String(reportError);
-          errors.push(`Failed to download verification report: ${message}`);
-          this.log(`Failed to download verification report: ${message}`, 'error');
-        }
-      }
 
       // Step 5: Verify STARK proof
-      this.log('Verifying STARK proof...');
-      const proofProfile = resolveRuntimeProfile({ RUNTIME_PROFILE: runtimeProfile }).proof;
-      const starkOptions: NonNullable<Parameters<typeof helpers.verifySTARK>[1]> = {
-        proofProfile,
-        ...omitUndefinedProperties({ imageId: proofPayload.imageId ?? finalizeResult.data.imageId }),
-        ...omitUndefinedProperties({ verificationStatus: finalizeResult.data.verificationStatus }),
-        ...omitUndefinedProperties({ verificationReport: finalizeResult.data.verificationReport }),
-      };
-
-      if (proofProfile.executor === 'risc0' && verificationBundlePath) {
-        starkOptions.verificationBundlePath = verificationBundlePath;
-      }
-
-      const starkValid = await helpers.verifySTARK(proofPayload.receipt, starkOptions);
-
-      let mockReceipt = false;
-      if (proofProfile.executor === 'mock') {
-        const receiptInfo = helpers.describeReceipt(proofPayload.receipt);
-        mockReceipt = receiptInfo.kind === 'mock';
-
-        if (mockReceipt) {
-          this.log('Using Mock zkVM - STARK proof is simulated');
-        } else {
-          this.log('Mock proof profile returned a non-mock receipt', 'warning');
-        }
-      }
-
-      if (starkValid) {
-        const suffix = mockReceipt
-          ? ' (mock)'
-          : proofProfile.executor === 'risc0'
-            ? verificationBundlePath
-              ? ` (authenticated ${proofProfile.evidence} RISC Zero receipt)`
-              : ` (${proofProfile.evidence} RISC Zero receipt)`
-            : '';
-        const statusSuffix =
-          finalizeResult.data.verificationStatus && finalizeResult.data.verificationStatus !== 'success'
-            ? ` [status=${finalizeResult.data.verificationStatus}]`
-            : '';
-        this.log('STARK proof verified' + suffix + statusSuffix, 'success');
-      } else {
-        errors.push('STARK proof verification failed');
-        this.log('STARK proof verification failed', 'error');
-      }
+      await this.verifyFinalizationReceipt(
+        helpers,
+        { runtimeProfile, proofPayload, data: finalizeResult.data, verificationBundlePath },
+        errors,
+      );
 
       if (verificationBundlePath) {
-        try {
-          bundleExtractionDir = await extractBundleArchive({
-            sessionId,
-            bundlePath: verificationBundlePath,
-            delivery: verificationBundleDelivery ?? AUTHENTICATED_ENDPOINT_DELIVERY,
-            ...omitUndefinedProperties({ finalizationId }),
-          });
-          this.log(`Verification bundle extracted to ${bundleExtractionDir}`);
-        } catch (extractError) {
-          const message = extractError instanceof Error ? extractError.message : String(extractError);
-          errors.push(`Failed to extract verification bundle: ${message}`);
-          this.log(`Failed to extract verification bundle: ${message}`, 'error');
-        }
+        bundleExtractionDir = await this.extractFinalizationBundle(
+          { sessionId, verificationBundlePath, verificationBundleDelivery, finalizationId },
+          errors,
+        );
       }
 
       // Step 6: Verify Merkle inclusion
-      this.log('Verifying Merkle inclusion...');
-
-      // Use the final Merkle path from finalize response if available
-      const merklePathToUse = finalMerklePath && finalMerklePath.length > 0 ? finalMerklePath : voteResult.merklePath;
-      const leafIndexFromFinalize = userVoteProof?.leafIndex;
-      const leafIndexToUse = typeof leafIndexFromFinalize === 'number' ? leafIndexFromFinalize : voteResult.leafIndex;
-
-      if (this.config.verbose) {
-        console.log('[DEBUG] Merkle verification data:');
-        console.log('  Commitment:', voteResult.commitment);
-        console.log('  Leaf Index:', leafIndexToUse);
-        console.log('  Path Length:', merklePathToUse.length);
-        console.log(
-          '  Path (first 3):',
-          merklePathToUse.slice(0, 3).map((p: string) => p.slice(0, 10) + '...'),
-        );
-        console.log('  Merkle Root:', tallyResult.merkleRoot);
-        console.log('  Using final path:', finalMerklePath && finalMerklePath.length > 0 ? 'YES' : 'NO');
-      }
-
-      let merkleValid = false;
-      const treeSizeForProof =
-        typeof userVoteProof?.treeSize === 'number' && userVoteProof.treeSize > 0
-          ? userVoteProof.treeSize
-          : typeof finalizeResult.data.treeSize === 'number' && finalizeResult.data.treeSize > 0
-            ? finalizeResult.data.treeSize
-            : tallyResult.totalVotes;
-      const proofRoot = userVoteProof?.bulletinRootAtCast ?? tallyResult.merkleRoot;
-
-      if (
-        userVoteProof &&
-        typeof userVoteProof.leafIndex === 'number' &&
-        Array.isArray(userVoteProof.merklePath) &&
-        treeSizeForProof > 0
-      ) {
-        const commitmentForProof = userVoteProof.commitment ?? voteResult.commitment;
-        merkleValid = helpers.verifyMerkle(
-          commitmentForProof,
-          userVoteProof.merklePath,
-          userVoteProof.leafIndex,
-          proofRoot,
-          {
-            treeSize: treeSizeForProof,
-          },
-        );
-      } else {
-        const effectivePath =
-          Array.isArray(merklePathToUse) && merklePathToUse.length > 0 ? merklePathToUse : voteResult.merklePath;
-        if (Array.isArray(effectivePath) && effectivePath.length > 0) {
-          merkleValid = helpers.verifyMerkle(
-            voteResult.commitment,
-            effectivePath,
-            leafIndexToUse,
-            tallyResult.merkleRoot,
-            {
-              treeSize: tallyResult.totalVotes,
-            },
-          );
-        } else if (this.config.verbose) {
-          console.warn('[CLI] No Merkle path available for verification');
-        }
-      }
-
-      if (merkleValid) {
-        this.log('Merkle inclusion verified', 'success');
-      } else {
-        const merkleError = 'Merkle inclusion verification failed';
-        errors.push(merkleError);
-        this.log(merkleError, 'error');
-      }
+      const { leafIndexToUse, treeSizeForProof } = this.verifyVoteInclusion(
+        helpers,
+        { voteResult, userVoteProof, tallyResult, data: finalizeResult.data },
+        errors,
+      );
 
       // Step 7: Check tamper detection
-      if (isCtProofMissing(userVoteProof)) {
-        errors.push('Missing CT inclusion proof for user vote');
-      }
-
-      const detectionPath = Array.isArray(userVoteProof?.merklePath) ? userVoteProof.merklePath : [];
-      const verifiedTallyFromResponse = (() => {
-        const apiTally = finalizeResult.data.verifiedTally;
-        if (Array.isArray(apiTally)) {
-          return apiTally;
-        }
-        const journalTally = finalizeResult.data.journal?.verifiedTally;
-        if (Array.isArray(journalTally)) {
-          return journalTally;
-        }
-        const debugTally = debug?.verifiedTally;
-        if (Array.isArray(debugTally)) {
-          return debugTally;
-        }
-        return undefined;
-      })();
-
-      const tamperAnalysis = await detectTampering(
+      const { tamperDetected, verifiedTallyFromResponse } = await this.checkScenarioTampering(
         {
-          tally: tallyResult.counts,
-          bulletinRoot: userVoteProof?.bulletinRootAtCast ?? tallyResult.merkleRoot,
-          totalVotes: tallyResult.totalVotes,
-          tamperedCount: tallyResult.tamperedCount,
-          missingSlots: missingSlots ?? 0,
-          invalidPresentedSlots: invalidPresentedSlots ?? 0,
-          validVotes: validVotes ?? 0,
-          excludedSlots: excludedSlots ?? 0,
-          ...omitUndefinedProperties({ verifiedTally: verifiedTallyFromResponse }),
-          ...omitUndefinedProperties({
-            botTamperInfo: (() => {
-              const proof = finalizeResult.data.proof;
-              if (!proof || !isBotTamperInfo(proof.recountedBotInfo)) {
-                return undefined;
-              }
-              return proof.recountedBotInfo;
-            })(),
-            randomError:
-              typeof finalizeResult.data.proof?.randomError === 'boolean'
-                ? finalizeResult.data.proof.randomError
-                : undefined,
-          }),
+          data: finalizeResult.data,
+          tallyResult,
+          voteResult,
+          userVoteProof,
+          testCase,
+          leafIndexToUse,
+          treeSizeForProof,
         },
-        {
-          commitment: voteResult.commitment,
-          path: Array.isArray(detectionPath) ? detectionPath : [],
-          leafIndex: leafIndexToUse,
-          ...omitUndefinedProperties({ choice: userChoice }),
-          random: voteResult.random,
-          treeSize: treeSizeForProof,
-        },
-        {
-          ...omitUndefinedProperties({ expectedTotalVotes: finalizeResult.data.totalExpected }),
-          scenarios: testCase.scenario,
-        },
+        errors,
       );
-
-      const tamperDetected = tamperAnalysis.isTampered;
-      if (this.config.verbose) {
-        console.log('  Detected scenarios:', tamperAnalysis.detectedScenarios.join(', ') || 'none');
-      }
-      this.log(
-        `Tamper detected: ${tamperDetected ? 'YES' : 'NO'} (${tamperAnalysis.detectedScenarios.join(', ') || 'none'})`,
-        tamperDetected === testCase.expectedTamper ? 'success' : 'error',
-      );
-
-      if (tamperDetected !== testCase.expectedTamper) {
-        errors.push(
-          `Expected tamper detection: ${testCase.expectedTamper}, got: ${tamperDetected} (${tamperAnalysis.detectedScenarios.join(', ') || 'none'})`,
-        );
-      }
 
       // Display results
-      console.log('\nResults:');
-      const verifiedTallyRaw = verifiedTallyFromResponse ?? debug?.verifiedTally ?? tallyResult.counts;
-      const verifiedTallyForLog: number[] | undefined = Array.isArray(verifiedTallyRaw) ? verifiedTallyRaw : undefined;
-
-      if (verifiedTallyForLog) {
-        const verifiedTotal = verifiedTallyForLog.reduce((a: number, b: number) => a + b, 0);
-        console.log(`- Verified tally:  [${verifiedTallyForLog.join(', ')}] (total: ${verifiedTotal})`);
-      }
-      if (
-        typeof missingSlots === 'number' ||
-        typeof invalidPresentedSlots === 'number' ||
-        typeof validVotes === 'number' ||
-        typeof excludedSlots === 'number'
-      ) {
-        console.log(
-          `- Counts: missingSlots=${missingSlots ?? 'n/a'}, invalidPresentedSlots=${
-            invalidPresentedSlots ?? 'n/a'
-          }, validVotes=${validVotes ?? 'n/a'}, excludedSlots=${excludedSlots ?? 'n/a'}`,
-        );
-      }
-      console.log(`- Tamper detected: ${tamperDetected ? 'YES' : 'NO'}`);
-
-      // Check if user vote was affected
-      if (tamperDetected && verifiedTallyForLog) {
-        const actualUserChoice = this.config.userChoice;
-        const userChoiceIndex = actualUserChoice.charCodeAt(0) - 'A'.charCodeAt(0);
-        const verifiedCount = verifiedTallyForLog[userChoiceIndex];
-        console.log(`- User vote (verified tally): ${actualUserChoice}=${verifiedCount}`);
-      }
+      const verifiedTallyForLog = this.displayScenarioResult(
+        resolveLoggedCliTally(verifiedTallyFromResponse, debug, tallyResult),
+        { ...omitUndefinedProperties({ missingSlots, invalidPresentedSlots, validVotes, excludedSlots }) },
+        tamperDetected,
+      );
 
       return {
         name: testCase.name,
@@ -899,8 +623,7 @@ export class CLIVotingTest {
             bundleExtractionDir,
             errors: errors.length > 0 ? errors : undefined,
             finalizationMode,
-            finalizationHistory:
-              finalizationHistory && finalizationHistory.length > 0 ? finalizationHistory : undefined,
+            finalizationHistory: nonEmptyFinalizationHistory(finalizationHistory),
             finalizationRuntimeDiagnostics: finalizationRuntimeDiagnostics ?? undefined,
           }),
         },
@@ -919,6 +642,398 @@ export class CLIVotingTest {
         },
       };
     }
+  }
+
+  private async createVotedSession(helpers: CLITestHelpers) {
+    // Step 1: Create session
+    this.log('Creating session...');
+    const sessionId = await helpers.createSession();
+    this.log(`Session created: ${sessionId}`, 'success');
+
+    // Step 2: Submit user vote
+    const userChoice = this.config.userChoice;
+    this.log(`Submitting user vote: ${userChoice}`);
+    const voteResult = await helpers.submitVote(sessionId, userChoice);
+    this.log(`User vote submitted: ${userChoice} (commitment: ${voteResult.commitment.slice(0, 8)}...)`, 'success');
+    if (this.config.verbose && voteResult.voteId) {
+      this.log(`Vote ID: ${voteResult.voteId}`, 'info');
+    }
+
+    // Step 3: Generate bot votes
+    this.log('Generating bot votes...');
+    await helpers.generateBotVotes(sessionId);
+    this.log('Bot votes generated: 63 votes', 'success');
+
+    return { sessionId, voteResult };
+  }
+
+  private configureAndDescribeProofProfile(): RuntimeProfileSelector {
+    // Set zkVM mode based on config
+    const runtimeProfile = configureCliRuntimeProfile(this.config);
+    if (!this.config.useRealZkVM) {
+      // Use Mock zkVM (JavaScript implementation)
+      this.log('Using Mock zkVM (JavaScript, no STARK proofs)');
+    } else {
+      // Use Real zkVM (Rust binary)
+      if (this.config.realMode === 'dev') {
+        this.log('Using Real zkVM dev mode (Rust binary, Fake receipts, ~0.04s)');
+      } else {
+        console.log('[CLI] Production STARK proof enabled; expected duration is about 6 minutes per scenario');
+        console.log('─────────────────────────────────────────');
+      }
+
+      console.log(`[CLI] Real zkVM profile: ${runtimeProfile}, EXPECTED_IMAGE_ID=${process.env['EXPECTED_IMAGE_ID']}`);
+    }
+
+    return runtimeProfile;
+  }
+
+  private reportFinalizationContractErrors(
+    finalizationId: string | undefined,
+    verificationContractErrors: readonly string[],
+    errors: string[],
+  ): void {
+    if (finalizationId) {
+      this.log(`Finalization ID: ${finalizationId}`, 'info');
+    }
+
+    for (const contractError of verificationContractErrors) {
+      errors.push(contractError);
+      this.log(contractError, 'error');
+    }
+  }
+
+  private async extractFinalizationBundle(
+    input: {
+      sessionId: string;
+      verificationBundlePath: string;
+      verificationBundleDelivery: typeof AUTHENTICATED_ENDPOINT_DELIVERY | undefined;
+      finalizationId: string | undefined;
+    },
+    errors: string[],
+  ): Promise<string | undefined> {
+    const { sessionId, verificationBundlePath, verificationBundleDelivery, finalizationId } = input;
+    let bundleExtractionDir: string | undefined;
+    try {
+      bundleExtractionDir = await extractBundleArchive({
+        sessionId,
+        bundlePath: verificationBundlePath,
+        delivery: verificationBundleDelivery ?? AUTHENTICATED_ENDPOINT_DELIVERY,
+        ...omitUndefinedProperties({ finalizationId }),
+      });
+      this.log(`Verification bundle extracted to ${bundleExtractionDir}`);
+    } catch (extractError) {
+      const message = extractError instanceof Error ? extractError.message : String(extractError);
+      errors.push(`Failed to extract verification bundle: ${message}`);
+      this.log(`Failed to extract verification bundle: ${message}`, 'error');
+    }
+    return bundleExtractionDir;
+  }
+
+  private async resolveFinalizedVoteProof(
+    helpers: CLITestHelpers,
+    sessionId: string,
+    voteResult: VoteResult,
+    data: FinalizeScenarioData,
+  ) {
+    let userVoteProof = resolveUserVoteProof(data);
+    const voteId = voteResult.voteId;
+    if (shouldFetchVoteProof(userVoteProof, voteId)) {
+      try {
+        const fetchedProof = await helpers.fetchVoteProof(voteId, sessionId);
+        userVoteProof = mergeFetchedVoteProof(userVoteProof, fetchedProof, voteResult.commitment);
+        if (this.config.verbose) {
+          this.log(`Fetched finalized vote proof (path length ${fetchedProof.merklePath.length})`, 'info');
+        }
+      } catch (proofError) {
+        const message = proofError instanceof Error ? proofError.message : String(proofError);
+        if (this.config.verbose) {
+          console.warn(`[CLI] Failed to fetch finalized vote proof: ${message}`);
+        }
+      }
+    }
+    return userVoteProof;
+  }
+
+  private async downloadFinalizationArtifacts(sessionId: string, finalizationId: string | undefined, errors: string[]) {
+    let verificationBundlePath: string | undefined;
+    let verificationHash: string | undefined;
+    let verificationBundleDelivery: typeof AUTHENTICATED_ENDPOINT_DELIVERY | undefined;
+    let verificationReportHash: string | undefined;
+    let verificationReportPath: string | undefined;
+    if (!finalizationId) {
+      const selectorError = 'Finalization response missing a safe finalizationId';
+      errors.push(selectorError);
+      this.log(selectorError, 'error');
+    }
+    const authenticatedBundleUrl = buildArtifactUrl(this.baseUrl, sessionId, finalizationId, 'bundle');
+    const authenticatedReportUrl = buildArtifactUrl(this.baseUrl, sessionId, finalizationId, 'report');
+
+    if (authenticatedBundleUrl) {
+      try {
+        const download = await this.downloadAuthenticatedArtifact(sessionId, {
+          kind: 'bundle',
+          url: authenticatedBundleUrl,
+        });
+        verificationBundlePath = download.path;
+        verificationHash = download.hash;
+        verificationBundleDelivery = AUTHENTICATED_ENDPOINT_DELIVERY;
+        this.log(`Authenticated bundle downloaded (sha256=${verificationHash.slice(0, 8)}...)`);
+      } catch (bundleError) {
+        const message = bundleError instanceof Error ? bundleError.message : String(bundleError);
+        errors.push(`Failed to download verification bundle: ${message}`);
+        this.log(`Failed to download verification bundle: ${message}`, 'error');
+      }
+    }
+
+    if (authenticatedReportUrl) {
+      try {
+        const download = await this.downloadAuthenticatedArtifact(sessionId, {
+          kind: 'report',
+          url: authenticatedReportUrl,
+        });
+        verificationReportPath = download.path;
+        verificationReportHash = download.hash;
+        this.log(`Authenticated verification report downloaded (sha256=${verificationReportHash.slice(0, 8)}...)`);
+      } catch (reportError) {
+        const message = reportError instanceof Error ? reportError.message : String(reportError);
+        errors.push(`Failed to download verification report: ${message}`);
+        this.log(`Failed to download verification report: ${message}`, 'error');
+      }
+    }
+
+    return {
+      verificationBundlePath,
+      verificationHash,
+      verificationBundleDelivery,
+      verificationReportHash,
+      verificationReportPath,
+    };
+  }
+
+  private async verifyFinalizationReceipt(
+    helpers: CLITestHelpers,
+    input: {
+      runtimeProfile: RuntimeProfileSelector;
+      proofPayload: ReceiptPayload;
+      data: FinalizeScenarioData;
+      verificationBundlePath: string | undefined;
+    },
+    errors: string[],
+  ): Promise<void> {
+    const { runtimeProfile, proofPayload, data, verificationBundlePath } = input;
+    this.log('Verifying STARK proof...');
+    const proofProfile = resolveRuntimeProfile({ RUNTIME_PROFILE: runtimeProfile }).proof;
+    const starkOptions: NonNullable<Parameters<typeof helpers.verifySTARK>[1]> = {
+      proofProfile,
+      ...omitUndefinedProperties({ imageId: proofPayload.imageId ?? data.imageId }),
+      ...omitUndefinedProperties({ verificationStatus: data.verificationStatus }),
+      ...omitUndefinedProperties({ verificationReport: data.verificationReport }),
+    };
+
+    if (proofProfile.executor === 'risc0' && verificationBundlePath) {
+      starkOptions.verificationBundlePath = verificationBundlePath;
+    }
+
+    const starkValid = await helpers.verifySTARK(proofPayload.receipt, starkOptions);
+
+    let mockReceipt = false;
+    if (proofProfile.executor === 'mock') {
+      const receiptInfo = helpers.describeReceipt(proofPayload.receipt);
+      mockReceipt = receiptInfo.kind === 'mock';
+
+      if (mockReceipt) {
+        this.log('Using Mock zkVM - STARK proof is simulated');
+      } else {
+        this.log('Mock proof profile returned a non-mock receipt', 'warning');
+      }
+    }
+
+    if (starkValid) {
+      const suffix = describeVerifiedReceipt(mockReceipt, proofProfile, verificationBundlePath);
+      const statusSuffix =
+        data.verificationStatus && data.verificationStatus !== 'success' ? ` [status=${data.verificationStatus}]` : '';
+      this.log('STARK proof verified' + suffix + statusSuffix, 'success');
+    } else {
+      errors.push('STARK proof verification failed');
+      this.log('STARK proof verification failed', 'error');
+    }
+  }
+
+  private verifyVoteInclusion(helpers: CLITestHelpers, input: CliVoteInclusionInput, errors: string[]) {
+    const { voteResult, userVoteProof, tallyResult, data } = input;
+    const finalMerklePath = userVoteProof?.merklePath;
+    this.log('Verifying Merkle inclusion...');
+
+    // Use the final Merkle path from finalize response if available
+    const merklePathToUse = finalMerklePath && finalMerklePath.length > 0 ? finalMerklePath : voteResult.merklePath;
+    const leafIndexFromFinalize = userVoteProof?.leafIndex;
+    const leafIndexToUse = typeof leafIndexFromFinalize === 'number' ? leafIndexFromFinalize : voteResult.leafIndex;
+
+    this.logMerkleEvidence(input, { finalMerklePath, merklePathToUse, leafIndexToUse });
+
+    const treeSizeForProof = resolveTreeSizeForProof(userVoteProof, data, tallyResult);
+    const proofRoot = userVoteProof?.bulletinRootAtCast ?? tallyResult.merkleRoot;
+
+    const merkleValid = this.verifyMerkleEvidence(helpers, input, {
+      merklePathToUse,
+      leafIndexToUse,
+      treeSizeForProof,
+      proofRoot,
+    });
+
+    if (merkleValid) {
+      this.log('Merkle inclusion verified', 'success');
+    } else {
+      const merkleError = 'Merkle inclusion verification failed';
+      errors.push(merkleError);
+      this.log(merkleError, 'error');
+    }
+
+    return { leafIndexToUse, treeSizeForProof };
+  }
+
+  private logMerkleEvidence(
+    input: CliVoteInclusionInput,
+    evidence: { finalMerklePath: string[] | undefined; merklePathToUse: string[]; leafIndexToUse: number },
+  ): void {
+    const { voteResult, tallyResult } = input;
+    const { finalMerklePath, merklePathToUse, leafIndexToUse } = evidence;
+    if (this.config.verbose) {
+      console.log('[DEBUG] Merkle verification data:');
+      console.log('  Commitment:', voteResult.commitment);
+      console.log('  Leaf Index:', leafIndexToUse);
+      console.log('  Path Length:', merklePathToUse.length);
+      console.log(
+        '  Path (first 3):',
+        merklePathToUse.slice(0, 3).map((p: string) => p.slice(0, 10) + '...'),
+      );
+      console.log('  Merkle Root:', tallyResult.merkleRoot);
+      console.log('  Using final path:', finalMerklePath && finalMerklePath.length > 0 ? 'YES' : 'NO');
+    }
+  }
+
+  private verifyMerkleEvidence(
+    helpers: CLITestHelpers,
+    input: CliVoteInclusionInput,
+    evidence: CliMerkleEvidence,
+  ): boolean {
+    const { userVoteProof, voteResult } = input;
+    const { treeSizeForProof, proofRoot } = evidence;
+    if (
+      userVoteProof &&
+      typeof userVoteProof.leafIndex === 'number' &&
+      Array.isArray(userVoteProof.merklePath) &&
+      treeSizeForProof > 0
+    ) {
+      return helpers.verifyMerkle(
+        userVoteProof.commitment ?? voteResult.commitment,
+        userVoteProof.merklePath,
+        userVoteProof.leafIndex,
+        proofRoot,
+        { treeSize: treeSizeForProof },
+      );
+    }
+    return this.verifyOriginalMerklePath(helpers, input, evidence);
+  }
+
+  private verifyOriginalMerklePath(
+    helpers: CLITestHelpers,
+    input: CliVoteInclusionInput,
+    evidence: CliMerkleEvidence,
+  ): boolean {
+    const { voteResult, tallyResult } = input;
+    const { merklePathToUse, leafIndexToUse } = evidence;
+    const effectivePath =
+      Array.isArray(merklePathToUse) && merklePathToUse.length > 0 ? merklePathToUse : voteResult.merklePath;
+    if (Array.isArray(effectivePath) && effectivePath.length > 0) {
+      return helpers.verifyMerkle(voteResult.commitment, effectivePath, leafIndexToUse, tallyResult.merkleRoot, {
+        treeSize: tallyResult.totalVotes,
+      });
+    }
+    if (this.config.verbose) console.warn('[CLI] No Merkle path available for verification');
+    return false;
+  }
+
+  private async checkScenarioTampering(input: CliScenarioTamperInput, errors: string[]) {
+    const { data, voteResult, userVoteProof, testCase, leafIndexToUse, treeSizeForProof } = input;
+    const debug = data.debug;
+    const userChoice = this.config.userChoice;
+    const diagnostics = resolveFinalizationCountDiagnostics(data);
+    if (isCtProofMissing(userVoteProof)) {
+      errors.push('Missing CT inclusion proof for user vote');
+    }
+
+    const detectionPath = Array.isArray(userVoteProof?.merklePath) ? userVoteProof.merklePath : [];
+    const verifiedTallyFromResponse = resolveCliVerifiedTally(data, debug);
+
+    const tamperAnalysis = await detectTampering(
+      buildCliDetectionResult(input, diagnostics, verifiedTallyFromResponse),
+      {
+        commitment: voteResult.commitment,
+        path: Array.isArray(detectionPath) ? detectionPath : [],
+        leafIndex: leafIndexToUse,
+        ...omitUndefinedProperties({ choice: userChoice }),
+        random: voteResult.random,
+        treeSize: treeSizeForProof,
+      },
+      {
+        ...omitUndefinedProperties({ expectedTotalVotes: data.totalExpected }),
+        scenarios: testCase.scenario,
+      },
+    );
+
+    const tamperDetected = tamperAnalysis.isTampered;
+    this.reportScenarioTampering(testCase, tamperAnalysis, errors);
+
+    return { tamperDetected, verifiedTallyFromResponse };
+  }
+
+  private reportScenarioTampering(
+    testCase: (typeof testCases)[0],
+    tamperAnalysis: Awaited<ReturnType<typeof detectTampering>>,
+    errors: string[],
+  ): void {
+    const tamperDetected = tamperAnalysis.isTampered;
+    if (this.config.verbose) {
+      console.log('  Detected scenarios:', tamperAnalysis.detectedScenarios.join(', ') || 'none');
+    }
+    this.log(
+      `Tamper detected: ${tamperDetected ? 'YES' : 'NO'} (${tamperAnalysis.detectedScenarios.join(', ') || 'none'})`,
+      tamperDetected === testCase.expectedTamper ? 'success' : 'error',
+    );
+
+    if (tamperDetected !== testCase.expectedTamper) {
+      errors.push(
+        `Expected tamper detection: ${testCase.expectedTamper}, got: ${tamperDetected} (${tamperAnalysis.detectedScenarios.join(', ') || 'none'})`,
+      );
+    }
+  }
+
+  private displayScenarioResult(
+    verifiedTallyRaw: unknown,
+    diagnostics: FinalizationCountDiagnostics,
+    tamperDetected: boolean,
+  ): number[] | undefined {
+    console.log('\nResults:');
+    const verifiedTallyForLog: number[] | undefined = Array.isArray(verifiedTallyRaw) ? verifiedTallyRaw : undefined;
+
+    if (verifiedTallyForLog) {
+      const verifiedTotal = verifiedTallyForLog.reduce((a: number, b: number) => a + b, 0);
+      console.log(`- Verified tally:  [${verifiedTallyForLog.join(', ')}] (total: ${verifiedTotal})`);
+    }
+    printFinalizationCounts(diagnostics);
+    console.log(`- Tamper detected: ${tamperDetected ? 'YES' : 'NO'}`);
+
+    // Check if user vote was affected
+    if (tamperDetected && verifiedTallyForLog) {
+      const actualUserChoice = this.config.userChoice;
+      const userChoiceIndex = actualUserChoice.charCodeAt(0) - 'A'.charCodeAt(0);
+      const verifiedCount = verifiedTallyForLog[userChoiceIndex];
+      console.log(`- User vote (verified tally): ${actualUserChoice}=${verifiedCount}`);
+    }
+
+    return verifiedTallyForLog;
   }
 
   private async downloadAuthenticatedArtifact(
@@ -977,22 +1092,15 @@ export class CLIVotingTest {
       return readResponseBufferWithLimit(firstResponse, MAX_BUNDLE_DOWNLOAD_BYTES, 'bundle');
     }
 
-    const firstRange = parseContentRange(firstResponse.headers.get('content-range'));
-    if (
-      firstRange?.kind !== 'satisfied' ||
-      firstRange.start !== 0 ||
-      firstRange.end >= DEFAULT_BUNDLE_RANGE_CHUNK_BYTES ||
-      firstRange.total > MAX_BUNDLE_DOWNLOAD_BYTES
-    ) {
-      throw new Error('Invalid ranged bundle response');
-    }
-
-    const representationIdentity = readArtifactRepresentationIdentity(firstResponse.headers);
-    if (!representationIdentity) {
-      throw new Error('Invalid ranged bundle response');
-    }
+    const { range: firstRange, representationIdentity } = admitInitialArtifactRange(firstResponse.headers, {
+      chunkBytes: DEFAULT_BUNDLE_RANGE_CHUNK_BYTES,
+      maxBytes: MAX_BUNDLE_DOWNLOAD_BYTES,
+    });
     const chunks: Buffer[] = [await readRangeBuffer(firstResponse, firstRange.advertisedLength)];
-    const chunkSize = resolveAdvertisedChunkSize(firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER));
+    const chunkSize = resolveArtifactChunkSize(
+      firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER),
+      DEFAULT_BUNDLE_RANGE_CHUNK_BYTES,
+    );
     let nextStart = firstRange.end + 1;
 
     while (nextStart < firstRange.total) {
@@ -1005,20 +1113,12 @@ export class CLIVotingTest {
         throw new Error('Invalid ranged bundle response');
       }
 
-      const range = parseContentRange(response.headers.get('content-range'));
-      if (
-        range?.kind !== 'satisfied' ||
-        range.start !== nextStart ||
-        range.end !== nextEnd ||
-        range.total !== firstRange.total
-      ) {
-        throw new Error('Invalid ranged bundle response');
-      }
-      const nextRepresentationIdentity = readArtifactRepresentationIdentity(response.headers);
-      if (!nextRepresentationIdentity || nextRepresentationIdentity !== representationIdentity) {
-        throw new Error('Bundle representation changed during download');
-      }
-
+      const range = admitNextArtifactRange(response.headers, {
+        start: nextStart,
+        end: nextEnd,
+        total: firstRange.total,
+        representationIdentity,
+      });
       chunks.push(await readRangeBuffer(response, range.advertisedLength));
       nextStart = range.end + 1;
     }
@@ -1144,23 +1244,6 @@ export function stopCliServer(
   });
 }
 
-function resolveAdvertisedChunkSize(value: string | null): number {
-  if (!value) {
-    return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
-  }
-  return Math.min(parsed, DEFAULT_BUNDLE_RANGE_CHUNK_BYTES);
-}
-
-function readArtifactRepresentationIdentity(headers: Headers): string | null {
-  const etag = headers.get('etag')?.trim() ?? '';
-  const versionId = headers.get('x-amz-version-id')?.trim() ?? '';
-  return etag || versionId ? `${etag}\u0000${versionId}` : null;
-}
-
 async function readRangeBuffer(response: Response, expectedLength: number): Promise<Buffer> {
   const body = await readResponseBufferBounded(response, expectedLength, 'Invalid ranged bundle response');
   if (body.byteLength !== expectedLength) {
@@ -1178,14 +1261,7 @@ async function readResponseBufferWithLimit(
 }
 
 async function readResponseBufferBounded(response: Response, maxBytes: number, limitMessage: string): Promise<Buffer> {
-  const contentLength = response.headers.get('content-length');
-  const declaredBytes = contentLength === null || !/^\d+$/.test(contentLength) ? undefined : Number(contentLength);
-  if (
-    contentLength !== null &&
-    (declaredBytes === undefined || !Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes)
-  ) {
-    throw new Error(limitMessage);
-  }
+  const declaredBytes = readArtifactContentLength(response.headers, maxBytes, limitMessage);
 
   if (!response.body) {
     if (declaredBytes !== undefined && declaredBytes !== 0) {
@@ -1194,8 +1270,22 @@ async function readResponseBufferBounded(response: Response, maxBytes: number, l
     return Buffer.alloc(0);
   }
 
+  const { chunks, totalBytes } = await readBoundedBufferChunks(response.body, maxBytes, limitMessage);
+
+  if (declaredBytes !== undefined && declaredBytes !== totalBytes) {
+    throw new Error(limitMessage);
+  }
+
+  return Buffer.concat(chunks, totalBytes);
+}
+
+async function readBoundedBufferChunks(
+  body: NonNullable<Response['body']>,
+  maxBytes: number,
+  limitMessage: string,
+): Promise<{ chunks: Uint8Array[]; totalBytes: number }> {
   const chunks: Uint8Array[] = [];
-  const reader = response.body.getReader();
+  const reader = body.getReader();
   let totalBytes = 0;
   try {
     let result = await reader.read();
@@ -1216,11 +1306,126 @@ async function readResponseBufferBounded(response: Response, maxBytes: number, l
     reader.releaseLock();
   }
 
-  if (declaredBytes !== undefined && declaredBytes !== totalBytes) {
-    throw new Error(limitMessage);
-  }
+  return { chunks, totalBytes };
+}
 
-  return Buffer.concat(chunks, totalBytes);
+type CliFinalizationMetadata = Awaited<ReturnType<CLITestHelpers['finalizeWithScenarios']>>['meta'];
+
+function requireCliFinalizationPayload(data: FinalizeScenarioData) {
+  const tallyResult = resolveTallyResult(data);
+  if (!tallyResult) {
+    throw new Error('Finalization response missing tally data');
+  }
+  const proofPayload = resolveReceiptPayload(data);
+  if (!proofPayload) {
+    throw new Error('Finalization response missing receipt payload');
+  }
+  return { tallyResult, proofPayload };
+}
+
+function resolveCliFinalizationId(meta: CliFinalizationMetadata): string | undefined {
+  return meta?.finalizationId && isSafeVerifierSegment(meta.finalizationId) ? meta.finalizationId : undefined;
+}
+
+function resolveCliFinalizationMetadata(meta: CliFinalizationMetadata) {
+  const finalizationMode: 'sync' | 'async' = meta?.mode === 'async' ? 'async' : 'sync';
+  return {
+    finalizationMode,
+    finalizationId: resolveCliFinalizationId(meta),
+    finalizationHistory: meta?.finalizationHistory,
+    finalizationRuntimeDiagnostics: meta?.runtimeDiagnostics,
+  };
+}
+
+function nonEmptyFinalizationHistory(history: NonNullable<CliFinalizationMetadata>['finalizationHistory']) {
+  return history && history.length > 0 ? history : undefined;
+}
+
+function resolveLoggedCliTally(
+  verifiedTally: ReturnType<typeof resolveCliVerifiedTally>,
+  debug: FinalizeScenarioData['debug'],
+  tally: ResolvedTallyResult,
+) {
+  return verifiedTally ?? debug?.verifiedTally ?? tally.counts;
+}
+
+function resolveCliVerifiedTally(data: FinalizeScenarioData, debug: FinalizeScenarioData['debug']) {
+  const apiTally = data.verifiedTally;
+  if (Array.isArray(apiTally)) {
+    return apiTally;
+  }
+  const journalTally = data.journal?.verifiedTally;
+  if (Array.isArray(journalTally)) {
+    return journalTally;
+  }
+  const debugTally = debug?.verifiedTally;
+  if (Array.isArray(debugTally)) {
+    return debugTally;
+  }
+  return undefined;
+}
+
+function resolveCliBotTamperInfo(data: FinalizeScenarioData) {
+  const proof = data.proof;
+  if (!proof || !isBotTamperInfo(proof.recountedBotInfo)) return undefined;
+  return proof.recountedBotInfo;
+}
+
+function buildCliDetectionResult(
+  input: Pick<CliScenarioTamperInput, 'data' | 'tallyResult' | 'userVoteProof'>,
+  diagnostics: FinalizationCountDiagnostics,
+  verifiedTallyFromResponse: ReturnType<typeof resolveCliVerifiedTally>,
+) {
+  const { data, tallyResult, userVoteProof } = input;
+  const { missingSlots, invalidPresentedSlots, validVotes, excludedSlots } = diagnostics;
+  return {
+    tally: tallyResult.counts,
+    bulletinRoot: userVoteProof?.bulletinRootAtCast ?? tallyResult.merkleRoot,
+    totalVotes: tallyResult.totalVotes,
+    tamperedCount: tallyResult.tamperedCount,
+    missingSlots: missingSlots ?? 0,
+    invalidPresentedSlots: invalidPresentedSlots ?? 0,
+    validVotes: validVotes ?? 0,
+    excludedSlots: excludedSlots ?? 0,
+    ...omitUndefinedProperties({ verifiedTally: verifiedTallyFromResponse }),
+    ...omitUndefinedProperties({
+      botTamperInfo: resolveCliBotTamperInfo(data),
+      randomError: typeof data.proof?.randomError === 'boolean' ? data.proof.randomError : undefined,
+    }),
+  };
+}
+
+function resolveTreeSizeForProof(
+  userVoteProof: UserVoteProofSummary | null,
+  data: FinalizeScenarioData,
+  tallyResult: ResolvedTallyResult,
+): number {
+  if (typeof userVoteProof?.treeSize === 'number' && userVoteProof.treeSize > 0) return userVoteProof.treeSize;
+  if (typeof data.treeSize === 'number' && data.treeSize > 0) return data.treeSize;
+  return tallyResult.totalVotes;
+}
+
+function describeVerifiedReceipt(
+  mockReceipt: boolean,
+  proofProfile: ReturnType<typeof resolveRuntimeProfile>['proof'],
+  verificationBundlePath: string | undefined,
+): string {
+  if (mockReceipt) return ' (mock)';
+  if (proofProfile.executor !== 'risc0') return '';
+  return verificationBundlePath
+    ? ` (authenticated ${proofProfile.evidence} RISC Zero receipt)`
+    : ` (${proofProfile.evidence} RISC Zero receipt)`;
+}
+
+function printFinalizationCounts(diagnostics: FinalizationCountDiagnostics): void {
+  const { missingSlots, invalidPresentedSlots, validVotes, excludedSlots } = diagnostics;
+  if ([missingSlots, invalidPresentedSlots, validVotes, excludedSlots].some((value) => typeof value === 'number')) {
+    console.log(
+      `- Counts: missingSlots=${missingSlots ?? 'n/a'}, invalidPresentedSlots=${
+        invalidPresentedSlots ?? 'n/a'
+      }, validVotes=${validVotes ?? 'n/a'}, excludedSlots=${excludedSlots ?? 'n/a'}`,
+    );
+  }
 }
 
 function getPnpmBinary(): string {
@@ -1301,6 +1506,43 @@ async function waitForService(baseUrl: string, retries = 60): Promise<void> {
 }
 
 // Parse command line arguments
+function parseCliUserChoice(rawUserChoice: string | undefined): VoteChoice {
+  if (!rawUserChoice) {
+    console.error('Error: --user-choice option is required.');
+    console.error('Usage: pnpm test:cli -- --user-choice <A|B|C|D|E>');
+    console.error('Example: pnpm test:cli:mock -- --user-choice A');
+    process.exit(1);
+  }
+  const choice = rawUserChoice.toUpperCase();
+  if (!isVoteChoice(choice)) {
+    console.error(`Invalid user choice: ${rawUserChoice}. Must be A, B, C, D, or E.`);
+    process.exit(1);
+  }
+  return choice;
+}
+
+function parseCliProofMode(useRealZkVM: boolean, mode: string | undefined): 'dev' | 'prod' {
+  if (!useRealZkVM) {
+    if (mode) console.warn('[CLI] Ignoring --zkvm-mode because --real-zkvm was not provided.');
+    return 'dev';
+  }
+  const rawMode = mode ? String(mode).toLowerCase() : undefined;
+  if (rawMode === 'prod' || rawMode === 'production') return 'prod';
+  if (rawMode === 'dev' || rawMode === 'development' || rawMode === undefined) return 'dev';
+  console.error(`Invalid --zkvm-mode value: ${mode}. Use 'dev' or 'prod'.`);
+  process.exit(1);
+}
+
+function shouldSkipCliBuild(flag: boolean | undefined, positionals: readonly string[]): boolean {
+  const skipBuildFromPositionals = Array.isArray(positionals) ? positionals.includes('--skip-build') : false;
+  return Boolean(
+    flag ||
+    skipBuildFromPositionals ||
+    process.env['STARK_BALLOT_CLI_SKIP_BUILD'] === 'true' ||
+    process.env['CLI_SKIP_BUILD'] === 'true',
+  );
+}
+
 function parseConfig(): CLITestConfig {
   const rawArgs = process.argv.slice(2);
   const normalizedArgs = rawArgs.filter((arg) => arg !== '--');
@@ -1326,39 +1568,9 @@ function parseConfig(): CLITestConfig {
     process.exit(0);
   }
 
-  // Validate user choice (required)
-  const rawUserChoice = values['user-choice'];
-  if (!rawUserChoice) {
-    console.error('Error: --user-choice option is required.');
-    console.error('Usage: pnpm test:cli -- --user-choice <A|B|C|D|E>');
-    console.error('Example: pnpm test:cli:mock -- --user-choice A');
-    process.exit(1);
-  }
-
-  const choice = rawUserChoice.toUpperCase();
-  if (!isVoteChoice(choice)) {
-    console.error(`Invalid user choice: ${values['user-choice']}. Must be A, B, C, D, or E.`);
-    process.exit(1);
-  }
-  const userChoice = choice;
-
-  const skipBuildFromPositionals = Array.isArray(positionals) ? positionals.includes('--skip-build') : false;
-
+  const userChoice = parseCliUserChoice(values['user-choice']);
   const useRealZkVM = values['real-zkvm'] || false;
-  let realMode: 'dev' | 'prod' = 'dev';
-  if (useRealZkVM) {
-    const rawMode = values['zkvm-mode'] ? String(values['zkvm-mode']).toLowerCase() : undefined;
-    if (rawMode === 'prod' || rawMode === 'production') {
-      realMode = 'prod';
-    } else if (rawMode === 'dev' || rawMode === 'development' || rawMode === undefined) {
-      realMode = 'dev';
-    } else {
-      console.error(`Invalid --zkvm-mode value: ${values['zkvm-mode']}. Use 'dev' or 'prod'.`);
-      process.exit(1);
-    }
-  } else if (values['zkvm-mode']) {
-    console.warn('[CLI] Ignoring --zkvm-mode because --real-zkvm was not provided.');
-  }
+  const realMode = parseCliProofMode(useRealZkVM, values['zkvm-mode']);
 
   return {
     scenarios: [],
@@ -1369,12 +1581,7 @@ function parseConfig(): CLITestConfig {
     verbose: values.verbose || false,
     outputFormat: typeof values.output === 'string' ? (values.output as 'json' | 'table' | 'markdown') : 'table',
     userChoice,
-    skipBuild: Boolean(
-      values['skip-build'] ||
-      skipBuildFromPositionals ||
-      process.env['STARK_BALLOT_CLI_SKIP_BUILD'] === 'true' ||
-      process.env['CLI_SKIP_BUILD'] === 'true',
-    ),
+    skipBuild: shouldSkipCliBuild(values['skip-build'], positionals),
   };
 }
 

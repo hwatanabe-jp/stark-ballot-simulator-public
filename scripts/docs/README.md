@@ -1,15 +1,16 @@
 # Documentation Scripts
 
-This directory contains documentation-related helper scripts and supporting notes. It is not only a
-prose-docs folder: several files here are executable helpers for the public mdBook, generated assets, and
-license metadata.
+This directory contains executable helpers for the public mdBook, generated assets, and license
+metadata, together with supporting documentation and historical verification notes.
 
 ## Active Helpers
 
 ### audit-bundle.sh
 
 Runs the public-book local audit with the shared ZIP, artifact, journal and
-verifier-report parsers. Have `node`, `pnpm`, and `jq` on `PATH`, install the
+verifier-report parsers. The shell entrypoint snapshots the archive and starts
+one TypeScript orchestration process; the Rust verifier remains a separate
+process. Have `node` and `pnpm` on `PATH`, install the
 repository dependencies, and run these commands from the repository root:
 
 ```bash
@@ -21,7 +22,9 @@ The build command enables `--features production` and produces the required
 release executable at `verifier-service/target/release/verifier-service`.
 The audit accepts `BUNDLE_ZIP [default|x86_64]`; the optional second argument
 selects the expected guest Image ID variant from the repository mapping and
-defaults to `default`. It does not select the auditor's CPU. Each invocation
+defaults to `default`. It does not select the auditor's CPU. The selected
+variant must be confirmed; unavailable or unconfirmed variants fail without
+falling back to another variant. Each invocation
 snapshots its input into a new temporary directory, stops on the first failed check, and retains
 that directory for inspection. A passing bundle audit is not the browser's
 complete verification verdict. The explanation lives in
@@ -86,6 +89,8 @@ pnpm licenses:check
 ### regenerate-license-metadata.sh
 
 Regenerates sanitized third-party license metadata under `docs/licenses/`.
+It collects production and all-dependency pnpm licenses recursively across
+the workspace, plus Cargo metadata from `zkvm` and `verifier-service`.
 String package descriptions have the selected emoji code points removed, then
 leading ASCII spaces stripped; this cleanup preserves package identities and
 license fields. The helper formats JSON with the shared Oxfmt configuration

@@ -2,18 +2,23 @@ data "aws_iam_policy_document" "app_apply_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
   source_policy_documents = [
-    data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json,
+    # Native signature verification belongs to Plan. Apply consumes its exact
+    # evidence and only needs ordinary image reads, not Signer verification.
+    jsonencode({
+      Version = "2012-10-17"
+      Statement = [
+        for statement in jsondecode(data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json).Statement : statement
+        if try(statement.Sid, "") != "VerifyProverSignature"
+      ]
+    }),
   ]
 
   statement {
-    effect = "Allow"
-
-    actions = ["s3:GetObjectVersion"]
-    resources = [
-      local.saved_plan_approval_consumers.app_verifier_preflight.object_arn,
-      local.saved_plan_approval_consumers.app_terraform.object_arn,
-    ]
+    effect    = "Allow"
+    actions   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+    resources = [local.foundation_prover_ecr_repository_arn]
   }
+
 
   statement {
     effect = "Allow"
@@ -26,11 +31,6 @@ data "aws_iam_policy_document" "app_apply_deploy_permissions_boundary" {
 resource "aws_iam_policy" "app_apply_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
-  ]
 
   name   = local.app_apply_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.app_apply_deploy_permissions_boundary[0].json

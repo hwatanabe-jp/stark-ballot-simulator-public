@@ -1,6 +1,6 @@
 # バンドル構造
 
-`bundle.zip` を開くと、集計結果だけでなく、何を集計したかを照合するための JSON が並びます。中心になるのは、入力側の記録、計算の出力、それを裏付けるレシートです。
+`bundle.zip` は、集計結果と入力を照合するための JSON ファイルを含みます。入力の記録、計算の出力、計算を証明するレシートを収録します。
 
 ```mermaid
 flowchart TB
@@ -26,13 +26,13 @@ flowchart TB
 | `sth.json`               | 保存する場合の STH スナップショット                                  | 任意     | 含めない   |
 | `consistency-proof.json` | 保存する場合の RFC 6962 整合性証明                                   | 任意     | 含めない   |
 
-同期 ZIP は必須 6 ファイルと任意 2 ファイル、非同期 ZIP は必須 5 ファイルだけを認めます。任意の二つは、現在の通常フローでは生成されません。構成を決める正本は `public-bundle-manifest.json` です。許可外ファイルや危険なパスを拒否する規則と、秘密入力を収めない理由は [公開境界](public-boundary.md)に定めています。
+同期 ZIP は必須 6 ファイルと任意 2 ファイル、非同期 ZIP は必須 5 ファイルだけを認めます。任意の二つは、現在の通常フローでは生成されません。構成は `public-bundle-manifest.json` に定義しています。許可外ファイルや危険なパスを拒否する規則と、秘密入力を収めない理由は [公開境界](public-boundary.md)に定めています。
 
-`receipt.json` の存在や、その `image_id` の自己申告だけでは、計算の正しさは確かめられません。また、開発用のレシートも同じファイル名を使えるため、ファイル名から本番用 STARK 証明だとは判断しません。
+レシートは、期待する Image ID を指定して暗号検証します。`receipt.json` というファイル名は開発用レシートにも使われるため、本番用 STARK 証明であることはファイル名や `image_id` の自己申告からは判断できません。
 
 ## 公開入力の構造
 
-`public-input.json` は、入力コミットメントの再計算と、選挙設定・締切状態との照合に使います。秘密入力を丸ごと写したファイルではありません。
+`public-input.json` は、入力コミットメントの再計算と、選挙設定・締切状態との照合に使います。秘密入力全体のコピーではありません。
 
 | フィールド           | 内容                                            |
 | -------------------- | ----------------------------------------------- |
@@ -48,7 +48,7 @@ flowchart TB
 | `methodVersion`      | ゲストのメソッドバージョン                      |
 | `votes`              | 各票のインデックス、コミットメント、Merkle パス |
 
-`inputCommitment` はこの JSON 全体のハッシュではありません。[入力コミットメント](../protocol/input-commitment.md)で定めるフィールドとバイト表現から再計算します。それ以外の項目は、対応するマニフェストや締切ステートメント、ジャーナルと別途照合します。
+`inputCommitment` は、[入力コミットメント](../protocol/input-commitment.md)で定めるフィールドとバイト表現から再計算します。JSON の全体をハッシュする方式とは異なり、それ以外の項目は、対応するマニフェストや締切ステートメント、ジャーナルと別途照合します。
 
 `journal.json` は、ゲスト出力を UUID・hex・camelCase のフィールドへ変換した公開表現です。レシート内部のジャーナルは RISC Zero のシリアライズ形式を使うため、JSON の文字列をそのままハッシュして照合することはできません。[ゲストプログラム](../zkvm/guest-program.md#ジャーナル出力)に論理フィールドと表現の関係を示しています。
 
@@ -66,7 +66,7 @@ AWS の非同期生成では、Fargate コンテナが入力を S3 から取得�
 
 ### 同期モード（ローカルファイルシステム）
 
-保存ディレクトリには ZIP の外に保護対象のファイルもあります。次の配置は、すべてを一緒に配布してよいという意味ではありません。
+次は内部の保存ディレクトリです。配布用の ZIP と、ZIP の外に置く保護対象のファイルを同じ場所に保存します。配布するファイルは冒頭のメンバー表に従います。
 
 ```text
 {VERIFIER_WORK_DIR}/{sessionId}/{finalizationId}/
@@ -111,6 +111,6 @@ s3://{BUCKET}/sessions/{sessionId}/{finalizationId}/
 
 同期 ZIP は、エントリ時刻をゼロに固定し、ファイル名順で追加します。同じ内容から作ったアーカイブの再現性を保つためです。非同期のシェルは `zip -r` を使い、同じ時刻固定の実装ではありません。内容の検証と、ZIP ファイル全体のバイト一致は分けて確認します。
 
-実際に取得した ZIP を安全に展開し、レシートと各 JSON を照合する操作は、[ZIP のローカル検証](../reproducibility/audit-bundle.md)に続きます。
+取得した ZIP を安全に展開し、レシートと各 JSON を照合する手順は、[ZIP のローカル検証](../reproducibility/audit-bundle.md)に示しています。
 
 <!-- source: packages/verification/src/verification/public-bundle-manifest.json, packages/verification/src/verification/public-bundle-manifest.ts, packages/verification/src/verification/verification-bundle.ts, packages/node-adapters/src/verification-bundle.ts, zkvm/host/src/artifacts.rs, zkvm/host/src/bin/prover-artifacts.rs, packages/aws-adapters/src/finalize/async-prover-artifacts.ts, infra/docker/entrypoint.sh, infra/docker/prover-failure-marker-contract.json, infra/lambdas/finalization-writer/handler.ts, packages/aws-adapters/src/aws/bundle-restore.ts, infra/lambdas/verification-worker/handler.ts, apps/api/src/server/api/routes/definitions.ts, apps/api/src/server/api/handlers/verificationBundles.ts -->

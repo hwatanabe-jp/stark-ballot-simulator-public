@@ -1,7 +1,6 @@
 'use client';
 
-export { useLanguage, useLanguageOptional, LanguageProvider } from './useLanguage';
-export { useHasActiveSession } from './useActiveSession';
+export { useLanguage, LanguageProvider } from './useLanguage';
+
 export { useTranslation } from './useTranslation';
-export { useMediaQuery } from './useMediaQuery';
 export type { Language } from './useLanguage';

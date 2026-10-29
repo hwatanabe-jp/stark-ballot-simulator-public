@@ -18,7 +18,7 @@ export interface VerificationStep {
   error?: string;
 }
 
-export const VERIFICATION_STEP_IDS = [
+const VERIFICATION_STEP_IDS = [
   'cast_as_intended',
   'recorded_as_cast',
   'counted_as_recorded',

@@ -1,0 +1,15 @@
+{
+  "comparatorType": "public-contract-drift-classification",
+  "baselineContractHash": "c1f1cfab6b599ea7cb8d5971db87f11c15615c6174c2de287c66da88aaebcc87",
+  "baselineSourceSha": "fdf849b15394",
+  "currentContractHash": "aec8a14c65deed6b4e4af4f30c7f0dea3d6b247f6c0232c78d3ea73758779c13",
+  "reason": "Intentional AWS transport changes: five body models reject before Hono authentication, with fixed INVALID_REQUEST and public body-only CORS; other Gateway errors preserve native status and omit CORS; extendedRequestId replaces client-overridable requestId. REST stage is internal; public URLs, session optional body, capability semantics and artifact bytes remain. Responses now use the Lambda native streaming protocol while retaining the Hono buffered adapter, exact artifact bytes and multi-value headers. Removing binary media types keeps JSON requests eligible for Gateway body validation; first-Accept ZIP delivery no longer depends on a wildcard. Hash binds generated models/routes, Terraform error/deployment configuration, the Lambda transport and AWS paired probes. This is repository review, not observed AWS acceptance. The Hono baseline remains unchanged. Dependency refresh moves the buffered Lambda adapter import from deprecated hono/aws-lambda to @hono/aws-lambda 1.0.1; the API baseline comparison and gateway/handler regression tests retain the existing transport contract. REST event admission is decomposed into request-line, context, body and value-map checks with unchanged request-ID precedence and acceptance behavior; 740 differential cases and the Lambda transport regression tests verify the refactor. Gateway models, Terraform transport configuration, probe inputs and the Hono baseline are unchanged.",
+  "allowedDriftPaths": [
+    "gateway.bodyAdmission",
+    "gateway.errorOrder",
+    "gateway.errorEnvelope",
+    "gateway.correlation",
+    "gateway.cors",
+    "gateway.routing"
+  ]
+}

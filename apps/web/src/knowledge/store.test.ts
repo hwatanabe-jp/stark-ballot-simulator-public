@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { describe, expect, it, beforeEach, vi, afterEach } from 'vitest';
 import {
   saveKnowledgeData,
@@ -28,8 +29,7 @@ const LOG_ID = `0x${'b'.repeat(64)}`;
 
 function sessionIdentity(sessionId: string, capabilityToken: string): ServerIssuedSessionIdentity {
   return {
-    sessionId,
-    capabilityToken,
+    ...admitSessionIdentity({ sessionId, capabilityToken }),
     electionId: ELECTION_ID,
     electionConfigHash: ELECTION_CONFIG_HASH,
     logId: LOG_ID,
@@ -687,19 +687,19 @@ describe('Knowledge Store', () => {
         journal,
       });
 
-      const data = getKnowledgeData();
-      expect(data?.bulletinRoot).toBe(journal.bulletinRoot);
-      expect(data?.treeSize).toBe(journal.treeSize);
-      expect(data?.totalExpected).toBe(journal.totalExpected);
-      expect(data?.missingSlots).toBe(1);
-      expect(data?.invalidPresentedSlots).toBe(0);
-      expect(data?.validVotes).toBe(journal.validVotes);
-      expect(data?.rejectedRecords).toBe(journal.rejectedRecords);
-      expect(data?.sthDigest).toBe(journal.sthDigest);
-      expect(data?.seenBitmapRoot).toBe(journal.seenBitmapRoot);
-      expect(data?.includedBitmapRoot).toBe(journal.includedBitmapRoot);
-      expect(data?.inputCommitment).toBe(journal.inputCommitment);
-      expect(data?.imageId).toBe('0x' + '9'.repeat(64));
+      const data = strictDefined(getKnowledgeData());
+      expect(data.bulletinRoot).toBe(journal.bulletinRoot);
+      expect(data.treeSize).toBe(journal.treeSize);
+      expect(data.totalExpected).toBe(journal.totalExpected);
+      expect(data.missingSlots).toBe(1);
+      expect(data.invalidPresentedSlots).toBe(0);
+      expect(data.validVotes).toBe(journal.validVotes);
+      expect(data.rejectedRecords).toBe(journal.rejectedRecords);
+      expect(data.sthDigest).toBe(journal.sthDigest);
+      expect(data.seenBitmapRoot).toBe(journal.seenBitmapRoot);
+      expect(data.includedBitmapRoot).toBe(journal.includedBitmapRoot);
+      expect(data.inputCommitment).toBe(journal.inputCommitment);
+      expect(data.imageId).toBe('0x' + '9'.repeat(64));
     });
   });
 

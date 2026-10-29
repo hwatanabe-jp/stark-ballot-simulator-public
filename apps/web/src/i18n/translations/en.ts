@@ -247,8 +247,8 @@ export const en = {
     resetConfirm: 'Start over from the beginning? All current progress will be lost.',
   },
   header: {
-    languageSwitchToEnglish: 'Switch to English',
-    languageSwitchToJapanese: 'Switch to Japanese',
+    languageSwitchToEnglish: 'JA: Switch to English',
+    languageSwitchToJapanese: 'EN: Switch to Japanese',
   },
   footer: {
     terms: 'Terms of Use',

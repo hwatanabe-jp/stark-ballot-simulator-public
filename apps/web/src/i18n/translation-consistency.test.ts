@@ -78,33 +78,28 @@ function isLikelyTranslationKey(value: string): boolean {
   return TRANSLATION_PREFIXES.has(root);
 }
 
+function isTranslationSourceFile(fullPath: string): boolean {
+  if (!fullPath.endsWith('.ts') && !fullPath.endsWith('.tsx')) return false;
+  if (fullPath.endsWith('.d.ts')) return false;
+  return !fullPath.includes('.test.') && !fullPath.includes('.spec.') && !fullPath.endsWith('.type-test.ts');
+}
+
+function shouldVisitSourceDirectory(fullPath: string, name: string): boolean {
+  return (
+    name !== 'test-support' && !fullPath.includes(`${path.sep}src${path.sep}lib${path.sep}i18n${path.sep}translations`)
+  );
+}
+
 function collectSourceFiles(rootDir: string): string[] {
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === 'test-support') {
-        continue;
-      }
-      if (fullPath.includes(`${path.sep}src${path.sep}lib${path.sep}i18n${path.sep}translations`)) {
-        continue;
-      }
-      files.push(...collectSourceFiles(fullPath));
+      if (shouldVisitSourceDirectory(fullPath, entry.name)) files.push(...collectSourceFiles(fullPath));
       continue;
     }
-    if (!entry.isFile()) {
-      continue;
-    }
-    if (!fullPath.endsWith('.ts') && !fullPath.endsWith('.tsx')) {
-      continue;
-    }
-    if (fullPath.endsWith('.d.ts')) {
-      continue;
-    }
-    if (fullPath.includes('.test.') || fullPath.includes('.spec.') || fullPath.endsWith('.type-test.ts')) {
-      continue;
-    }
+    if (!entry.isFile() || !isTranslationSourceFile(fullPath)) continue;
     files.push(fullPath);
   }
   return files;
@@ -117,15 +112,17 @@ function literalKey(node: Node | null | undefined): string | undefined {
   return undefined;
 }
 
+function expressionIdentifier(node: Node): string | undefined {
+  if (node.type === 'Identifier') return node.name;
+  if (node.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier')
+    return node.property.name;
+  return undefined;
+}
+
 function isLanguageArgument(node: Node): boolean {
   const literal = literalKey(node);
   if (literal !== undefined) return LANGUAGE_CODES.has(literal);
-  const name =
-    node.type === 'Identifier'
-      ? node.name
-      : node.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier'
-        ? node.property.name
-        : undefined;
+  const name = expressionIdentifier(node);
   return name === 'language' || name === 'lang';
 }
 function extractLiteralKeysFromExpression(node: Node): string[] {
@@ -156,13 +153,7 @@ function collectUsedKeys(): Set<string> {
     }
     new Visitor({
       CallExpression(node) {
-        const callee = node.callee;
-        const name =
-          callee.type === 'Identifier'
-            ? callee.name
-            : callee.type === 'MemberExpression' && !callee.computed && callee.property.type === 'Identifier'
-              ? callee.property.name
-              : undefined;
+        const name = expressionIdentifier(node.callee);
         if (!name || !TRANSLATION_FN_NAMES.has(name) || node.arguments.length === 0) return;
         const keyArgIndex = node.arguments.length > 1 && isLanguageArgument(strictDefined(node.arguments[0])) ? 1 : 0;
         const keyArg = node.arguments[keyArgIndex];

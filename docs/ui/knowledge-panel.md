@@ -1,7 +1,7 @@
 # 知識パネル仕様（CURRENT / 実装準拠）
 
-> 最終更新: 2026-09-13
-> 主な実装 authority: `apps/web/src/knowledge/{types,normalizer,store,visibility}.ts`、
+> 最終更新: 2026-10-29
+> 主な実装 authority: `apps/web/src/knowledge/{types,normalizer,admission,store,visibility}.ts`、
 > `apps/web/src/session/{client,storage,storageAdmission}.ts`、
 > `apps/web/src/finalize/client-finalization-result.ts`、
 > `apps/web/src/routes/{HomePage,vote,aggregate,result,verify}`、
@@ -28,7 +28,7 @@
 
 - 保存キーは `localStorage` の `stark-ballot-knowledge`。
 - API/route projection からの取り込みは `mergeKnowledgeFromApi(apiData, options?)`、型付きの knowledge patch の追加は `saveKnowledgeData(data, options?)` を使う。
-- `mergeKnowledgeFromApi()` は入力を正規化し、`omitKeys` を適用した後、store 内部の `saveKnowledgeCandidate()` で admission する。公開 `saveKnowledgeData()` も同じ内部 admission を通す。
+- `mergeKnowledgeFromApi()` は入力を正規化し、`omitKeys` を適用した後、store 内部の `saveKnowledgeCandidate()` で admission する。公開 `saveKnowledgeData()` も同じ経路を通す。current shape の検証は `knowledge/admission.ts` の `isCurrentKnowledgeData()` が所有し、store は保存済み snapshot の read と write candidate 全体の両方に同じ validator を使う。
 - `undefined` の patch 値は既存値を削除せず無視する。値が実際に変化したキーだけを新規/更新項目として通知し、通知 phase は最初の変更キーから導出する。
 
 ### 2.2 セッション所有権と複数タブ
@@ -37,14 +37,14 @@
 - 既存 snapshot と異なる新しい `sessionId` を受け入れる場合、以前の knowledge を引き継がず、新しい `sessionId` を基点に作り直す。
 - `expectedSessionId` が active session と一致しない場合や、別タブが session を置き換えて現在の tab lock が stale になった場合、read/write は knowledge を返さず、置換後の共有 snapshot を変更しない。
 - 表示用の `useKnowledgeItems()` は `useSyncExternalStore` で同一タブの knowledge 更新と、session / knowledge の `storage` event を購読する。snapshot の取得時は通知内容をそのまま表示せず、必ず既存の `getKnowledgeItems()` admission を通して読み直す。同じ内容の snapshot は参照を共有する。`clearKnowledge()` と、対象 snapshot を削除した `clearKnowledgeForSession()`、bot 項目を削除した `clearBotKnowledge()` は削除後に購読者へ通知し、描画済みの値も消す。
-- `KnowledgeItem` は key に対応する値の型を保持する判別 union で、公開する項目配列と内部の値は readonly とする。admission 済みの `KnowledgeData` から項目への投影は `knowledgeItemsFromData()` に集約し、Storybook の型付き fixture でも同じ関数を使う。renderer は項目の key で値を絞り込み、表示箇所ごとの型 cast を行わない。readonly は TypeScript の契約であり、runtime の入力検証や object freeze の代わりではない。
+- `KnowledgeItem` は key に対応する値の型を保持する判別 union で、公開する項目配列と内部の値は readonly とする。admission 済みの `KnowledgeData` から項目への投影は `knowledgeItemsFromData()` に集約し、Storybook の型付き fixture でも同じ関数を使う。renderer は項目の key で値を絞り込み、表示箇所ごとの型 cast を行わない。投影は raw API / storage の admission を代替せず、readonly も TypeScript の契約であり、runtime の入力検証や object freeze の代わりではない。
 - active session があるのに snapshot に `sessionId` がない場合は、その snapshot を削除する。snapshot の `sessionId` が active session と異なる場合は表示しないが、別セッション所有の共有 snapshot は削除しない。
 - 保存済み session 自体が current session shape に適合しない場合、session admission が session、knowledge、tab lock をまとめて破棄する。
 - read は session admission を先に完了してから knowledge snapshot を読む。不正・期限切れ session を破棄した最初の read から旧値を返さない。session admission に伴う削除の `storage` 通知は microtask へ遅延させ、読み取り中の購読者への再入を避ける。
 
 ### 2.3 Read/write の fail-closed validation
 
-- storage schema version marker や read-time migration は使わない。保存済み snapshot は、現在の `KnowledgeData` のキーと値 shape にそのまま適合する場合だけ読み込む。
+- 保存済み snapshot は、現在の `KnowledgeData` のキーと値 shape にそのまま適合する場合だけ読み込む。storage schema version marker や read-time migration は使わない。
 - malformed JSON、未知キー、retired key、`null`、または不正な current key value を含む、現在の tab が所有する snapshot は、部分修復せず snapshot 全体を拒否して削除する。
 - `missingIndices`、`invalidIndices`、`countedIndices`、`excludedCount`、`s3BundleUrl`、`s3BundleExpiresAt`、`proofMode` はすべて current key ではない。保存済みデータから個別削除して再利用することはない。
 - write は既存値と patch を合わせた candidate 全体を検証してから永続化する。candidate が不正なら、その値は永続化せず、更新項目の timestamp 登録や listener 通知も行わない。session 所有権の切替や不正な保存済み snapshot の破棄は、candidate の検証前に行う。
@@ -71,14 +71,14 @@
 
 ### 3.1 二段階の境界
 
-API resource と knowledge store の shape は同一ではない。取り込みは次の順序で行う。
+API resource をブラウザ用 payload に投影し、knowledge store の shape に正規化してから保存する。取り込みは次の順序で行う。
 
 1. route-specific projection が API resource を検証し、ブラウザ用の current payload に投影する。
    - succeeded finalization resource は `projectFinalizationResourceToClientSnapshot()` / `resolveCanonicalFinalizationPayload()` により `ClientFinalizationSnapshot` になる。
    - available verification resource は `projectVerificationResource()` により flat な `VerificationPayload` になる。ここで `verification.steps`、`verifierResult.report`、`journal.representation = "included"` の `journal.value` を、それぞれ `verificationSteps`、`verificationReport`、raw `journal` に投影する。
 2. `mergeKnowledgeFromApi()` 内の `normalizeKnowledgeData()` が projected payload の正規フィールドを knowledge key に写す。返値の `KnowledgeCandidate` は値がまだ `unknown` の候補であり、型付きの保存 API へ直接渡す値ではない。`omitKeys` 適用後、store 内部で candidate 全体を admission してから保存・通知する。
 
-`normalizeKnowledgeData()` 自体は、nested API resource envelope の parser ではない。raw finalization/verification resource を projection せず直接渡すことは current route contract ではない。
+`normalizeKnowledgeData()` が受け取るのは、route-specific projection を終えた payload である。raw finalization/verification resource を直接渡して nested API resource envelope の解析に使うことはできない。
 
 ### 3.2 正規化するフィールド
 
@@ -200,13 +200,12 @@ public group は常に最後に置く。表示可能な値がない group は見
 - 行直下の `KnowledgeEvidence` は、現在の route で許可された key と check input の積集合に対して、admission 済み snapshot に実在する値だけを表示する。新しい説明文や receipt の内部 field は追加しない。
 - `selectKnowledgeItems()` は hidden key と `tally.tamperedCount` を常に除外し、同じ選択規則をパネルと行直下で使用する。検証開始前の receipt / inclusion proof の保存禁止は既存 route boundary の責務として維持する。
 - Storybookの明示的なfixtureは実ストアを購読せず、fixtureから実ストアへ切り替える最初の描画から現在値を読む。
-- 表示項目の `KnowledgeItem` は `KnowledgeData` から導出し、key と value の対応を型で維持する。snapshot の配列・項目・構造化値は読み取り専用で、`knowledgeItemsFromData()` が admission 済みデータと型付き fixture の表示投影を共用する。投影自体は raw API / storage の admission を代替しない。
 - Store の `isNew` / timestamp は維持するが、UI の新規 dot、通知アニメーション、透明・blur・pulse・開閉の ViewTransition は使用しない。値や展開状態が変わっても文字をいったん透明にしない。
 - パネル全体には `aria-live` を付けない。ボタンの展開状態を `aria-expanded` と `aria-controls` で示し、操作中のフォーカスを維持する。
 
 ### 5.4 値フォーマット
 
-- label は `knowledge.items.*` の i18n を使い、未定義なら raw key を表示する。
+- label は `knowledge.items.*` の i18n を使い、未定義なら `knowledge.items.<key>` の translation key を表示する。
 - hash は `0x` を付けた全体を等幅で表示し、折り返す。ブラウザ標準のテキスト選択でコピーできる。コピー専用の擬似ボタン、clipboard API、コピー結果の通知は使用しない。
 - number は `toLocaleString()`、個別書式を持たない object は field 数で要約する。
 - `proofBundleStatus`: 未ダウンロード / ダウンロード済。
@@ -239,22 +238,27 @@ public group は常に最後に置く。表示可能な値がない group は見
 
 1. `/verify` は current session に canonical `finalizeResult` があることを要求し、その `finalizationId` で finalization-scoped verification resource を取得する。
 2. response admission と `projectVerificationResource()` が成功した available resource だけを `VerificationPayload` として扱う。knowledge merge では引き続き `user.voteReceipt` / `user.merklePath` を除外する。
-3. server-validated data がそろうと verification sequence を自動開始する。ただし STARK status が `not_run` の場合は continuation authority も必要とし、direct access だけでは開始しない。STARK status の解決後、sequence 開始境界で canonical `user.voteReceipt` / `user.merklePath` を同じ expected session に保存し、初めてパネル表示を許可する。
-4. bundle/report candidate は、safe な current `sessionId` と payload 自身の `finalizationId` から authenticated endpoint を組み立てる。nested identity、署名 URL、保存済み S3 URL への fallback はない。
-5. bundle candidate がある場合は未設定の `proofBundleStatus` を `not_downloaded` にする。authenticated bundle download が成功した場合だけ `downloaded` に更新する。URL や expiry は knowledge に保存しない。
+3. server-validated data がそろうと verification sequence を自動開始する。ただし STARK status が `not_run` の場合は continuation authority も必要とし、direct access だけでは開始しない。必要な STARK 検証の開始・polling を待つ間は、canonical `user.voteReceipt` / `user.merklePath` を保存しない。
+4. 待機後に開始時の session identity と中断状態を再確認し、取得済みの最新 payload から canonical `user.voteReceipt` / `user.merklePath` を同じ expected session に保存して、初めてパネル表示を許可する。解決済みの4 stage も一括表示し、表示用 timer による段階的な演出は行わない。unmount、session replacement、または continuation authority の失効で中断した場合、遅れて返った結果から evidence や完了状態を公開しない。
+5. bundle/report candidate は、safe な current `sessionId` と payload 自身の `finalizationId` から authenticated endpoint を組み立てる。nested identity、署名 URL、保存済み S3 URL への fallback はない。
+6. bundle candidate がある場合は未設定の `proofBundleStatus` を `not_downloaded` にする。`useVerificationArtifacts()` は authenticated bundle download と、report candidate がある場合は protected report の取得も成功した後にだけ `downloaded` に更新する。bundle 取得後に report 取得が失敗した場合も、完了状態には更新しない。URL や expiry は knowledge に保存しない。
 
 ---
 
 ## 7. 検証項目と既存値の対応
 
-既定の check input は `packages/verification/src/verification/verification-checks.ts` の check definition から `getVerificationStepInputs()` が導出する。projected API step に non-empty `inputs` があればそれを優先する。
+check input の authority は `packages/verification/src/verification/verification-checks.ts` の check definition である。`getVerificationStepInputs()` は stage 内の全 check input を集約し、API resource admission は stage inventory と inputs がこの canonical metadata に一致することを要求する。`projectVerificationResource()` は admission 済みの step inputs をコピーする。
+
+stage ごとに集約した input のうち、knowledge key として定義されているものは次のとおり。
 
 - `cast_as_intended`: `electionId`, `user.choice`, `user.random`, `user.commitment`, `user.voteId`
 - `recorded_as_cast`: `user.commitment`, `user.voteReceipt`, `user.merklePath`, `treeSize`, `bulletinRoot`, `sthDigest`
 - `counted_as_recorded`: `proofBundleStatus`, `bulletinRoot`, `treeSize`, `tally.counts`, `tally.totalVotes`, `missingSlots`, `invalidPresentedSlots`, `totalExpected`, `electionId`, `electionConfigHash`, `logId`, `sthDigest`, `includedBitmapRoot`, `user.voteReceipt`, `inputCommitment`
 - `stark_verification`: `imageId`, `proofBundleStatus`
 
-`counted_as_recorded` の check input には `electionManifest`、`closeStatement`、`timestamp` も含まれるが、knowledge panel key ではないため表示されない。対応 key が定義されていても、現在の route filter 外や snapshot に存在しない値は表示しない。
+`counted_as_recorded` の check input には `electionManifest`、`closeStatement`、`timestamp` も含まれるが、knowledge panel key ではないため表示されない。
+
+行直下の evidence は stage 全体の inputs ではなく、選択した check の `inputs`（check がない場合は definition の `inputs`）から選ぶ。現在の route filter と snapshot に実在する値との積集合だけを表示し、verification sequence の完了後、その check に表示可能な値がある場合だけ選択できる。
 
 ---
 

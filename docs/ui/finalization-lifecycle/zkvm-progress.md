@@ -22,13 +22,13 @@ zkVM（集計）の進捗表示に関する仕様。**進捗は実測値では�
 
 - lifecycle の `status: "pending"` を待機中として扱う。`running` resource では
   `startedAtMs` が必須。
-- 進捗率は **表示しない**（または 0% 固定）。
+- 進捗率は **0% 固定**で表示する。
 - 待ち行列情報（`runtimeDiagnostics.queue`）がある場合のみ表示する。
 
 ### 2. running（実行中）
 
-- `startedAtMs` が入った時点で **1% から開始**。
-- `elapsed = now - startedAtMs` を用いて補間し、0-99% を算出。
+- `elapsed = now - startedAtMs` を用いて補間した値を切り捨て、**1-99%** を表示する。
+  実行開始直後は最低 1% とし、途中から表示する場合は経過時間に応じた値から始める。
 - 進捗曲線は共有 `interpolateProgress()` の実装に従う：
   - 0-70%: 線形
   - 70-90%: 線形減速（速度が徐々に落ちる）
@@ -36,10 +36,17 @@ zkVM（集計）の進捗表示に関する仕様。**進捗は実測値では�
 
 ### 3. succeeded（完了）
 
-- 完了イベントで **100% に到達**。
-- UI は完了状態を受け取った時点の表示進捗から 100% までを短いアニメーションで補完する。
+- `pending` / `running` から `succeeded` に遷移した場合は、その時点の表示進捗から
+  100% までを短いアニメーションで補完する。
+- 初回表示時にすでに `succeeded` なら、最初から 100% を表示する。
 
 ## API 取り扱い
+
+`GET /api/sessions/:sessionId/finalizations/current` は保存済みの lifecycle state を返す。
+閲覧によって実行基盤の状態を照合したり、terminal state へ遷移させたりはしない。
+実行基盤との照合は閲覧とは独立した
+[定期 writer](../../architecture/context-map.md#finalization-reconciliation) が担う。
+進捗の診断値は presentation 用であり、finalization の完了や検証成功の根拠にはしない。
 
 - `/api/sessions/:sessionId/finalizations/current` の `runtimeDiagnostics.progress` は **任意**。
 - 返す場合は `source: "derived"` とし、**UI と同一の補間関数**を使う。

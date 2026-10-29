@@ -61,6 +61,13 @@ resource "aws_iam_role" "prover_task" {
 
 data "aws_iam_policy_document" "prover_task" {
   statement {
+    sid       = "AdmitProverStart"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = ["arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.target_application_lambda_names.finalization_writer}"]
+  }
+
+  statement {
     sid    = "UseProofArtifactBucket"
     effect = "Allow"
 
@@ -125,132 +132,4 @@ resource "aws_cloudwatch_log_group" "prover_container_insights_performance" {
   name              = each.value
   retention_in_days = local.storage_retention.container_insights_performance_days
   tags              = local.common_tags
-}
-
-resource "aws_ecs_cluster" "prover" {
-  name = "${local.name_prefix}-prover"
-
-  depends_on = [aws_cloudwatch_log_group.prover_container_insights_performance]
-
-  setting {
-    name  = "containerInsights"
-    value = "enabled"
-  }
-
-  tags = local.common_tags
-}
-
-resource "aws_ecs_task_definition" "prover" {
-  family                   = "${local.name_prefix}-prover"
-  cpu                      = tostring(var.prover_cpu)
-  memory                   = tostring(var.prover_memory)
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  execution_role_arn       = aws_iam_role.prover_task_execution.arn
-  task_role_arn            = aws_iam_role.prover_task.arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  volume {
-    name = "prover-tmp"
-  }
-
-  volume {
-    name = "prover-output"
-  }
-
-  container_definitions = jsonencode([
-    {
-      name                   = "prover"
-      image                  = var.prover_image_uri
-      essential              = true
-      user                   = "10001:10001"
-      readonlyRootFilesystem = true
-      stopTimeout            = 120
-      linuxParameters = {
-        initProcessEnabled = true
-        capabilities = {
-          drop = ["ALL"]
-        }
-      }
-      mountPoints = [
-        {
-          sourceVolume  = "prover-tmp"
-          containerPath = "/tmp"
-          readOnly      = false
-        },
-        {
-          sourceVolume  = "prover-output"
-          containerPath = "/var/task/output"
-          readOnly      = false
-        },
-      ]
-      environment = [
-        {
-          name  = "ENV_NAME"
-          value = var.deployment_environment
-        },
-        {
-          name  = "RUNTIME_DEPLOYMENT_ENV"
-          value = var.deployment_environment
-        },
-        {
-          name  = "DEPLOYMENT_ID"
-          value = var.deployment_id
-        },
-        {
-          name  = "APP_SOURCE_SHA"
-          value = var.app_source_sha
-        },
-        {
-          name  = "DEPLOY_MODE"
-          value = var.deploy_mode
-        },
-        {
-          name  = "RUNTIME_PROFILE"
-          value = "target-aws-async"
-        },
-        {
-          name  = "AWS_ACCOUNT_ID"
-          value = var.aws_account_id
-        },
-        {
-          name  = "S3_PROOF_BUCKET"
-          value = aws_s3_bucket.proof_artifacts.bucket
-        },
-        {
-          name  = "S3_PROOF_PREFIX"
-          value = local.proof_artifact_prefix
-        },
-      ]
-      secrets = [
-        {
-          name      = "LOG_IP_HASH_SALT"
-          valueFrom = data.aws_secretsmanager_secret.prover_log_hash_salt.arn
-        },
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.prover.name
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "prover"
-          "mode"                  = "non-blocking"
-          "max-buffer-size"       = "25m"
-        }
-      }
-    }
-  ])
-
-  lifecycle {
-    precondition {
-      condition     = can(regex(local.prover_image_uri_pattern, var.prover_image_uri))
-      error_message = "prover_image_uri must reference the expected target account and region."
-    }
-  }
-
-  tags = local.common_tags
 }

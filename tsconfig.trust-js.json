@@ -6,14 +6,28 @@
     "noEmit": true
   },
   "include": [
-    "packages/validation/src/image-id-mapping.js",
-    "packages/validation/src/image-id-policy.js",
-    "verifier-service/scripts/read-image-id.mjs",
-    "infra/lambdas/image-signature-verifier/index.mjs",
+    "infra/image-signature-verifier/asset-files.mjs",
+    "infra/image-signature-verifier/signing-status.mjs",
     "infra/image-signature-verifier/verifier.mjs",
     "infra/image-signature-verifier/verify-image.mjs",
-    "scripts/build/install-image-signature-verifier-assets.mjs",
+    "infra/lambdas/image-signature-verifier/index.mjs",
+    "packages/validation/src/image-id-mapping.js",
+    "packages/validation/src/image-id-policy.js",
     "scripts/build/build-image-signature-verifier-lambda.mjs",
-    "scripts/build/build-target-lambdas.mjs"
+    "scripts/build/build-target-lambdas.mjs",
+    "scripts/build/install-image-signature-verifier-assets.mjs",
+    "verifier-service/scripts/read-image-id.mjs"
+  ],
+  "files": [
+    "infra/image-signature-verifier/asset-files.mjs",
+    "infra/image-signature-verifier/signing-status.mjs",
+    "infra/image-signature-verifier/verifier.mjs",
+    "infra/image-signature-verifier/verify-image.mjs",
+    "infra/lambdas/image-signature-verifier/index.mjs",
+    "packages/validation/src/image-id-policy.js",
+    "scripts/build/build-image-signature-verifier-lambda.mjs",
+    "scripts/build/build-target-lambdas.mjs",
+    "scripts/build/install-image-signature-verifier-assets.mjs",
+    "verifier-service/scripts/read-image-id.mjs"
   ]
 }

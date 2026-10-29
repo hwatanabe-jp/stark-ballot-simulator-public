@@ -12,7 +12,7 @@ ARG RISC0_TOOLCHAIN_IMAGE
 FROM ${RISC0_TOOLCHAIN_IMAGE} AS build
 
 # RISC Zero toolchain already installed in base image:
-# - Host Rust 1.97.1
+# - Guest Rust r0.1.97.0; host Rust is selected by the copied rust-toolchain.toml
 # - RISC Zero v3.0.6 (cargo-risczero, r0vm, rzup)
 # - Build dependencies (cmake, ninja, clang, etc.)
 
@@ -43,13 +43,13 @@ ENV PATH="/opt/zkvm/bin:/opt/risc0/bin:/usr/local/bin:/usr/bin:/bin" \
     AWS_REGION=ap-northeast-1
 
 RUN dnf update -y \
-    && dnf install -y --setopt=install_weak_deps=0 jq unzip zip ca-certificates python3.11 shadow-utils \
+    && dnf install -y --setopt=install_weak_deps=0 jq unzip zip ca-certificates python3.11 shadow-utils util-linux \
     && dnf clean all \
     && rm -rf /var/cache/dnf /var/cache/yum
 
 # Install AWS CLI v2 using official installer (AL2023 doesn't provide awscli2 via dnf)
 # Version pinned for reproducibility
-ARG AWSCLI_VERSION=2.36.7
+ARG AWSCLI_VERSION=2.37.12
 RUN curl -fSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-${AWSCLI_VERSION}.zip" -o "awscliv2.zip" \
     && unzip -q awscliv2.zip \
     && ./aws/install \
@@ -97,4 +97,6 @@ VOLUME ["/tmp", "/var/task/output"]
 
 USER 10001:10001
 
-ENTRYPOINT ["/opt/zkvm/bin/entrypoint.sh"]
+# Batch has no ECS capabilities.drop setting. Keep non-root privileges from
+# increasing through setuid binaries or file capabilities throughout the process tree.
+ENTRYPOINT ["setpriv", "--no-new-privs", "--inh-caps=-all", "--ambient-caps=-all", "/opt/zkvm/bin/entrypoint.sh"]

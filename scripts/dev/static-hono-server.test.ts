@@ -160,13 +160,13 @@ describe.skipIf(process.platform === 'win32')('static server shutdown', () => {
       const supervisorCode = `
       import { createServer } from 'node:http';
       import { writeFile } from 'node:fs/promises';
-      import { installStaticServerShutdown } from ${JSON.stringify(new URL('./static-hono-server.ts', import.meta.url).href)};
+      import { installStaticServerShutdown } from ${JSON.stringify(new URL('./static-server-shutdown.ts', import.meta.url).href)};
       import { runHostProcess, shutdownHostProcesses } from ${JSON.stringify(new URL('../../packages/node-adapters/src/zkvm/host-process.ts', import.meta.url).href)};
       const server = createServer((request, response) => response.write('in progress'));
       installStaticServerShutdown(server);
       await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
       const result = await runHostProcess(process.execPath, ['-e', ${JSON.stringify(hostCode)}, ${JSON.stringify(pidFile)}], {
-        env: process.env, timeoutMs: 10000, terminationGraceMs: 200, killWaitMs: 200,
+        env: process.env, timeoutMs: 30000, terminationGraceMs: 200, killWaitMs: 1000,
         onStage: () => process.send({ port: server.address().port }),
       });
       const remainingHosts = (await shutdownHostProcesses()).length;
@@ -189,7 +189,16 @@ describe.skipIf(process.platform === 'win32')('static server shutdown', () => {
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
         supervisor.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }));
       });
-      const watchdog = setTimeout(() => supervisor.kill('SIGKILL'), 5_000);
+      // Startup/import work and shutdown each have their own bounded budget.
+      let watchdogExpired = false;
+      let forceKill: ReturnType<typeof setTimeout> | undefined;
+      const expireWatchdog = () => {
+        watchdogExpired = true;
+        // Let the supervisor clean up a host that has not yet written its PID file.
+        supervisor.kill('SIGTERM');
+        forceKill = setTimeout(() => supervisor.kill('SIGKILL'), 2_000);
+      };
+      let watchdog = setTimeout(expireWatchdog, 10_000);
       try {
         const port = await new Promise<number>((resolvePort, reject) => {
           supervisor.once('error', reject);
@@ -208,10 +217,13 @@ describe.skipIf(process.platform === 'win32')('static server shutdown', () => {
         response.resume();
         response.on('error', () => undefined); // An interrupted response is expected during shutdown.
         const connectionClosed = new Promise<void>((resolveClosed) => response.once('close', resolveClosed));
+        clearTimeout(watchdog);
+        watchdog = setTimeout(expireWatchdog, 5_000);
         supervisor.kill(signal);
         await wait(25);
         supervisor.kill(signal);
         expect(await exited).toEqual({ code: signal === 'SIGINT' ? 130 : 143, signal: null });
+        expect(watchdogExpired, 'Fixture exceeded its startup or shutdown budget').toBe(false);
         await connectionClosed;
         expect(JSON.parse(await readFile(resultFile, 'utf8'))).toMatchObject({
           outcome: 'interrupted',
@@ -224,12 +236,13 @@ describe.skipIf(process.platform === 'win32')('static server shutdown', () => {
         expect(() => process.kill(hostPid, 0)).toThrow();
       } finally {
         clearTimeout(watchdog);
+        clearTimeout(forceKill);
         supervisor.kill('SIGKILL');
         await exited;
         await stopFixtureHost(pidFile);
         await rm(directory, { recursive: true, force: true });
       }
     },
-    10_000,
+    20_000,
   );
 });

@@ -16,3 +16,6 @@ The `stark-ballot-simulator` System has one maintainer-owned source graph:
 
 The catalog records only real source relationships. A `guest-visible` tag is a
 classification label; it does not grant access or deployment authority.
+
+The Public Specs define the [system overview](https://specs.stark-ballot-sim.hwatanabe.dev/overview.html)
+and [AWS service responsibilities](https://specs.stark-ballot-sim.hwatanabe.dev/aws/design-and-services.html).

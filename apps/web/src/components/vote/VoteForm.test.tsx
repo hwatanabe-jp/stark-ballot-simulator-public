@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -12,9 +13,9 @@ import {
 } from '@stark-ballot/web/session';
 import { submitVote } from '@stark-ballot/web/api/votes';
 import {
-  clearBrowserPublicEnvForTests,
-  setBrowserPublicEnvForTests,
-} from '@stark-ballot/runtime-config/env/browserPublic';
+  clearPublicRuntimeEnvForTests,
+  setPublicRuntimeEnvForTests,
+} from '@stark-ballot/runtime-config/env/public-runtime-config';
 
 const turnstileMockState = vi.hoisted(() => ({
   emitToken: true,
@@ -74,11 +75,10 @@ describe('VoteForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     turnstileMockState.emitToken = true;
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
-    setBrowserPublicEnvForTests('VITE_APP_ENV', 'main');
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setPublicRuntimeEnvForTests('VITE_APP_ENV', 'main');
     const sessionData = {
-      sessionId: 'session-123',
-      capabilityToken: 'test-capability-token',
+      ...admitSessionIdentity({ sessionId: 'session-123', capabilityToken: 'test-capability-token' }),
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: `0x${'a'.repeat(64)}`,
       logId: `0x${'b'.repeat(64)}`,
@@ -106,7 +106,7 @@ describe('VoteForm', () => {
   });
 
   afterEach(() => {
-    clearBrowserPublicEnvForTests();
+    clearPublicRuntimeEnvForTests();
   });
 
   it('reuses the opening after an uncertain response and obtains a fresh CAPTCHA', async () => {
@@ -244,9 +244,9 @@ describe('VoteForm', () => {
   it('allows operator-gated develop vote submission without a browser Turnstile token', async () => {
     const user = userEvent.setup();
     turnstileMockState.emitToken = false;
-    clearBrowserPublicEnvForTests();
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
-    setBrowserPublicEnvForTests('VITE_APP_ENV', 'develop');
+    clearPublicRuntimeEnvForTests();
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setPublicRuntimeEnvForTests('VITE_APP_ENV', 'develop');
 
     render(<VoteForm onVoteComplete={onVoteComplete} />);
 
@@ -274,8 +274,7 @@ describe('VoteForm', () => {
     render(<VoteForm onVoteComplete={onVoteComplete} onError={onError} />);
 
     vi.mocked(getSessionData).mockReturnValue({
-      sessionId: 'replacement-session',
-      capabilityToken: 'replacement-capability',
+      ...admitSessionIdentity({ sessionId: 'replacement-session', capabilityToken: 'replacement-capability' }),
       electionId: '550e8400-e29b-41d4-a716-446655440001',
       electionConfigHash: `0x${'c'.repeat(64)}`,
       logId: `0x${'d'.repeat(64)}`,

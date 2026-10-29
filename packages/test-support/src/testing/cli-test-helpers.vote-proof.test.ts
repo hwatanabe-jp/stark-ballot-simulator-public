@@ -13,6 +13,18 @@ function buildJsonResponse(payload: unknown, status = 200) {
   };
 }
 
+function extractFetchUrl(input: FetchInput): string {
+  return typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input instanceof Request
+        ? input.url
+        : (() => {
+            throw new Error('Unexpected fetch input type');
+          })();
+}
+
 describe('CLITestHelpers.submitVote', () => {
   const voteId = 'vote-123';
   const sessionId = 'session-abc';
@@ -30,23 +42,10 @@ describe('CLITestHelpers.submitVote', () => {
 
   it('includes the session capability when fetching vote proof', async () => {
     const fetchMock = vi.fn((input: FetchInput, init?: RequestInit) => {
-      const url =
-        typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input instanceof Request
-              ? input.url
-              : (() => {
-                  throw new Error('Unexpected fetch input type');
-                })();
+      const url = extractFetchUrl(input);
 
       if (url === `${baseUrl}/api/sessions/${sessionId}/votes`) {
-        const headers = init?.headers;
-        const capabilityHeader =
-          headers instanceof Headers
-            ? headers.get('X-Session-Capability')
-            : (headers as Record<string, string> | undefined)?.['X-Session-Capability'];
+        const capabilityHeader = new Headers(init?.headers).get('X-Session-Capability');
 
         expect(capabilityHeader).toBe('v1.test.session-capability');
 
@@ -72,11 +71,7 @@ describe('CLITestHelpers.submitVote', () => {
       }
 
       if (url === `${baseUrl}/api/sessions/${sessionId}/votes/${voteId}/inclusion-proof`) {
-        const headers = init?.headers;
-        const capabilityHeader =
-          headers instanceof Headers
-            ? headers.get('X-Session-Capability')
-            : (headers as Record<string, string> | undefined)?.['X-Session-Capability'];
+        const capabilityHeader = new Headers(init?.headers).get('X-Session-Capability');
 
         expect(capabilityHeader).toBe('v1.test.session-capability');
 

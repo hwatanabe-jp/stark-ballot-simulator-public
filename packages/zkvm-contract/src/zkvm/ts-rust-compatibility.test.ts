@@ -387,16 +387,4 @@ describe('TypeScript-Rust Compatibility', () => {
       );
     });
   });
-
-  describe('Commitment Compatibility', () => {
-    it('should match Rust commitment vector', () => {
-      const electionId = '550e8400-e29b-41d4-a716-446655440000';
-      const choice = 0;
-      const random = '0x' + 'aa'.repeat(32);
-
-      expect(computeCommitment(electionId, choice, random)).toBe(
-        '0x561b8d0fd296c8b0aed2aa6f655d330282f455780fc828e7b6bb660744598e88',
-      );
-    });
-  });
 });

@@ -792,19 +792,21 @@ describe('MockSessionStore', () => {
     // Keep the native method so the prototype spy can fail only the staged bitmap write.
     // eslint-disable-next-line @typescript-eslint/unbound-method
     const originalSet = Map.prototype.set;
-    const mapSet = vi
-      .spyOn(Map.prototype, 'set')
-      .mockImplementation(function (this: Map<unknown, unknown>, key, value) {
-        if (
-          key === scopedKey(sessionId, finalizationId) &&
-          typeof value === 'object' &&
-          value !== null &&
-          'includedBitmap' in value
-        ) {
-          throw new Error('forced bitmap write failure');
-        }
-        return originalSet.call(this, key, value);
-      });
+    const mapSet = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key,
+      value,
+    ) {
+      if (
+        key === scopedKey(sessionId, finalizationId) &&
+        typeof value === 'object' &&
+        value !== null &&
+        'includedBitmap' in value
+      ) {
+        throw new Error('forced bitmap write failure');
+      }
+      return originalSet.call(this, key, value);
+    });
 
     try {
       await expect(
@@ -982,16 +984,6 @@ describe('MockSessionStore', () => {
     await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toEqual(committed.record);
   });
 
-  it('does not expose generic finalization artifact metadata updates', () => {
-    expect('updateFinalizationArtifactMetadata' in store).toBe(false);
-    expect(Reflect.get(store, 'updateFinalizationArtifactMetadata')).toBeUndefined();
-  });
-
-  it('does not expose generic session updates', () => {
-    expect('updateSession' in store).toBe(false);
-    expect(Reflect.get(store, 'updateSession')).toBeUndefined();
-  });
-
   it('does not refresh activity on read-only record access', async () => {
     const before = requireValue(await store.getVotingRecord(sessionId), 'voting record');
 
@@ -1074,14 +1066,6 @@ describe('MockSessionStore', () => {
     expect(
       (getPrivateMap<Record<string, unknown>>(store, 'votingRecords').get(sessionId) ?? {})['userParticipation'],
     ).toBeUndefined();
-  });
-
-  it('fails closed when addBotVotes is called before the user vote exists', async () => {
-    await expect(store.addBotVotes(sessionId, [buildBotVote('B', 'b')])).resolves.toEqual({
-      ok: false,
-      error: { code: 'USER_NOT_VOTED' },
-    });
-    expect(requireValue(await store.getVotingRecord(sessionId), 'voting record').votes.size).toBe(0);
   });
 
   it('fails closed when addBotVotes sees a non-canonical user vote index', async () => {

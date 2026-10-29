@@ -1,14 +1,12 @@
-<a id="ビットマップ-merkle"></a>
+# ビットマップ Merkle 証明
 
-# 自票の採用状況を確かめる
+ゲストは、掲示板の各位置について、票の提示と計上の有無をそれぞれ 1 ビットで記録します。この記録がビットマップです。集計件数だけでは特定できない、個票の採用状況を表します。
 
-「64 票のうち 63 票を数えた」という数字だけでは、数えなかった一票が自分の B 票かどうか分かりません。そこでゲストは、掲示板の位置ごとに、票を受け取ったか、数えたかを 1 ビットずつ記録します。
+ジャーナルには二つのビットマップの Merkle ルートを記録します。投票者は自票の位置のビットと Merkle 証明を取得し、レシートに結び付いたルートと照合できます。
 
-この記録を**ビットマップ**と呼びます。ゲストは二つのビットマップの Merkle ルートをジャーナルへ書き込みます。投票者は自分の位置のビットとその証明を取得し、レシートに結びついたルートと照合できます。
+## 提示・計上状態の定義
 
-## 二つのビットで自票の状態を区別する
-
-`seenBitmap[i]` は範囲内の位置 `i` が提示されたこと、`includedBitmap[i]` はその位置の票を有効と認めて計上したことを表します。インデックス 0 の B 票なら、見るのはそれぞれの先頭ビットです。
+`seenBitmap[i]` は範囲内の位置 `i` が提示されたこと、`includedBitmap[i]` はその位置の票を有効と認めて計上したことを表します。インデックス 0 のユーザー票は、それぞれの先頭ビットに対応します。
 
 | `seen[0]` | `included[0]` | 意味                                       |
 | --------- | ------------- | ------------------------------------------ |
@@ -17,7 +15,7 @@
 | 0         | 0             | ゲストへ提示されなかった                   |
 | 0         | 1             | 正しいゲスト出力では成立しない組           |
 
-S1 のように自票を入力から外せば、掲示板は 64 スロットのままで、位置 0 のビットは両方 0 になります。S2 のように表示の得票数だけを変えた場合は、ゲストへの入力が元の 64 票なので、この一票のビットは両方 1 のままです。表示の改変は、別の得票数照合で見つかります。
+S1 のように自票を入力から外せば、掲示板は 64 スロットのままで、位置 0 のビットは両方 0 になります。S2 のように表示の得票数だけを変えた場合は、ゲストへの入力が元の 64 票なので、位置 0 のビットは両方 1 のままです。表示の改変は、別の得票数照合で検出します。
 
 Merkle 証明で確かめるのは、取得したビットがジャーナルのルートに結びつくことです。そのルートをゲストの計算結果として信頼するには、期待 Image ID に対するレシート検証も必要です。アプリの検証画面では、サーバーがこの個票証明を評価して結果を返します。
 
@@ -68,14 +66,14 @@ NodeHash(left, right) = SHA-256(0x01 || left || right)
 
 ### 検証手順
 
-1. 証明に結びついたジャーナルから、正の整数 `treeSize` と、対象の 32 バイトルートを得る。`0 <= voteIndex < treeSize` を確認する。
-2. `leafIndex = floor(voteIndex / 256)`、`bitOffset = voteIndex % 256`、`leafCount = ceil(treeSize / 256)` を計算する。
-3. チャンクと各兄弟ハッシュが 32 バイトであること、パスの長さと左右の並びが `leafIndex` と `leafCount` から決まるツリー形状に合うことを確認する。
-4. 最後のチャンクのうち `treeSize` より後の未使用ビットが、すべて 0 であることを確認する。
-5. リーフハッシュから始め、パスをたどってルートを再計算する。兄弟が左なら `NodeHash(sibling, current)`、右なら `NodeHash(current, sibling)` を使う。
-6. `includedBitmapRoot` または `seenBitmapRoot` と一致した場合に、対象ビットを状態として読む。
+1. 証明に結びついたジャーナルから、正の整数 `treeSize` と、対象の 32 バイトルートを得ます。`0 <= voteIndex < treeSize` を確認します。
+2. `leafIndex = floor(voteIndex / 256)`、`bitOffset = voteIndex % 256`、`leafCount = ceil(treeSize / 256)` を計算します。
+3. チャンクと各兄弟ハッシュが 32 バイトであること、パスの長さと左右の並びが `leafIndex` と `leafCount` から決まるツリー形状に合うことを確認します。
+4. 最後のチャンクのうち `treeSize` より後の未使用ビットが、すべて 0 であることを確認します。
+5. リーフハッシュから始め、パスをたどってルートを再計算します。兄弟が左なら `NodeHash(sibling, current)`、右なら `NodeHash(current, sibling)` を使います。
+6. `includedBitmapRoot` または `seenBitmapRoot` と一致した場合に、対象ビットを状態として読みます。
 
-64 票の 1 リーフ構成なら `auditPath` は空です。ただし、チャンク長、位置の範囲、ゼロ埋め、ルートの照合は必要です。空のパスを無条件の成功として扱いません。
+64 票の 1 リーフ構成では、空の `auditPath` と、チャンク長・位置の範囲・ゼロ埋め・ルートの照合を使って検証します。パスが空の場合も、これらの条件を満たす必要があります。
 
 ### ビット抽出
 
@@ -95,10 +93,10 @@ value = (chunk[byteIndex] AND (1 << bitInByte)) != 0
 
 ## プライバシーに関する注意
 
-API が要求を自票の位置に制限しても、返すのはその位置を含む**チャンク全体**です。したがって同じチャンク内のほかの位置の状態も読めます。64 票のデモでは全票の計上・提示状態が一つのチャンクに入ります。選択肢や乱数を示すビットではありませんが、一票だけの状態を開示する方式でもありません。
+API が要求を自票の位置に制限しても、返すのはその位置を含むチャンク全体です。したがって同じチャンク内のほかの位置の状態も読めます。64 票のデモでは全票の計上・提示状態が一つのチャンクに入ります。開示されるのはチャンク内の計上・提示状態で、選択肢や乱数は含まれません。
 
 チャンクを小さくすれば開示範囲を減らせる一方、ツリーのリーフ数、証明パス、ゲスト内のハッシュ計算は増えます。現行のデモはユーザー 1 票とボット 63 票を対象に、32 バイト単位を使っています。
 
-ビット境界、ゼロ埋め、ルート計算は、[生成入力のテスト](../quality/property-based-testing.md)と [Lean のビットマップベクトル](../quality/lean-formalization.md)で検査します。
+ビット境界、ゼロ埋め、ルート計算は、[Property-based Testing](../quality/property-based-testing.md)と [Lean のビットマップベクトル](../quality/lean-formalization.md)で検査します。
 
 <!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/artifacts.ts, packages/zkvm-contract/src/zkvm/bitmap.ts, packages/zkvm-contract/src/zkvm/types.ts, packages/verification/src/merkle/bitmap-merkle-tree.ts, packages/verification/src/verification/bitmap-verifier.ts, apps/api/src/server/api/handlers/bitmapProof.ts, packages/application/src/finalize/usecases/finalize-sync.ts, packages/aws-adapters/src/aws/bundle-restore.ts, zkvm/host/src/main.rs -->

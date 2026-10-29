@@ -1,26 +1,11 @@
 // Types
-export type {
-  KnowledgePhase,
-  VerificationStepStatus,
-  VerificationStepId,
-  ProofBundleStatus,
-  InclusionProof,
-  VerificationStep,
-  VerificationReportSummary,
-  TallyCounts,
-  VoteReceipt,
-  ReceiptPublication,
-  KnowledgeData,
-  KnowledgeItem,
-  KnowledgeUpdateListener,
-} from './types';
+export type { VerificationStepStatus, VerificationStepId, KnowledgeData, KnowledgeItem } from './types';
 
 export { KNOWLEDGE_KEYS, HASH_FIELDS } from './types';
 export { knowledgeItemsFromData } from './items';
 
 export {
   PUBLIC_KNOWLEDGE_KEYS,
-  RESULT_KNOWLEDGE_KEYS,
   VERIFY_MY_KNOWLEDGE_KEYS,
   VERIFY_BOT_KNOWLEDGE_KEYS,
   HIDDEN_KNOWLEDGE_KEYS,
@@ -28,11 +13,9 @@ export {
 } from './visibility';
 
 // Normalizer
-export { normalizeKnowledgeData, getPhaseForKey } from './normalizer';
 
 // Store
 export {
-  getKnowledgeData,
   getKnowledgeValue,
   saveKnowledgeData,
   mergeKnowledgeFromApi,
@@ -42,5 +25,4 @@ export {
   subscribeToKnowledge,
   getKnowledgeItems,
   setProofBundleStatus,
-  KNOWLEDGE_NEW_ITEM_THRESHOLD_MS,
 } from './store';

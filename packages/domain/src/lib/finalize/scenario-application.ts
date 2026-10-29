@@ -65,42 +65,7 @@ export function applyFinalizeScenarios(options: ScenarioApplicationOptions): Sce
     };
   }
 
-  let targetChoice: VoteChoice = 'B';
-  let targetBotId = 1;
-
-  const userVoteData = votes.get(userVoteIndex);
-
-  if (scenariosApplied.includes('S2') && userVoteData) {
-    const userChoice = userVoteData.vote;
-    const availableChoices = VOTE_CHOICES.filter((choice) => choice !== userChoice);
-    if (availableChoices.length > 0) {
-      const selectedChoice = availableChoices[Math.floor(random() * availableChoices.length)];
-      if (selectedChoice) {
-        targetChoice = selectedChoice;
-      }
-    }
-  }
-
-  if (scenariosApplied.includes('S4')) {
-    const botIndices = Array.from(votes.keys()).filter((index) => index !== userVoteIndex);
-    if (botIndices.length > 0) {
-      const selectedBotId = botIndices[Math.floor(random() * botIndices.length)];
-      if (selectedBotId === undefined) {
-        throw new Error('No bot vote index selected');
-      }
-      targetBotId = selectedBotId;
-      const botVote = votes.get(targetBotId);
-      if (botVote) {
-        const availableChoices = VOTE_CHOICES.filter((choice) => choice !== botVote.vote);
-        if (availableChoices.length > 0) {
-          const selectedChoice = availableChoices[Math.floor(random() * availableChoices.length)];
-          if (selectedChoice) {
-            targetChoice = selectedChoice;
-          }
-        }
-      }
-    }
-  }
+  const { targetChoice, targetBotId } = selectScenarioTargets(votes, userVoteIndex, scenariosApplied, random);
 
   const scenarioResult = processor.applyScenarios(votes, scenariosApplied, userVoteIndex, {
     targetChoice,
@@ -108,11 +73,67 @@ export function applyFinalizeScenarios(options: ScenarioApplicationOptions): Sce
     random,
   });
 
+  const summary = summarizeScenarioChanges(scenarioResult.changes, userVoteIndex);
+
+  const claimedCounts = processor.getTallyCounts(scenarioResult.modifiedVotes);
+  const claimedTotalVotes = Object.values(claimedCounts).reduce((sum, value) => sum + value, 0);
+  const tamperMode = resolveScenarioTamperMode(scenariosApplied);
+
+  return {
+    modifiedVotes: scenarioResult.modifiedVotes,
+    scenarioResult,
+    scenariosApplied,
+    summary,
+    claimedCounts,
+    claimedTotalVotes,
+    tamperMode,
+  };
+}
+
+function selectScenarioTargets(
+  votes: Map<number, StoredVoteRecord>,
+  userVoteIndex: number,
+  scenariosApplied: string[],
+  random: () => number,
+) {
+  let targetChoice: VoteChoice = 'B';
+  const userVoteData = votes.get(userVoteIndex);
+  if (scenariosApplied.includes('S2') && userVoteData)
+    targetChoice = selectRecountChoice(userVoteData.vote, random, targetChoice);
+  if (scenariosApplied.includes('S4')) return selectBotRecountTarget(votes, userVoteIndex, random, targetChoice);
+  return { targetChoice, targetBotId: 1 };
+}
+
+function selectRecountChoice(original: VoteChoice, random: () => number, fallback: VoteChoice): VoteChoice {
+  const availableChoices = VOTE_CHOICES.filter((choice) => choice !== original);
+  if (availableChoices.length === 0) return fallback;
+  return availableChoices[Math.floor(random() * availableChoices.length)] ?? fallback;
+}
+
+function selectBotRecountTarget(
+  votes: Map<number, StoredVoteRecord>,
+  userVoteIndex: number,
+  random: () => number,
+  targetChoice: VoteChoice,
+) {
+  const botIndices = Array.from(votes.keys()).filter((index) => index !== userVoteIndex);
+  if (botIndices.length === 0) return { targetChoice, targetBotId: 1 };
+  const targetBotId = botIndices[Math.floor(random() * botIndices.length)];
+  if (targetBotId === undefined) throw new Error('No bot vote index selected');
+  const botVote = votes.get(targetBotId);
+  if (botVote) targetChoice = selectRecountChoice(botVote.vote, random, targetChoice);
+  return { targetChoice, targetBotId };
+}
+
+function summarizeScenarioChanges(
+  changes: NonNullable<ScenarioApplicationResult['scenarioResult']>['changes'],
+  userVoteIndex: number,
+): ScenarioSummary {
   let ignoredCount = 0;
   let recountedCount = 0;
   let userRecountChoice: VoteChoice | null = null;
 
-  for (const change of scenarioResult.changes) {
+  for (const change of changes) {
     if (change.action === 'IGNORED') {
       ignoredCount += 1;
     } else if (change.action === 'RECOUNTED') {
@@ -123,8 +144,10 @@ export function applyFinalizeScenarios(options: ScenarioApplicationOptions): Sce
     }
   }
 
-  const claimedCounts = processor.getTallyCounts(scenarioResult.modifiedVotes);
-  const claimedTotalVotes = Object.values(claimedCounts).reduce((sum, value) => sum + value, 0);
+  return { ignoredCount, recountedCount, userRecountChoice };
+}
+
+function resolveScenarioTamperMode(scenariosApplied: string[]): ScenarioTamperMode {
   const inputTamperScenarios = new Set(['S1', 'S3', 'S5']);
   const claimTamperScenarios = new Set(['S2', 'S4']);
   const tamperMode = scenariosApplied.some((scenario) => inputTamperScenarios.has(scenario))
@@ -132,18 +155,5 @@ export function applyFinalizeScenarios(options: ScenarioApplicationOptions): Sce
     : scenariosApplied.some((scenario) => claimTamperScenarios.has(scenario))
       ? 'claim'
       : 'none';
-
-  return {
-    modifiedVotes: scenarioResult.modifiedVotes,
-    scenarioResult,
-    scenariosApplied,
-    summary: {
-      ignoredCount,
-      recountedCount,
-      userRecountChoice,
-    },
-    claimedCounts,
-    claimedTotalVotes,
-    tamperMode,
-  };
+  return tamperMode;
 }

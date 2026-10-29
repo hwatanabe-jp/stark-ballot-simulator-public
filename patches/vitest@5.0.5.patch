@@ -1,0 +1,21 @@
+diff --git a/dist/chunks/plugin.d.C8mmycim.d.ts b/dist/chunks/plugin.d.C8mmycim.d.ts
+--- a/dist/chunks/plugin.d.C8mmycim.d.ts
++++ b/dist/chunks/plugin.d.C8mmycim.d.ts
+@@ -3335,7 +3335,7 @@
+ 	*
+ 	* @experimental
+ 	*/
+-	provider?: string;
++	provider?: string | undefined;
+ 	/**
+ 	* Disable warnings when a benchmark accesses module export getters too many times.
+ 	* @default false
+@@ -3643,7 +3643,7 @@
+ 	* Specifies the memory limit for `worker_thread` or `child_process` before they are recycled.
+ 	* If you see memory leaks, try to tinker this value.
+ 	*/
+-	vmMemoryLimit?: string | number;
++	vmMemoryLimit?: string | number | undefined;
+ 	/**
+ 	* Pool used to run tests in.
+ 	*

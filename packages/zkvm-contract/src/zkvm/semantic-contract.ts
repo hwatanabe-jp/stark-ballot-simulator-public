@@ -1,3 +1,9 @@
+import {
+  requireContractString as requireString,
+  requireExactContractKeys,
+  requireContractRecord as requireRecord,
+  canonicalContractJson,
+} from './contract-values';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import checkedDescriptorJson from '../../../../zkvm/contract-core/src/current-zkvm-semantic-contract.json';
@@ -123,27 +129,8 @@ export type CurrentZkvmSemanticContract = ParsedZkvmSemanticContract & {
   readonly semanticSha256: LiteralBindings['semanticSha256'];
 };
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
-  const actual = Object.keys(record).sort();
-  const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
-    throw new Error(`${label} must contain the exact keys for the current semantic contract`);
-  }
-}
-
-function requireString(record: Record<string, unknown>, key: string, label: string): string {
-  const value = record[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`${label}.${key} must be a non-empty string`);
-  }
-  return value;
+  requireExactContractKeys(record, keys, label, 'current semantic contract');
 }
 
 function requireSafeInteger(record: Record<string, unknown>, key: string, label: string): number {
@@ -175,28 +162,8 @@ function parseFields(value: unknown, label: string): readonly ZkvmSemanticField[
   });
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value)) {
-      throw new Error('zkVM semantic contract canonical JSON admits only safe integers');
-    }
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
-  }
-  const record = requireRecord(value, 'zkVM semantic contract canonical value');
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(',')}}`;
-}
-
 function semanticSha256(value: unknown): string {
-  return bytesToHex(sha256(utf8ToBytes(canonicalJson(value))));
+  return bytesToHex(sha256(utf8ToBytes(canonicalContractJson(value, 'zkVM semantic contract'))));
 }
 
 function parseBitmapArtifact(value: unknown, label: string): ParsedZkvmSemanticContract['artifacts']['includedBitmap'] {
@@ -372,37 +339,68 @@ function semanticPayload(contract: ParsedZkvmSemanticContract): Omit<ParsedZkvmS
 }
 
 function hasCurrentLiteralBindings(contract: ParsedZkvmSemanticContract): contract is CurrentZkvmSemanticContract {
+  return hasCurrentExecutionBindings(contract) && hasCurrentArtifactBindings(contract);
+}
+
+function hasCurrentExecutionBindings(contract: ParsedZkvmSemanticContract): boolean {
   const bindings = CURRENT_ZKVM_SEMANTIC_LITERAL_BINDINGS;
   return (
     contract.descriptorType === bindings.descriptorType &&
     contract.method.methodVersion === bindings.methodVersion &&
     contract.method.inputCommitmentFormatVersion === bindings.inputCommitmentFormatVersion &&
     contract.logicalJournal.tallyWidth === bindings.tallyWidth &&
-    contract.hostJsonProjection.fields.length === bindings.hostJsonProjectionFieldNames.length &&
-    contract.hostJsonProjection.fields.every(
-      (field, index) => field.name === bindings.hostJsonProjectionFieldNames[index],
-    ) &&
+    hasCurrentHostProjectionFields(contract) &&
     contract.semanticSha256 === bindings.semanticSha256 &&
-    contract.domainTags.voteCommitment === bindings.domainTags.voteCommitment &&
-    contract.domainTags.inputCommitment === bindings.domainTags.inputCommitment &&
+    hasCurrentDomainTags(contract) &&
     Object.entries(bindings.workBounds).every(
       ([key, value]) => contract.workBounds[key as keyof typeof bindings.workBounds] === value,
     ) &&
-    contract.hostJsonProjection.outputFileSuffix === '-output.json' &&
-    contract.artifacts.receipt.hostFileSuffix === bindings.artifacts.receipt.hostFileSuffix &&
-    contract.artifacts.receipt.canonicalFileName === bindings.artifacts.receipt.canonicalFileName &&
-    contract.artifacts.receipt.receiptPayload === bindings.artifacts.receipt.receiptPayload &&
-    contract.artifacts.publicInput.canonicalFileName === bindings.artifacts.publicInput.canonicalFileName &&
-    contract.artifacts.publicInput.schema === bindings.artifacts.publicInput.schema &&
-    contract.artifacts.publicInput.version === bindings.artifacts.publicInput.version &&
-    contract.artifacts.includedBitmap.hostFileSuffix === bindings.artifacts.includedBitmap.hostFileSuffix &&
-    contract.artifacts.includedBitmap.canonicalFileName === bindings.artifacts.includedBitmap.canonicalFileName &&
-    contract.artifacts.includedBitmap.schema === bindings.artifacts.includedBitmap.schema &&
-    contract.artifacts.includedBitmap.version === bindings.artifacts.includedBitmap.version &&
-    contract.artifacts.seenBitmap.hostFileSuffix === bindings.artifacts.seenBitmap.hostFileSuffix &&
-    contract.artifacts.seenBitmap.canonicalFileName === bindings.artifacts.seenBitmap.canonicalFileName &&
-    contract.artifacts.seenBitmap.schema === bindings.artifacts.seenBitmap.schema &&
-    contract.artifacts.seenBitmap.version === bindings.artifacts.seenBitmap.version
+    contract.hostJsonProjection.outputFileSuffix === '-output.json'
+  );
+}
+
+function hasCurrentHostProjectionFields(contract: ParsedZkvmSemanticContract): boolean {
+  const names = CURRENT_ZKVM_SEMANTIC_LITERAL_BINDINGS.hostJsonProjectionFieldNames;
+  return (
+    contract.hostJsonProjection.fields.length === names.length &&
+    contract.hostJsonProjection.fields.every((field, index) => field.name === names[index])
+  );
+}
+
+function hasCurrentDomainTags(contract: ParsedZkvmSemanticContract): boolean {
+  const tags = CURRENT_ZKVM_SEMANTIC_LITERAL_BINDINGS.domainTags;
+  return (
+    contract.domainTags.voteCommitment === tags.voteCommitment &&
+    contract.domainTags.inputCommitment === tags.inputCommitment
+  );
+}
+
+function hasCurrentArtifactBindings(contract: ParsedZkvmSemanticContract): boolean {
+  const bindings = CURRENT_ZKVM_SEMANTIC_LITERAL_BINDINGS.artifacts;
+  return (
+    contract.artifacts.receipt.hostFileSuffix === bindings.receipt.hostFileSuffix &&
+    contract.artifacts.receipt.canonicalFileName === bindings.receipt.canonicalFileName &&
+    contract.artifacts.receipt.receiptPayload === bindings.receipt.receiptPayload &&
+    contract.artifacts.publicInput.canonicalFileName === bindings.publicInput.canonicalFileName &&
+    contract.artifacts.publicInput.schema === bindings.publicInput.schema &&
+    contract.artifacts.publicInput.version === bindings.publicInput.version &&
+    hasCurrentBitmapArtifactBindings(contract.artifacts.includedBitmap, bindings.includedBitmap) &&
+    hasCurrentBitmapArtifactBindings(contract.artifacts.seenBitmap, bindings.seenBitmap)
+  );
+}
+
+function hasCurrentBitmapArtifactBindings(
+  artifact: ParsedZkvmSemanticContract['artifacts']['includedBitmap'],
+  binding: Pick<
+    ParsedZkvmSemanticContract['artifacts']['includedBitmap'],
+    'hostFileSuffix' | 'canonicalFileName' | 'schema' | 'version'
+  >,
+): boolean {
+  return (
+    artifact.hostFileSuffix === binding.hostFileSuffix &&
+    artifact.canonicalFileName === binding.canonicalFileName &&
+    artifact.schema === binding.schema &&
+    artifact.version === binding.version
   );
 }
 

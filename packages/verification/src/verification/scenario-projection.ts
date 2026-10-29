@@ -36,55 +36,72 @@ function hasCanonicalScenarioTamperSummary(input: {
     return false;
   }
 
+  return matchesScenarioTamperSummary(input, summary, affectedBotIds);
+}
+
+function matchesScenarioTamperSummary(
+  input: Parameters<typeof hasCanonicalScenarioTamperSummary>[0],
+  summary: PublicTamperSummaryProjection,
+  affectedBotIds: readonly number[],
+): boolean {
   switch (input.scenarioId) {
     case 'S0':
-      return (
-        summary.ignoredVotes === 0 &&
-        summary.recountedVotes === 0 &&
-        summary.userRecountedTo === null &&
-        affectedBotIds.length === 0
-      );
+      return hasUntamperedSummary(summary, affectedBotIds);
     case 'S1':
-      return (
-        summary.ignoredVotes === 1 &&
-        summary.ignoredVotes === input.excludedSlots &&
-        summary.recountedVotes === 0 &&
-        summary.userRecountedTo === null &&
-        affectedBotIds.length === 0
-      );
-    case 'S2':
-      return (
-        summary.ignoredVotes === 0 &&
-        summary.recountedVotes === 1 &&
-        summary.userRecountedTo !== null &&
-        affectedBotIds.length === 0
-      );
     case 'S3':
-      return (
-        summary.ignoredVotes === 1 &&
-        summary.ignoredVotes === input.excludedSlots &&
-        summary.recountedVotes === 0 &&
-        summary.userRecountedTo === null &&
-        affectedBotIds.length === 1
-      );
+      return hasSingleExcludedSummary(input, summary, affectedBotIds);
+    case 'S2':
+      return hasRecountedSummary(summary, affectedBotIds, 0) && summary.userRecountedTo !== null;
     case 'S4':
-      return (
-        summary.ignoredVotes === 0 &&
-        summary.recountedVotes === 1 &&
-        summary.userRecountedTo === null &&
-        affectedBotIds.length === 1
-      );
+      return hasRecountedSummary(summary, affectedBotIds, 1) && summary.userRecountedTo === null;
     case 'S5':
-      return (
-        summary.ignoredVotes > 0 &&
-        summary.ignoredVotes === input.excludedSlots &&
-        summary.recountedVotes === 0 &&
-        summary.userRecountedTo === null &&
-        affectedBotIds.length === 0
-      );
+      return hasExcludedSummary(summary, input.excludedSlots, affectedBotIds, 0);
     default:
       return false;
   }
+}
+
+function hasSingleExcludedSummary(
+  input: Parameters<typeof hasCanonicalScenarioTamperSummary>[0],
+  summary: PublicTamperSummaryProjection,
+  affectedBotIds: readonly number[],
+): boolean {
+  return (
+    summary.ignoredVotes === 1 &&
+    hasExcludedSummary(summary, input.excludedSlots, affectedBotIds, input.scenarioId === 'S3' ? 1 : 0)
+  );
+}
+
+function hasUntamperedSummary(summary: PublicTamperSummaryProjection, affectedBotIds: readonly number[]): boolean {
+  return (
+    summary.ignoredVotes === 0 &&
+    summary.recountedVotes === 0 &&
+    summary.userRecountedTo === null &&
+    affectedBotIds.length === 0
+  );
+}
+
+function hasExcludedSummary(
+  summary: PublicTamperSummaryProjection,
+  excludedSlots: number,
+  affectedBotIds: readonly number[],
+  expectedBotCount: number,
+): boolean {
+  return (
+    summary.ignoredVotes > 0 &&
+    summary.ignoredVotes === excludedSlots &&
+    summary.recountedVotes === 0 &&
+    summary.userRecountedTo === null &&
+    affectedBotIds.length === expectedBotCount
+  );
+}
+
+function hasRecountedSummary(
+  summary: PublicTamperSummaryProjection,
+  affectedBotIds: readonly number[],
+  expectedBotCount: number,
+): boolean {
+  return summary.ignoredVotes === 0 && summary.recountedVotes === 1 && affectedBotIds.length === expectedBotCount;
 }
 
 function hasCoherentScenarioTallyProjection(input: {
@@ -108,22 +125,30 @@ function hasCoherentScenarioTallyProjection(input: {
       return deltas.every((delta) => delta === 0);
     case 'S2':
     case 'S4': {
-      const removedChoices = VOTE_CHOICES.filter((_choice, index) => deltas[index] === -1);
-      const addedChoices = VOTE_CHOICES.filter((_choice, index) => deltas[index] === 1);
-      if (
-        removedChoices.length !== 1 ||
-        addedChoices.length !== 1 ||
-        deltas.some((delta) => delta !== -1 && delta !== 0 && delta !== 1)
-      ) {
-        return false;
-      }
-      return input.scenarioId === 'S4' || input.tamperSummary?.userRecountedTo === addedChoices[0];
+      return hasSingleRecountedVote(input, deltas);
     }
+
     case 'S5':
       return deltas.every((delta) => delta === 0);
     default:
       return false;
   }
+}
+
+function hasSingleRecountedVote(
+  input: Parameters<typeof hasCoherentScenarioTallyProjection>[0],
+  deltas: readonly number[],
+): boolean {
+  const removedChoices = VOTE_CHOICES.filter((_choice, index) => deltas[index] === -1);
+  const addedChoices = VOTE_CHOICES.filter((_choice, index) => deltas[index] === 1);
+  if (
+    removedChoices.length !== 1 ||
+    addedChoices.length !== 1 ||
+    deltas.some((delta) => delta !== -1 && delta !== 0 && delta !== 1)
+  ) {
+    return false;
+  }
+  return input.scenarioId === 'S4' || input.tamperSummary?.userRecountedTo === addedChoices[0];
 }
 
 /** Admits the scenario/tally facts shared by finalization and verification projections. */

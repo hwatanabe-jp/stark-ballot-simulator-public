@@ -103,7 +103,7 @@ function projectBodySize(bodySize: ApiContractBodySize): BaselineBodySize {
   };
 }
 
-export function projectTypedRouteForBaseline(route: ApiRouteContract): BaselineApiRouteContract {
+function projectTypedRouteForBaseline(route: ApiRouteContract): BaselineApiRouteContract {
   return {
     routeId: route.routeId,
     method: route.method,

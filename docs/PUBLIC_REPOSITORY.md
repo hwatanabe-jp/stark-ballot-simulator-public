@@ -3,9 +3,9 @@
 This repository is a generated public portfolio snapshot of STARK Ballot Simulator.
 
 - Public repository: https://github.com/hwatanabe-jp/stark-ballot-simulator-public
-- Source commit: `bb9e6753c2ff9717142f887bca24a11364d49475`
-- Generated at: `2026-09-13T00:21:17.879Z`
-- Copied source files: `1471`
+- Source commit: `000d363d073e4eb08b0ec83ae8f5816e68a50e2b`
+- Generated at: `2026-10-29T17:09:34.695Z`
+- Copied source files: `1415`
 
 The private repository remains the source of truth. Public-repository changes
 should normally be made in the private repository and released again as a new
@@ -29,15 +29,15 @@ The private source repository intentionally keeps broader working notes than the
 public portfolio snapshot needs. This export preserves that signal while
 publishing only the documentation that is safe and useful for readers.
 
-- Private source files under `docs/` tracked: `246`
+- Private source files under `docs/` tracked: `252`
 - Public source files under `docs/` copied: `58`
 - Generated public docs: `1`
-- Source files under `docs/` stripped: `188`
+- Source files under `docs/` stripped: `194`
 
 Stripped documentation categories:
 
 - Archived history and progress notes: `52` files from `docs/archive/`
-- Internal implementation notes: `136` files from `docs/internal/`
+- Internal implementation notes: `142` files from `docs/internal/`
 
 ## What Is Stripped
 
@@ -52,19 +52,13 @@ Stripped documentation categories:
 - `examples/hello-service/`
 - `infra/framework/`
 - `infra/terraform/** except .tf source and explicitly allowlisted public records`
-- `packages/deployment-authority/src/framework.{js,test.ts}`
 - `scripts/monitoring/`
 - `scripts/public/`
 - `scripts/security/gitleaks/`
-- `scripts/security/lib/framework-template-safety.test.ts`
-- `scripts/security/framework-template-safety.ts`
-- `scripts/security/lib/framework-template-safety.ts`
-- `scripts/security/scan-framework-secrets.sh`
+- `scripts/security/scan-infra-secrets.sh`
 - `scripts/aws/`
 - `scripts/skills/`
 - `tooling/** except explicitly allowlisted public configuration/runtime files`
-- `infra/terraform/legacy/main.tfvars`
-- `infra/terraform/legacy/develop.tfvars`
 - `input.json`
 - `verification.json`
 - `included-bitmap.json`

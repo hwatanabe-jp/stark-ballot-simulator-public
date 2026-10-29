@@ -76,6 +76,31 @@ resource "aws_dynamodb_table" "sessions" {
     type = "S"
   }
 
+  attribute {
+    name = "itemType"
+    type = "S"
+  }
+
+  attribute {
+    name = "expiresAt"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name               = "finalization-expiry-index"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["ownerSessionId", "finalizationId"]
+
+    key_schema {
+      attribute_name = "itemType"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "expiresAt"
+      key_type       = "RANGE"
+    }
+  }
+
   ttl {
     attribute_name = "expiresAt"
     enabled        = true
@@ -214,51 +239,4 @@ resource "aws_dynamodb_table" "rate_limit_counters" {
   tags = merge(local.common_tags, {
     DataClass = "rate-limit-counters"
   })
-}
-
-resource "aws_dynamodb_table" "prover_semaphore" {
-  name                        = local.prover_semaphore_table_name
-  billing_mode                = "PAY_PER_REQUEST"
-  hash_key                    = local.dynamodb_tables.prover_semaphore.hash_key
-  deletion_protection_enabled = var.enable_dynamodb_deletion_protection
-
-  attribute {
-    name = local.dynamodb_tables.prover_semaphore.hash_key
-    type = "S"
-  }
-
-  point_in_time_recovery {
-    enabled                 = true
-    recovery_period_in_days = local.storage_retention.dynamodb_point_in_time_recovery_days
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = aws_kms_key.app_data.arn
-  }
-
-  tags = merge(local.common_tags, {
-    DataClass = "prover-concurrency-semaphore"
-  })
-}
-
-resource "aws_dynamodb_table_item" "prover_semaphore" {
-  table_name = aws_dynamodb_table.prover_semaphore.name
-  hash_key   = aws_dynamodb_table.prover_semaphore.hash_key
-
-  item = jsonencode({
-    LockName = {
-      S = local.prover_semaphore_lock_name
-    }
-    currentLockCount = {
-      N = "0"
-    }
-    limit = {
-      N = tostring(var.prover_max_concurrent_provers)
-    }
-  })
-
-  lifecycle {
-    ignore_changes = [item]
-  }
 }

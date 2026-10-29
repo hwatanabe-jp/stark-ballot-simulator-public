@@ -1,7 +1,8 @@
 # STARK Ballot Simulator
 
-STARK Ballot Simulator is a full-stack security and cryptography portfolio project with a
-formal-methods layer, built around an end-to-end verifiable voting demo.
+STARK Ballot Simulator is an educational voting demo and a full-stack security and cryptography
+portfolio project. It combines vote commitments, bulletin-board evidence, tally proofs, and formal
+models of selected invariants.
 
 This root README is the reviewer entry point. It explains what the project demonstrates, how to run the
 local mock flow, and where to find the detailed public specifications. Protocol details, AWS diagrams,
@@ -19,11 +20,10 @@ verification semantics, and implementation notes live in the Public Specs and th
 
 ## What This Is
 
-`STARK Ballot Simulator` is an educational demo that walks through casting a vote, finalizing a tally,
-displaying results, and independently checking the evidence needed to verify the outcome.
+`STARK Ballot Simulator` is an educational demo for vote casting, tally finalization,
+result display, and independent verification of the evidence for the outcome.
 
-The goal is not to provide production election infrastructure. The goal is to integrate several security
-and cryptography concepts into one inspectable application:
+The application integrates the following security and cryptography components:
 
 - a Vite / React Router user experience for vote, tally, result, and verification flows
 - TypeScript API, session, verification, and artifact-handling logic
@@ -61,22 +61,25 @@ By design, it does not claim:
 For a short review pass:
 
 1. Try the live demo and complete the vote-to-verification flow.
-2. Read the Public Specs overview and verification model.
+2. Read the Public Specs [system overview](./public-book/src/overview.md),
+   [verification model](./public-book/src/verification/four-stage-model.md), and
+   [verdict conditions](./public-book/src/verification/gating-logic.md).
 3. Run the local mock flow from this README.
 4. Review [`SECURITY.md`](./SECURITY.md) for live-demo testing limits.
 5. Inspect `apps/`, `packages/`, `infra/`, `zkvm/`, `verifier-service/`, `formal/`, and `tests/` as needed.
 
-The core product invariant is simple: the UI must never show "Verified" unless all required
+The UI must never show "Verified" unless all required
 cryptographic and consistency checks pass.
 
-Three design choices make useful starting points for a code review:
+The following specifications define the main verification and artifact constraints:
 
 - [Verified requires complete evidence](./public-book/src/verification/gating-logic.md): a valid STARK
   receipt alone cannot establish that every required ballot and consistency check passed.
 - [Public bundles exclude private evidence](./public-book/src/verification/public-boundary.md): the
   archive boundary takes precedence over reproducing every UI check from the ZIP alone.
 - [Asynchronous finalization has guarded transitions](./public-book/src/aws/async-prover.md): stale or
-  cancelled work must be rejected before starting a prover task.
+  cancelled work must be rejected before input access or proof execution, including
+  startup admission inside a Batch-launched container.
 
 ## Verification and Bundles
 
@@ -88,10 +91,11 @@ Public bundles include evidence such as `public-input.json`, `election-manifest.
 `verification.json`, `included-bitmap.json`, and `seen-bitmap.json` must not be included in public
 bundles.
 
-The verification flow is intentionally fail-closed. Missing required evidence, inconsistent CT proofs,
-excluded slots, ImageID mismatches, unallowed dev-mode receipts, or failed STARK receipt verification must
-block a successful overall result. Dev-mode receipts are accepted only in explicit non-production/dev
-verification paths and must not be counted as production STARK proofs.
+The verification flow requires all mandatory checks to pass before reporting overall success.
+Missing required evidence, inconsistent CT proofs, excluded slots, ImageID mismatches, unallowed
+dev-mode receipts, or failed STARK receipt verification block that result. Explicit non-production/dev
+verification paths accept dev-mode receipts for development checks only; those receipts are not
+production STARK proofs.
 
 ## Architecture at a Glance
 
@@ -99,7 +103,7 @@ verification paths and must not be counted as production STARK proofs.
 - **API surface:** Hono route handlers backed by a framework-neutral route definition inventory
 - **Validation:** local schema validators and explicit response-shape tests
 - **Proof stack:** RISC Zero zkVM guest/host plus a standalone Rust `verifier-service`
-- **Image supply chain:** a dedicated verifier checks the selected digest-pinned prover image at app preflight and before runtime launch
+- **Image supply chain:** the native build verifier checks the selected digest-pinned prover image before App planning, and the runtime verifier checks it before prover launch
 - **Session persistence:** lifecycle-owned identity, voting, finalization, verification-observation, and adapter-metadata records rather than one optional-field session aggregate
 - **Formal scope:** Lean 4 models for selected summary, count, bitmap, input-commitment, and guest-model contracts
 - **AWS path:** Terraform-managed static frontend, Hono/API, DynamoDB store, and async prover infrastructure
@@ -116,7 +120,7 @@ external services.
 - Node.js 24.15 or later within the Node 24 release line (the supported range is bounded by
   `engines.node`; `.nvmrc` selects the current Node 24 release for version managers)
 - Corepack, which resolves the exact pnpm release and integrity hash from the root `packageManager`
-- Rust 1.97.1 only if you want Rust builds or real zkVM flows
+- Rust 1.99.0 only if you want Rust builds or real zkVM flows
 - RISC Zero tooling only if you want real zkVM flows
 - Lean / `elan` only if you want to run the formal verification gate
 - `mdbook` / `mdbook-mermaid` only if you want to build the Public Specs
@@ -187,13 +191,13 @@ before adapters are created. The supported local profiles are:
 Target runtime definitions use `target-aws-async` for production-proof,
 DynamoDB/S3/queue-backed execution. A develop-only
 `target-aws-async-quiesced` server profile rejects new public sessions during
-recovery, and Terraform pauses both prover and verification queue consumers.
+source-reviewed maintenance, and Terraform pauses both prover and verification queue consumers.
 Existing session access remains available. The quiesced profile is not a browser
 profile.
 Target definitions and deployment remain separately reviewed and authorized.
 
-These profiles are not interchangeable evidence labels: mock and development
-receipts do not prove production STARK correctness. `pnpm build:ci` selects
+Each profile identifies the kind of evidence produced: mock and development receipts support local
+checks, while production STARK evidence requires a production receipt. `pnpm build:ci` selects
 the target-safe browser profile before building and scanning `dist/`.
 
 ## Local Checks
@@ -217,7 +221,7 @@ Use the narrowest check that proves the change. For reviewer smoke tests, start 
 | Public Specs build        | `pnpm docs:book:build`                             |
 | Lean formal/vector gate   | `pnpm formal:verify`                               |
 | Type-system verification  | `pnpm type-system:verify`                          |
-| Broad TypeScript/UI gate  | `pnpm ci:verify`                                   |
+| Broad repository gate     | `pnpm ci:verify`                                   |
 
 Notes:
 
@@ -225,27 +229,17 @@ Notes:
 - Storybook opens at `http://localhost:6006`; its build writes to `.tmp/storybook-static`, separately from `dist/`. See the [component review guide](./docs/ui/design-spec-transparent-trust.md#component-review-with-storybook) for story placement and test ownership.
 - Mock Playwright uses a production-mode Vite static frontend plus local Hono API test server, not the same runtime path as `pnpm dev`.
 - `pnpm formal:verify` requires the pinned Lean toolchain under `formal/`.
+- `pnpm ci:verify` also checks Terraform IAM policy quotas and requires Python 3 and the pinned Terraform release; see the [tooling guide](./scripts/README.md#terraform) for prerequisites.
 
-The workspace uses pnpm 12, TypeScript 7, Oxlint, Oxfmt, and Vitest 5. pnpm schedules source-based
-workspace checks without waiting for dependency packages' checks, with bounded
-concurrency to control compiler memory and avoid overlapping Vitest pools.
-Preview a task graph with `pnpm --recursive run --dry-run type-check`.
-
-For fast local feedback, use `pnpm test:changed` or a workspace's `test` task.
-`pnpm test:profile --project @stark-ballot/verification` reports import costs.
-Vitest projects share one Vite server and reuse disk-cached transforms while
-keeping test files isolated. The complete repository gate remains
-`pnpm test:run`; selection and cache details are in the
-[test harness guide](./scripts/tests/README.md).
-
-Vitest tests live beside the code or contract they verify as `*.test.ts` or
-`*.test.tsx`; local shared helpers and fixtures live in `test-support/`.
-Browser E2E tests remain under `tests/e2e/` as `*.spec.ts`, and
-`*.type-test.ts` files are checked by TypeScript. See the
-[test placement convention](./scripts/tests/README.md#test-placement) for
-support-file boundaries and explicit test gates. Tooling tests compare current
-source files with compiler and runner discovery; no saved test-file list needs
-updating when tests are added, removed, or moved.
+The workspace uses pnpm 12, TypeScript 7, Oxlint, Oxfmt, Fallow, and Vitest 5.
+For fast local feedback, use `pnpm test:changed` or a workspace's `test` task;
+the complete Vitest gate remains `pnpm test:run`. The
+[test harness guide](./scripts/tests/README.md) explains test selection,
+caching, [test placement](./scripts/tests/README.md#test-placement), and
+[completion gates](./scripts/tests/README.md#completion-gates-by-change-area).
+To inspect execution costs, preview a workspace task graph with
+`pnpm --recursive run --dry-run type-check` or report test import costs with
+`pnpm test:profile --project @stark-ballot/verification`.
 
 Review dependency updates with `pnpm dependencies:outdated` and peer compatibility
 with `pnpm dependencies:peers`. When updating Actions, run
@@ -255,11 +249,15 @@ SHA pins through pnpm. Registry package updates still respect the workspace's
 
 ## Optional: Real zkVM Checks
 
-Real zkVM flows require the pinned Rust toolchain and RISC Zero tooling.
+Local real zkVM flows use Rust 1.99.0 for the application host and verifier,
+and RISC Zero's Rust 1.97.0 for the guest. Docker Toolchain builds separately
+select Rust 1.97.1 for upstream tool compilation; see the
+[image build guide](./docs/infrastructure/risc0-base-image.md#reviewed-release-pins).
+Install the local toolchains and pinned RISC Zero tools:
 
 ```bash
-rustup toolchain install 1.97.1
-rustup component add rustfmt clippy --toolchain 1.97.1
+rustup toolchain install 1.99.0
+rustup component add rustfmt clippy --toolchain 1.99.0
 cargo install --locked --git https://github.com/risc0/risc0 --tag v3.0.6 rzup
 rzup install rust 1.97.0
 rzup install r0vm 3.0.6

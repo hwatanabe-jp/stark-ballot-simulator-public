@@ -19,50 +19,53 @@ resource "aws_iam_role" "target_sfn" {
 
 data "aws_iam_policy_document" "target_sfn" {
   statement {
-    sid    = "RunTargetProverTask"
-    effect = "Allow"
-
-    actions   = ["ecs:RunTask"]
-    resources = [aws_ecs_task_definition.prover.arn]
-
-    condition {
-      test     = "ArnEquals"
-      variable = "ecs:cluster"
-      values   = [aws_ecs_cluster.prover.arn]
-    }
+    sid       = "SubmitTargetProverJob"
+    effect    = "Allow"
+    actions   = ["batch:SubmitJob"]
+    resources = [aws_batch_job_queue.prover.arn, aws_cloudformation_stack.prover_job.outputs["JobDefinitionArn"], aws_cloudformation_stack.prover_job.outputs["ProverSlotsArn"]]
   }
 
   statement {
-    sid    = "ObserveTargetProverTask"
-    effect = "Allow"
-
-    actions = [
-      "ecs:DescribeTasks",
-      "ecs:StopTask",
-    ]
-    resources = ["*"]
-
-    condition {
-      test     = "ArnEquals"
-      variable = "ecs:cluster"
-      values   = [aws_ecs_cluster.prover.arn]
-    }
-  }
-
-  statement {
-    sid    = "PassTargetProverRoles"
-    effect = "Allow"
-
-    actions = ["iam:PassRole"]
-    resources = [
-      aws_iam_role.prover_task_execution.arn,
-      aws_iam_role.prover_task.arn,
-    ]
-
+    # Tagged SubmitJob authorizes TagResource on its submission resources too.
+    sid       = "TagTargetProverSubmission"
+    effect    = "Allow"
+    actions   = ["batch:TagResource"]
+    resources = [aws_batch_job_queue.prover.arn, aws_cloudformation_stack.prover_job.outputs["JobDefinitionArn"], aws_cloudformation_stack.prover_job.outputs["ProverSlotsArn"]]
     condition {
       test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["ecs-tasks.amazonaws.com"]
+      variable = "aws:RequestTag/prover_queue"
+      values   = [aws_batch_job_queue.prover.name]
+    }
+  }
+
+  statement {
+    sid       = "CreateTaggedProverJob"
+    effect    = "Allow"
+    actions   = ["batch:SubmitJob", "batch:TagResource"]
+    resources = ["arn:aws:batch:${var.aws_region}:${var.aws_account_id}:job/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/prover_queue"
+      values   = [aws_batch_job_queue.prover.name]
+    }
+  }
+
+  statement {
+    sid       = "ObserveProverJobs"
+    effect    = "Allow"
+    actions   = ["batch:DescribeJobs"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "TerminateTargetProverJob"
+    effect    = "Allow"
+    actions   = ["batch:TerminateJob"]
+    resources = ["arn:aws:batch:${var.aws_region}:${var.aws_account_id}:job/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/prover_queue"
+      values   = [aws_batch_job_queue.prover.name]
     }
   }
 
@@ -77,7 +80,7 @@ data "aws_iam_policy_document" "target_sfn" {
       "events:PutTargets",
       "events:RemoveTargets",
     ]
-    resources = ["*"]
+    resources = ["arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/StepFunctionsGetEventsForBatchJobsRule"]
   }
 
   statement {
@@ -96,51 +99,7 @@ data "aws_iam_policy_document" "target_sfn" {
     effect = "Allow"
 
     actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_alias.image_signature_verifier_runtime.arn]
-  }
-
-  statement {
-    sid    = "UseProverSemaphore"
-    effect = "Allow"
-
-    actions = [
-      "dynamodb:GetItem",
-      "dynamodb:UpdateItem",
-    ]
-    resources = [aws_dynamodb_table.prover_semaphore.arn]
-  }
-
-  statement {
-    sid    = "UseProverSemaphoreKey"
-    effect = "Allow"
-
-    actions = [
-      "kms:Decrypt",
-      "kms:DescribeKey",
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
-      "kms:ReEncryptFrom",
-      "kms:ReEncryptTo",
-    ]
-    resources = [aws_kms_key.app_data.arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:CallerAccount"
-      values   = [var.aws_account_id]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["dynamodb.${var.aws_region}.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:aws:dynamodb:tableName"
-      values   = [aws_dynamodb_table.prover_semaphore.name]
-    }
+    resources = [aws_lambda_function.image_signature_verifier.qualified_arn]
   }
 
   statement {
@@ -180,7 +139,7 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Resource       = "arn:aws:states:::lambda:invoke"
         TimeoutSeconds = var.image_signature_verifier_step_timeout_seconds
         Parameters = {
-          FunctionName = aws_lambda_alias.image_signature_verifier_runtime.arn
+          FunctionName = aws_lambda_function.image_signature_verifier.qualified_arn
           Payload = {
             imageUri          = var.prover_image_uri
             registryId        = var.aws_account_id
@@ -250,195 +209,28 @@ resource "aws_sfn_state_machine" "target_finalization" {
                 StringEquals = "cryptographic"
               },
             ]
-            Next = "AcquireProverSlot"
+            Next = "RunProver"
           },
         ]
         Default = "CallbackSignatureFailed"
       }
-      AcquireProverSlot = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:updateItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.prover_semaphore.name
-          Key = {
-            LockName = {
-              S = local.prover_semaphore_lock_name
-            }
-          }
-          UpdateExpression    = "SET currentLockCount = currentLockCount + :one, #owner = :acquiredAt"
-          ConditionExpression = "currentLockCount < :limit AND attribute_not_exists(#owner)"
-          ExpressionAttributeNames = {
-            "#owner.$" = "$$.Execution.Name"
-          }
-          ExpressionAttributeValues = {
-            ":one" = {
-              N = "1"
-            }
-            ":limit" = {
-              N = tostring(var.prover_max_concurrent_provers)
-            }
-            ":acquiredAt" = {
-              "S.$" = "$$.State.EnteredTime"
-            }
-          }
-        }
-        ResultPath = null
-        Retry = [
-          {
-            ErrorEquals     = ["DynamoDB.ConditionalCheckFailedException"]
-            IntervalSeconds = 15
-            BackoffRate     = 1
-            MaxAttempts     = 120
-          },
-          {
-            ErrorEquals = [
-              "DynamoDB.ProvisionedThroughputExceededException",
-              "DynamoDB.ThrottlingException",
-              "DynamoDB.InternalServerError",
-            ]
-            IntervalSeconds = 2
-            BackoffRate     = 2
-            MaxAttempts     = 3
-          },
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"]
-            ResultPath  = null
-            Next        = "CheckProverSlotHeld"
-          },
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = "$.error"
-            Next        = "CallbackFailed"
-          },
-        ]
-        Next = "MarkProverStarted"
-      }
-      CheckProverSlotHeld = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:getItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.prover_semaphore.name
-          Key = {
-            LockName = {
-              S = local.prover_semaphore_lock_name
-            }
-          }
-          ConsistentRead       = true
-          ProjectionExpression = "#owner"
-          ExpressionAttributeNames = {
-            "#owner.$" = "$$.Execution.Name"
-          }
-        }
-        ResultPath = "$.slotCheck"
-        Retry = [
-          {
-            ErrorEquals = [
-              "DynamoDB.ProvisionedThroughputExceededException",
-              "DynamoDB.ThrottlingException",
-              "DynamoDB.InternalServerError",
-            ]
-            IntervalSeconds = 2
-            BackoffRate     = 2
-            MaxAttempts     = 3
-          },
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = "$.error"
-            Next        = "CallbackFailed"
-          },
-        ]
-        Next = "CheckProverSlotHeldChoice"
-      }
-      CheckProverSlotHeldChoice = {
-        Type = "Choice"
-        Choices = [
-          {
-            Variable  = "$.slotCheck.Item"
-            IsPresent = true
-            Next      = "FormatSlotCheck"
-          },
-        ]
-        Default = "CallbackCapacityWaitFailed"
-      }
-      FormatSlotCheck = {
-        Type = "Pass"
-        Parameters = {
-          "ownerJson.$" = "States.JsonToString($.slotCheck.Item)"
-        }
-        ResultPath = "$.slotCheck.ownerJson"
-        Next       = "CheckFormattedSlotHeld"
-      }
-      CheckFormattedSlotHeld = {
-        Type = "Choice"
-        Choices = [
-          {
-            Variable      = "$.slotCheck.ownerJson.ownerJson"
-            StringMatches = "*S*"
-            Next          = "MarkProverStarted"
-          },
-        ]
-        Default = "CallbackCapacityWaitFailed"
-      }
-      MarkProverStarted = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = aws_lambda_function.target["finalization_writer"].arn
-          Payload = {
-            status           = "RUNNING"
-            "payload.$"      = "$"
-            "executionArn.$" = "$$.Execution.Id"
-            "startedAtIso.$" = "$$.State.EnteredTime"
-          }
-        }
-        ResultPath = "$.markStarted"
-        Retry      = local.callback_delivery_retry
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = "$.error"
-            Next        = "ReleaseAfterFailure"
-          },
-        ]
-        Next = "CheckProverStartAdmitted"
-      }
-      CheckProverStartAdmitted = {
-        Type = "Choice"
-        Choices = [
-          {
-            Variable     = "$.markStarted.Payload.state.status"
-            StringEquals = "running"
-            Next         = "RunProver"
-          },
-        ]
-        Default = "ReleaseSuperseded"
-      }
       RunProver = {
-        Type           = "Task"
-        Resource       = "arn:aws:states:::ecs:runTask.sync"
-        TimeoutSeconds = var.prover_task_timeout_seconds
+        Type     = "Task"
+        Resource = "arn:aws:states:::batch:submitJob.sync"
+        # Includes the former 30-minute capacity wait plus task runtime and stop grace.
+        TimeoutSeconds = var.prover_task_timeout_seconds + 1800 + 180
         Parameters = {
-          Cluster         = aws_ecs_cluster.prover.arn
-          TaskDefinition  = aws_ecs_task_definition.prover.arn
-          "ClientToken.$" = "States.Hash($$.Execution.Name, 'SHA-256')"
-          Group           = var.deployment_id
-          LaunchType      = "FARGATE"
-          NetworkConfiguration = {
-            AwsvpcConfiguration = {
-              AssignPublicIp = "ENABLED"
-              SecurityGroups = var.prover_security_group_ids
-              Subnets        = var.prover_subnet_ids
-            }
-          }
-          Overrides = {
-            ContainerOverrides = [
-              {
+          JobDefinition = aws_cloudformation_stack.prover_job.outputs["JobDefinitionArn"]
+          JobQueue      = aws_batch_job_queue.prover.arn
+          "JobName.$"   = "$$.Execution.Name"
+          Tags          = { deployment_id = var.deployment_id, prover_queue = aws_batch_job_queue.prover.name }
+          EcsPropertiesOverride = {
+            TaskProperties = [{
+              Containers = [{
                 Name = "prover"
                 Environment = [
+                  { Name = "PROVER_START_PAYLOAD", "Value.$" = "States.JsonToString($)" },
+                  { Name = "PROVER_EXECUTION_ARN", "Value.$" = "$$.Execution.Id" },
                   {
                     Name  = "INPUT_S3_BUCKET"
                     Value = aws_s3_bucket.proof_artifacts.bucket
@@ -464,85 +256,26 @@ resource "aws_sfn_state_machine" "target_finalization" {
                     Value = var.expected_image_id
                   },
                 ]
-              },
-            ]
+              }]
+            }]
           }
         }
         ResultPath = "$.proverResult"
-        Next       = "ReleaseAfterSuccess"
-        Retry = [
-          {
-            ErrorEquals = [
-              "AmazonECS.Unknown",
-              "ECS.ServerException",
-              "ECS.ThrottlingException",
-              "ECS.AmazonECSException",
-            ]
-            IntervalSeconds = 10
-            BackoffRate     = 2
-            MaxAttempts     = 5
-          },
-        ]
+        Next       = "CallbackSucceeded"
+        # SubmitJob has no ClientToken. Do not resubmit on an ambiguous response
+        # or retry a failed proof; Batch also has Attempts = 1.
         Catch = [
           {
             ErrorEquals = ["States.Timeout"]
             ResultPath  = "$.error"
-            Next        = "ReleaseAfterTimeout"
+            Next        = "CallbackTimedOut"
           },
           {
             ErrorEquals = ["States.ALL"]
             ResultPath  = "$.error"
-            Next        = "ReleaseAfterFailure"
+            Next        = "CallbackFailed"
           },
         ]
-      }
-      ReleaseAfterSuccess = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:updateItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.prover_semaphore.name
-          Key = {
-            LockName = {
-              S = local.prover_semaphore_lock_name
-            }
-          }
-          UpdateExpression    = "SET currentLockCount = currentLockCount - :one REMOVE #owner"
-          ConditionExpression = "attribute_exists(#owner) AND currentLockCount >= :one"
-          ExpressionAttributeNames = {
-            "#owner.$" = "$$.Execution.Name"
-          }
-          ExpressionAttributeValues = {
-            ":one" = {
-              N = "1"
-            }
-          }
-        }
-        ResultPath = null
-        Retry = [
-          {
-            ErrorEquals = [
-              "DynamoDB.ProvisionedThroughputExceededException",
-              "DynamoDB.ThrottlingException",
-              "DynamoDB.InternalServerError",
-            ]
-            IntervalSeconds = 2
-            BackoffRate     = 2
-            MaxAttempts     = 3
-          },
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"]
-            ResultPath  = null
-            Next        = "CallbackSucceeded"
-          },
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = null
-            Next        = "CallbackSucceeded"
-          },
-        ]
-        Next = "CallbackSucceeded"
       }
       CallbackSucceeded = {
         Type     = "Task"
@@ -560,54 +293,6 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Catch = local.callback_delivery_catch
         End   = true
       }
-      ReleaseAfterTimeout = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:updateItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.prover_semaphore.name
-          Key = {
-            LockName = {
-              S = local.prover_semaphore_lock_name
-            }
-          }
-          UpdateExpression    = "SET currentLockCount = currentLockCount - :one REMOVE #owner"
-          ConditionExpression = "attribute_exists(#owner) AND currentLockCount >= :one"
-          ExpressionAttributeNames = {
-            "#owner.$" = "$$.Execution.Name"
-          }
-          ExpressionAttributeValues = {
-            ":one" = {
-              N = "1"
-            }
-          }
-        }
-        ResultPath = null
-        Retry = [
-          {
-            ErrorEquals = [
-              "DynamoDB.ProvisionedThroughputExceededException",
-              "DynamoDB.ThrottlingException",
-              "DynamoDB.InternalServerError",
-            ]
-            IntervalSeconds = 2
-            BackoffRate     = 2
-            MaxAttempts     = 3
-          },
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"]
-            ResultPath  = null
-            Next        = "CallbackTimedOut"
-          },
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = null
-            Next        = "CallbackTimedOut"
-          },
-        ]
-        Next = "CallbackTimedOut"
-      }
       CallbackTimedOut = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -623,54 +308,6 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Retry = local.callback_delivery_retry
         Catch = local.callback_delivery_catch
         End   = true
-      }
-      ReleaseAfterFailure = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:updateItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.prover_semaphore.name
-          Key = {
-            LockName = {
-              S = local.prover_semaphore_lock_name
-            }
-          }
-          UpdateExpression    = "SET currentLockCount = currentLockCount - :one REMOVE #owner"
-          ConditionExpression = "attribute_exists(#owner) AND currentLockCount >= :one"
-          ExpressionAttributeNames = {
-            "#owner.$" = "$$.Execution.Name"
-          }
-          ExpressionAttributeValues = {
-            ":one" = {
-              N = "1"
-            }
-          }
-        }
-        ResultPath = null
-        Retry = [
-          {
-            ErrorEquals = [
-              "DynamoDB.ProvisionedThroughputExceededException",
-              "DynamoDB.ThrottlingException",
-              "DynamoDB.InternalServerError",
-            ]
-            IntervalSeconds = 2
-            BackoffRate     = 2
-            MaxAttempts     = 3
-          },
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"]
-            ResultPath  = null
-            Next        = "CallbackFailed"
-          },
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = null
-            Next        = "CallbackFailed"
-          },
-        ]
-        Next = "CallbackFailed"
       }
       CallbackSignatureFailed = {
         Type     = "Task"
@@ -712,77 +349,6 @@ resource "aws_sfn_state_machine" "target_finalization" {
         Retry = local.callback_delivery_retry
         Catch = local.callback_delivery_catch
         End   = true
-      }
-      CallbackCapacityWaitFailed = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = aws_lambda_function.target["finalization_writer"].arn
-          Payload = {
-            status           = "FAILED"
-            "payload.$"      = "$"
-            "executionArn.$" = "$$.Execution.Id"
-            "failedAtIso.$"  = "$$.State.EnteredTime"
-            error = {
-              code    = "PROVER_CAPACITY_WAIT_TIMEOUT"
-              message = "Timed out waiting for target prover capacity"
-            }
-          }
-        }
-        Retry = local.callback_delivery_retry
-        Catch = local.callback_delivery_catch
-        End   = true
-      }
-      ReleaseSuperseded = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::dynamodb:updateItem"
-        Parameters = {
-          TableName = aws_dynamodb_table.prover_semaphore.name
-          Key = {
-            LockName = {
-              S = local.prover_semaphore_lock_name
-            }
-          }
-          UpdateExpression    = "SET currentLockCount = currentLockCount - :one REMOVE #owner"
-          ConditionExpression = "attribute_exists(#owner) AND currentLockCount >= :one"
-          ExpressionAttributeNames = {
-            "#owner.$" = "$$.Execution.Name"
-          }
-          ExpressionAttributeValues = {
-            ":one" = {
-              N = "1"
-            }
-          }
-        }
-        ResultPath = null
-        Retry = [
-          {
-            ErrorEquals = [
-              "DynamoDB.ProvisionedThroughputExceededException",
-              "DynamoDB.ThrottlingException",
-              "DynamoDB.InternalServerError",
-            ]
-            IntervalSeconds = 2
-            BackoffRate     = 2
-            MaxAttempts     = 3
-          },
-        ]
-        Catch = [
-          {
-            ErrorEquals = ["DynamoDB.ConditionalCheckFailedException"]
-            ResultPath  = null
-            Next        = "ProverStartSuperseded"
-          },
-          {
-            ErrorEquals = ["States.ALL"]
-            ResultPath  = null
-            Next        = "ProverStartSuperseded"
-          },
-        ]
-        Next = "ProverStartSuperseded"
-      }
-      ProverStartSuperseded = {
-        Type = "Succeed"
       }
       CallbackDeliveryFailed = {
         Type  = "Fail"

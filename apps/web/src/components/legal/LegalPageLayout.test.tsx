@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { t as translate } from '@stark-ballot/web/i18n';
@@ -27,15 +28,23 @@ describe('LegalPageLayout', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows only back to home link when no active session', async () => {
+  it('shows the document introduction and only back to home link when no active session', async () => {
     mockGetSessionData.mockReturnValue(null);
 
     render(
-      <LegalPageLayout title="Terms" effectiveDate="2026-01-20" effectiveDateLabel="Effective Date">
+      <LegalPageLayout
+        document={{
+          title: 'Terms',
+          effectiveDate: '2026-01-20',
+          effectiveDateLabel: 'Effective Date',
+          intro: 'Introduction',
+        }}
+      >
         <p>Body</p>
       </LegalPageLayout>,
     );
 
+    expect(screen.getByText('Introduction')).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByTestId('legal-back-to-home')).toBeInTheDocument();
       expect(screen.queryByTestId('legal-close-tab')).not.toBeInTheDocument();
@@ -45,8 +54,7 @@ describe('LegalPageLayout', () => {
 
   it('shows both close tab button and back to home link when session is active', () => {
     mockGetSessionData.mockReturnValue({
-      sessionId: 'session-1',
-      capabilityToken: 'test-capability-token',
+      ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'test-capability-token' }),
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: `0x${'a'.repeat(64)}`,
       logId: `0x${'b'.repeat(64)}`,
@@ -56,7 +64,14 @@ describe('LegalPageLayout', () => {
     });
 
     render(
-      <LegalPageLayout title="Terms" effectiveDate="2026-01-20" effectiveDateLabel="Effective Date">
+      <LegalPageLayout
+        document={{
+          title: 'Terms',
+          effectiveDate: '2026-01-20',
+          effectiveDateLabel: 'Effective Date',
+          intro: 'Introduction',
+        }}
+      >
         <p>Body</p>
       </LegalPageLayout>,
     );
@@ -70,8 +85,7 @@ describe('LegalPageLayout', () => {
 
   it('triggers window.close from the close tab button', () => {
     mockGetSessionData.mockReturnValue({
-      sessionId: 'session-2',
-      capabilityToken: 'test-capability-token',
+      ...admitSessionIdentity({ sessionId: 'session-2', capabilityToken: 'test-capability-token' }),
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: `0x${'a'.repeat(64)}`,
       logId: `0x${'b'.repeat(64)}`,
@@ -83,7 +97,14 @@ describe('LegalPageLayout', () => {
     const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
 
     render(
-      <LegalPageLayout title="Privacy" effectiveDate="2026-01-20" effectiveDateLabel="Effective Date">
+      <LegalPageLayout
+        document={{
+          title: 'Privacy',
+          effectiveDate: '2026-01-20',
+          effectiveDateLabel: 'Effective Date',
+          intro: 'Introduction',
+        }}
+      >
         <p>Body</p>
       </LegalPageLayout>,
     );
@@ -100,7 +121,14 @@ describe('LegalPageLayout', () => {
     });
 
     render(
-      <LegalPageLayout title="Terms" effectiveDate="2026-01-20" effectiveDateLabel="Effective Date">
+      <LegalPageLayout
+        document={{
+          title: 'Terms',
+          effectiveDate: '2026-01-20',
+          effectiveDateLabel: 'Effective Date',
+          intro: 'Introduction',
+        }}
+      >
         <p>Body</p>
       </LegalPageLayout>,
     );

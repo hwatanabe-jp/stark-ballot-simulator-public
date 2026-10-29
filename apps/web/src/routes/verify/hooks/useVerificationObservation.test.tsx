@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { RefObject } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,8 +10,7 @@ import { useVerificationObservation } from './useVerificationObservation';
 
 vi.mock('@stark-ballot/web/session', () => ({
   getSessionDataForIdentity: vi.fn(() => ({
-    sessionId: 'session-1',
-    capabilityToken: 'redacted-capability',
+    ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'redacted-capability' }),
   })),
 }));
 
@@ -68,8 +68,7 @@ describe('useVerificationObservation', () => {
   it('submits once only after server validation, terminal verification, and completed presentation', async () => {
     const sessionIdentityRef = {
       current: {
-        sessionId: 'session-1',
-        capabilityToken: 'redacted-capability',
+        ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'redacted-capability' }),
       },
     } satisfies RefObject<SessionIdentity | null>;
     const data = payload();
@@ -131,8 +130,7 @@ describe('useVerificationObservation', () => {
     const data = payload();
     const sessionIdentityRef = {
       current: {
-        sessionId: 'session-1',
-        capabilityToken: 'redacted-capability',
+        ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'redacted-capability' }),
       },
     } satisfies RefObject<SessionIdentity | null>;
 
@@ -176,8 +174,7 @@ describe('useVerificationObservation', () => {
     );
     const sessionIdentityRef = {
       current: {
-        sessionId: 'session-1',
-        capabilityToken: 'redacted-capability',
+        ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'redacted-capability' }),
       },
     } satisfies RefObject<SessionIdentity | null>;
     type ObservationProps = { data: VerificationPayload };

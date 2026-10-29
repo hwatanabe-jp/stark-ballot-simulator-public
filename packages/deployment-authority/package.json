@@ -4,19 +4,16 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
-    "./app-acceptance-ledger": "./src/app-acceptance-ledger.js",
     "./app-execution-authority": "./src/app-execution-authority.js",
     "./authority-bucket-policy": "./src/authority-bucket-policy.js",
-    "./conditional-object-ledger": "./src/conditional-object-ledger.js",
     "./descriptor-snapshot": "./src/descriptor-snapshot.js",
-    "./dynamodb-recovery-phase": "./src/dynamodb-recovery-phase.js",
-    "./ecr-retention": "./src/ecr-retention.js",
-    "./exact-bytes": "./src/exact-bytes.js",
-    "./plan-approval": "./src/plan-approval.js",
     "./release-ledger": "./src/release-ledger.js",
-    "./saved-plan-review": "./src/saved-plan-review.js",
     "./terraform-authority": "./src/terraform-authority.js",
-    "./terraform-drift": "./src/terraform-drift.js"
+    "./terraform-drift": "./src/terraform-drift.js",
+    "./plan-package": "./src/plan-package.js",
+    "./root-checkpoint": "./src/root-checkpoint.js",
+    "./mutation-owner": "./src/mutation-owner.js",
+    "./static-frontend-manifest": "./src/static-frontend-manifest.js"
   },
   "scripts": {
     "lint": "pnpm --dir ../.. exec oxlint packages/deployment-authority",

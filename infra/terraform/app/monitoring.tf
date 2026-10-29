@@ -4,7 +4,6 @@ locals {
     votes               = local.active_votes_table_name
     rate_limit_events   = aws_dynamodb_table.rate_limit_events.name
     rate_limit_counters = aws_dynamodb_table.rate_limit_counters.name
-    prover_semaphore    = aws_dynamodb_table.prover_semaphore.name
   }
 }
 

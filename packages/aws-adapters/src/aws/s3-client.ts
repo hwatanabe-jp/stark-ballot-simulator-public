@@ -50,7 +50,7 @@ export function getS3Config(profile: ResolvedRuntimeProfile): S3Config {
  * 2. AWS CLI profile (AWS_PROFILE environment variable)
  * 3. IAM role credentials (Lambda/EC2)
  */
-export function createS3Client(profile: ResolvedRuntimeProfile): S3Client {
+function createS3Client(profile: ResolvedRuntimeProfile): S3Client {
   const config = getS3Config(profile);
 
   return new S3Client({

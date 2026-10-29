@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { errorResponse, handleApiError } from './errorHandler';
+import { handleApiError } from './errorHandler';
+import { errorResponse } from './response';
 import { ApiError, ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { logger } from '@stark-ballot/diagnostics/logger';

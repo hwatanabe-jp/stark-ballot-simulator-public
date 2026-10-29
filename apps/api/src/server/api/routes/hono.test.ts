@@ -1,3 +1,4 @@
+import { handle } from '@hono/aws-lambda';
 import { beforeEach, afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -8,7 +9,7 @@ import {
   readJsonRecord,
   requireDataRecord,
 } from '@stark-ballot/test-support/testing/response-helpers';
-import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { createSessionCapabilityToken } from '@stark-ballot/domain/security/sessionCapabilityToken';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
@@ -218,6 +219,28 @@ describe('createHonoApp', () => {
     loggerWarnSpy.mockRestore();
   });
 
+  it('authenticates cancellation before rate/body admission and the sync-mode refusal', async () => {
+    const identity = createBaseIdentity();
+    vi.mocked(getGlobalStore).mockReturnValue(createStoreWithSession(identity));
+    const enforceFinalizeCancelRateLimit = vi.fn(async () => ({ clientIp: '203.0.113.10' }));
+    const app = createHonoApp({ finalizationDependencyOverrides: { enforceFinalizeCancelRateLimit } });
+    const url = `/api/sessions/${identity.sessionId}/finalizations/test-finalization/cancel`;
+    const denied = await app.request(url, {
+      method: 'POST',
+      headers: { 'X-Session-Capability': 'invalid' },
+      body: '{',
+    });
+    expect(denied.status).toBe(401);
+    expect(enforceFinalizeCancelRateLimit).not.toHaveBeenCalled();
+    const headers = { ...createPathSessionAuthHeaders(identity.sessionId), 'Content-Type': 'application/json' };
+    const invalidBody = await app.request(url, { method: 'POST', headers, body: '{' });
+    expect(invalidBody.status).toBe(400);
+    expect(enforceFinalizeCancelRateLimit).toHaveBeenCalledOnce();
+    const disabled = await app.request(url, { method: 'POST', headers, body: '{}' });
+    expect(disabled.status).toBe(404);
+    expect(enforceFinalizeCancelRateLimit).toHaveBeenCalledTimes(2);
+  });
+
   it('does not import the Next route binding adapter', async () => {
     const source = await fs.readFile(path.join(process.cwd(), 'apps/api/src/server/api/routes/hono.ts'), 'utf-8');
 
@@ -246,7 +269,7 @@ describe('createHonoApp', () => {
     expect(getStringProperty(data, 'sessionId')).toBe('session-123');
     expect(data).not.toHaveProperty('artifactContractId');
     expect(data).not.toHaveProperty('contractGeneration');
-    expect(getStringProperty(getRecordProperty(payload, 'meta'), 'requestId')).toBeTruthy();
+    expect(getStringProperty(getObjectProperty(payload, 'meta'), 'requestId')).toBeTruthy();
   });
 
   it('does not register the replaced session, vote, or progress paths', async () => {
@@ -418,6 +441,49 @@ describe('createHonoApp', () => {
     const payload = await readJsonRecord(response, 'error response');
     expect(getApiErrorCode(payload)).toBe('INTERNAL_ERROR');
   });
+
+  it.each(['full', 'lambda', 'readonly'] as const)(
+    'blocks HEAD before store access in %s and through the Gateway adapter',
+    async (mode) => {
+      const app = createHonoApp({ mode, basePath: '/custom' });
+      vi.mocked(getGlobalStore).mockClear();
+      for (const suffix of ['progress', 'finalizations/current', 'finalizations/execution/artifacts/bundle']) {
+        const path = `/custom/sessions/session-123/${suffix}`;
+        const response = await app.request(`http://localhost${path}`, { method: 'HEAD' });
+        expect(response.status).toBe(404);
+        expect(await response.text()).toBe('');
+        const gateway = await handle(app)({
+          version: '',
+          resource: '/custom/{proxy+}',
+          path,
+          httpMethod: 'HEAD',
+          headers: {},
+          body: null,
+          isBase64Encoded: false,
+          requestContext: {
+            accountId: '123456789012',
+            apiId: 'test',
+            authorizer: {},
+            domainName: 'localhost',
+            domainPrefix: 'localhost',
+            httpMethod: 'HEAD',
+            path,
+            protocol: 'HTTP/1.1',
+            identity: { sourceIp: '127.0.0.1', userAgent: 'test' },
+            extendedRequestId: 'gateway-head',
+            requestId: 'gateway-head',
+            resourcePath: '/custom/{proxy+}',
+            stage: 'live',
+            requestTime: '',
+            requestTimeEpoch: 0,
+          },
+        });
+        expect(gateway.statusCode).toBe(404);
+        expect(gateway.body).toBe('');
+      }
+      expect(getGlobalStore).not.toHaveBeenCalled();
+    },
+  );
 
   it('supports custom basePath for read-only routes', async () => {
     // Given
@@ -698,7 +764,7 @@ describe('createHonoApp', () => {
 
     expect(response.status).toBe(400);
     expect(getApiErrorCode(payload)).toBe('INVALID_SIZE');
-    expect(getStringProperty(getRecordProperty(payload, 'error'), 'message')).toBeTruthy();
+    expect(getStringProperty(getObjectProperty(payload, 'error'), 'message')).toBeTruthy();
     expect(payload).not.toHaveProperty('statusCode');
   });
 
@@ -720,7 +786,7 @@ describe('createHonoApp', () => {
 
     expect(response.status).toBe(400);
     expect(getApiErrorCode(payload)).toBe('INVALID_BITMAP_PROOF_REQUEST');
-    expect(getStringProperty(getRecordProperty(payload, 'error'), 'message')).toBeTruthy();
+    expect(getStringProperty(getObjectProperty(payload, 'error'), 'message')).toBeTruthy();
     expect(payload).not.toHaveProperty('statusCode');
   });
 
@@ -872,12 +938,12 @@ describe('createHonoApp', () => {
       new Request('http://localhost/api/sessions/session-123/progress', {
         headers: { 'x-request-id': 'client-ref_123.abc' },
       }),
-      { requestContext: { requestId: 'trusted-gateway-request-id' } },
+      { requestContext: { extendedRequestId: 'trusted-gateway-request-id' } },
     );
 
     expect(response.headers.get('x-request-id')).toBe('trusted-gateway-request-id');
     const payload = await readJsonRecord(response, 'correlated request failure');
-    expect(getStringProperty(getRecordProperty(payload, 'meta'), 'requestId')).toBe('trusted-gateway-request-id');
+    expect(getStringProperty(getObjectProperty(payload, 'meta'), 'requestId')).toBe('trusted-gateway-request-id');
     expect(JSON.stringify(payload)).not.toContain('client-ref_123.abc');
     expect(loggerWarnSpy).toHaveBeenCalledWith(
       'request completed',
@@ -904,7 +970,7 @@ describe('createHonoApp', () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
     const payload = await readJsonRecord(response, 'generated request ID failure');
-    expect(getStringProperty(getRecordProperty(payload, 'meta'), 'requestId')).toBe(
+    expect(getStringProperty(getObjectProperty(payload, 'meta'), 'requestId')).toBe(
       response.headers.get('x-request-id'),
     );
     const summaryFields = loggerWarnSpy.mock.calls.find(
@@ -938,7 +1004,7 @@ describe('createHonoApp', () => {
             },
           },
         ),
-        { requestContext: { requestId: 'trusted-summary-request-id' } },
+        { requestContext: { extendedRequestId: 'trusted-summary-request-id' } },
       );
 
       const emittedRecords = consoleWarnSpy.mock.calls
@@ -946,7 +1012,7 @@ describe('createHonoApp', () => {
         .filter((value) => value.startsWith('{'))
         .map((value) => JSON.parse(value) as unknown);
       const summary = emittedRecords.find((value) => getStringProperty(value, 'event') === 'http_request');
-      const summaryHttp = getRecordProperty(summary, 'http');
+      const summaryHttp = getObjectProperty(summary, 'http');
 
       expect(response.headers.get('x-request-id')).toBe('trusted-summary-request-id');
       expect(getStringProperty(summary, 'request_id')).toBe('trusted-summary-request-id');
@@ -988,8 +1054,8 @@ describe('createHonoApp', () => {
       }),
       {
         requestContext: {
-          requestId: 'trusted-error-request-id',
-          http: { sourceIp: '203.0.113.90' },
+          extendedRequestId: 'trusted-error-request-id',
+          identity: { sourceIp: '203.0.113.90' },
         },
       },
     );
@@ -998,7 +1064,7 @@ describe('createHonoApp', () => {
     expect(response.headers.get('x-request-id')).toBe('trusted-error-request-id');
     expect(
       getStringProperty(
-        getRecordProperty(await readJsonRecord(response, 'thrown route response'), 'meta'),
+        getObjectProperty(await readJsonRecord(response, 'thrown route response'), 'meta'),
         'requestId',
       ),
     ).toBe('trusted-error-request-id');
@@ -1006,10 +1072,10 @@ describe('createHonoApp', () => {
       (value) => getStringProperty(value, 'requestId') === 'trusted-error-request-id',
     );
     expect(correlatedContext).toBeDefined();
-    expect(getStringProperty(getRecordProperty(correlatedContext, 'http'), 'path')).toBe(
+    expect(getStringProperty(getObjectProperty(correlatedContext, 'http'), 'path')).toBe(
       '/api/sessions/:sessionId/finalizations/current',
     );
-    expect(getStringProperty(getRecordProperty(correlatedContext, 'http'), 'source_ip_hash')).toBe(
+    expect(getStringProperty(getObjectProperty(correlatedContext, 'http'), 'source_ip_hash')).toBe(
       hashIpForLogging('203.0.113.90'),
     );
     expect(loggerErrorSpy).toHaveBeenCalledWith(
@@ -1034,7 +1100,7 @@ describe('createHonoApp', () => {
       new Request(`http://localhost/api/sessions/${rawSessionId}/finalizations/current`, {
         headers: createPathSessionAuthHeaders(rawSessionId),
       }),
-      { requestContext: { requestId: 'trusted-opaque-error-id' } },
+      { requestContext: { extendedRequestId: 'trusted-opaque-error-id' } },
     );
 
     expect(response.status).toBe(500);

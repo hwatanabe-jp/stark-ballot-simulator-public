@@ -1,3 +1,5 @@
+import type { VerificationResult } from '@stark-ballot/verification/shared/types';
+import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
 import { createHash } from 'node:crypto';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import {
@@ -6,6 +8,7 @@ import {
   type VerificationObservationCastCheckId,
   type VerificationObservationCastStatus,
   type VerificationObservationRequest,
+  type AvailableVerificationResource,
 } from '@stark-ballot/api-contract/schemas/verification';
 import type { ApiHandlerArguments, RouteBoundResponse, SessionFinalizationAdmittedContext } from '../context';
 import { recordVerificationObservationRoute } from '@stark-ballot/api-contract/routes';
@@ -60,6 +63,112 @@ export function buildObservedVerificationChecks(
   return overlayLocalCastChecks(serverChecks, localResults);
 }
 
+type ObservationArguments = ApiHandlerArguments<
+  typeof recordVerificationObservationRoute,
+  SessionFinalizationAdmittedContext
+>;
+type ObservationChecks = { verifyData: AvailableVerificationResource; observedChecks: VerificationCheck[] };
+
+function admitObservationVerificationResult(
+  currentId: string,
+  requestedId: string,
+  result: VerificationResult | undefined,
+): VerificationResult | undefined {
+  if (currentId !== requestedId || !result || !TERMINAL_VERIFICATION_STATUSES.has(result.status)) return undefined;
+  return result;
+}
+
+async function resolveObservationChecks(
+  input: ObservationArguments['input'],
+  context: SessionFinalizationAdmittedContext,
+): Promise<
+  | ObservationChecks
+  | {
+      response:
+        | RouteBoundResponse<typeof recordVerificationObservationRoute>
+        | Promise<RouteBoundResponse<typeof recordVerificationObservationRoute>>;
+    }
+> {
+  const { finalizationId } = context;
+  const { castChecks } = input.body;
+  const verifyResponse = await getVerifyHandler({
+    input: {
+      params: input.params,
+      headers: input.headers,
+      query: {},
+    },
+    context,
+  });
+  if (!verifyResponse.ok) {
+    return { response: admitRouteErrorResponse(recordVerificationObservationRoute, verifyResponse) };
+  }
+  const verifyPayload = VerificationResourceResponseSchema.safeParse(await verifyResponse.json());
+  if (!verifyPayload.success || verifyPayload.data.data.availability !== 'available') {
+    return {
+      response: respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.INTERNAL_ERROR,
+        status: 500,
+        details: { details: 'Server verification authority was unavailable' },
+      }),
+    };
+  }
+  const verifyData = verifyPayload.data.data;
+  if (verifyData.finalizationId !== finalizationId) {
+    return {
+      response: respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.INTERNAL_ERROR,
+        status: 500,
+        details: { details: 'Server verification authority did not match the current finalization' },
+      }),
+    };
+  }
+
+  const observedChecks = buildObservedVerificationChecks(
+    verifyData.verification.checks.map((check) => omitUndefinedProperties(check)),
+    castChecks,
+  );
+  if (!observedChecks) {
+    return {
+      response: respondWithRouteError(recordVerificationObservationRoute, {
+        code: ErrorCode.INTERNAL_ERROR,
+        status: 500,
+        details: { details: 'Server verification check authority was incomplete' },
+      }),
+    };
+  }
+
+  return { verifyData, observedChecks };
+}
+
+function emitRecordedObservation(
+  input: ObservationChecks & {
+    sessionId: string;
+    finalizationId: string;
+    finalizationResult: FinalizationResultAuthority;
+    verificationResult: VerificationResult;
+  },
+): void {
+  const { sessionId, finalizationId, finalizationResult, verificationResult, verifyData, observedChecks } = input;
+  const sthRuntimeConfig = resolveNodeSthPublicRuntimeConfig();
+  const devModeReceipt = verificationResult.report?.dev_mode_receipt;
+  emitVerificationRunSummaryObservation({
+    checks: observedChecks,
+    summaryContext: {
+      missingSlots: verifyData.proofAuthority.missingSlots,
+      invalidPresentedSlots: verifyData.proofAuthority.invalidPresentedSlots,
+      rejectedRecords: verifyData.proofAuthority.rejectedRecords,
+      excludedSlots: verifyData.proofAuthority.excludedSlots,
+      ...(typeof devModeReceipt === 'boolean' ? { devModeEvidence: devModeReceipt } : {}),
+      sthSourcesConfigured: sthRuntimeConfig.sources.length > 0,
+    },
+    persistedScenarios: finalizationResult.scenarios,
+    verificationResult,
+    ...(typeof devModeReceipt === 'boolean' ? { devModeReceipt } : {}),
+    sessionId,
+    finalizationId,
+  });
+}
+
 /**
  * Record the first bounded browser-local cast observation for the current
  * finalization and emit the server-derived final verdict once.
@@ -79,62 +188,23 @@ export async function submitVerificationObservationHandler({
       });
     }
 
-    const { castChecks } = input.body;
     const finalizationResult = session.finalization.finalizationResult;
     const verificationRecord = await store.getVerificationResultRecord(sessionId, finalizationId);
-    const verificationResult = verificationRecord?.verificationResult;
-    if (
-      finalizationResult.finalizationId !== finalizationId ||
-      !verificationResult ||
-      !TERMINAL_VERIFICATION_STATUSES.has(verificationResult.status)
-    ) {
-      return conflictResponse();
-    }
+    const verificationResult = admitObservationVerificationResult(
+      finalizationResult.finalizationId,
+      finalizationId,
+      verificationRecord?.verificationResult,
+    );
+    if (!verificationResult) return conflictResponse();
 
     const observation = {
       fingerprint: buildObservationFingerprint(finalizationId, input.body),
       observedAt: Date.now(),
     };
 
-    const verifyResponse = await getVerifyHandler({
-      input: {
-        params: input.params,
-        headers: input.headers,
-        query: {},
-      },
-      context,
-    });
-    if (!verifyResponse.ok) {
-      return admitRouteErrorResponse(recordVerificationObservationRoute, verifyResponse);
-    }
-    const verifyPayload = VerificationResourceResponseSchema.safeParse(await verifyResponse.json());
-    if (!verifyPayload.success || verifyPayload.data.data.availability !== 'available') {
-      return respondWithRouteError(recordVerificationObservationRoute, {
-        code: ErrorCode.INTERNAL_ERROR,
-        status: 500,
-        details: { details: 'Server verification authority was unavailable' },
-      });
-    }
-    const verifyData = verifyPayload.data.data;
-    if (verifyData.finalizationId !== finalizationId) {
-      return respondWithRouteError(recordVerificationObservationRoute, {
-        code: ErrorCode.INTERNAL_ERROR,
-        status: 500,
-        details: { details: 'Server verification authority did not match the current finalization' },
-      });
-    }
-
-    const observedChecks = buildObservedVerificationChecks(
-      verifyData.verification.checks.map((check) => omitUndefinedProperties(check)),
-      castChecks,
-    );
-    if (!observedChecks) {
-      return respondWithRouteError(recordVerificationObservationRoute, {
-        code: ErrorCode.INTERNAL_ERROR,
-        status: 500,
-        details: { details: 'Server verification check authority was incomplete' },
-      });
-    }
+    const resolvedChecks = await resolveObservationChecks(input, context);
+    if ('response' in resolvedChecks) return resolvedChecks.response;
+    const { verifyData, observedChecks } = resolvedChecks;
 
     const recordResult = await store.recordVerificationObservation(sessionId, finalizationId, observation);
     if (recordResult.status === 'conflict') {
@@ -142,23 +212,13 @@ export async function submitVerificationObservationHandler({
     }
 
     if (recordResult.status === 'recorded') {
-      const sthRuntimeConfig = resolveNodeSthPublicRuntimeConfig();
-      const devModeReceipt = verificationResult.report?.dev_mode_receipt;
-      emitVerificationRunSummaryObservation({
-        checks: observedChecks,
-        summaryContext: {
-          missingSlots: verifyData.proofAuthority.missingSlots,
-          invalidPresentedSlots: verifyData.proofAuthority.invalidPresentedSlots,
-          rejectedRecords: verifyData.proofAuthority.rejectedRecords,
-          excludedSlots: verifyData.proofAuthority.excludedSlots,
-          ...(typeof devModeReceipt === 'boolean' ? { devModeEvidence: devModeReceipt } : {}),
-          sthSourcesConfigured: sthRuntimeConfig.sources.length > 0,
-        },
-        persistedScenarios: finalizationResult.scenarios,
-        verificationResult,
-        ...(typeof devModeReceipt === 'boolean' ? { devModeReceipt } : {}),
+      emitRecordedObservation({
         sessionId,
         finalizationId,
+        finalizationResult,
+        verificationResult,
+        verifyData,
+        observedChecks,
       });
     }
 

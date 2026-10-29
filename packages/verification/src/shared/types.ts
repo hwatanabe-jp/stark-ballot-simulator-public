@@ -15,26 +15,11 @@ export interface VoteReceipt {
   signature?: string;
 }
 
-export interface RootSnapshot {
-  timestamp: number;
-  bulletinRoot: string;
-  treeSize: number;
-  signature?: string;
-}
-
-export interface BulletinBoard {
-  commitments: string[];
-  bulletinRoot: string;
-  treeSize: number;
-  timestamp: number;
-  rootHistory: RootSnapshot[];
-}
-
 export type BitmapProofSource = 'mock' | 'real';
 export const VERIFICATION_STATUS_VALUES = ['success', 'failed', 'dev_mode', 'not_run', 'running'] as const;
 export const TERMINAL_VERIFICATION_STATUS_VALUES = ['success', 'failed', 'dev_mode'] as const;
 export type VerificationStatus = (typeof VERIFICATION_STATUS_VALUES)[number];
-export type TerminalVerificationStatus = (typeof TERMINAL_VERIFICATION_STATUS_VALUES)[number];
+
 export const VERIFICATION_FAILURE_CATEGORY_VALUES = [
   'none',
   'verifier_crash',

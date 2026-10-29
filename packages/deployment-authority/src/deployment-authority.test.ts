@@ -27,7 +27,6 @@ import {
   parseDeploymentTargetConfiguration,
   renderDeploymentLaneContext,
   resolveAllowedDeploymentTarget,
-  resolveBootstrapSavedPlanApprovalAction,
   resolveFoundationPublicSubnetException,
   resolveDeploymentLaneAuthority,
   resolveImageSigningIdentity,
@@ -40,8 +39,8 @@ const SOURCE_SHA = 'a'.repeat(40);
 const ACCOUNT_ID = resolveAllowedDeploymentTarget('stark-dev/develop').accountId;
 const EXPECTED_TARGET_CONFIGURATION_SHA256 =
   ACCOUNT_ID === '000000000000'
-    ? '90a00a0573e756db0be1b11ad4f2da14429ed9047fc3c599cb007e5bca0df74d'
-    : 'ad07ec7087202fc474b162e928d914ee6c97af05bc49f7485982dcf7cff45724';
+    ? 'f5fb9bb01f28963883da43d8f442b651c5eae8d3c39632bb99256f63b079a61f'
+    : 'a7b61d2abce91660bf27c290f25f84b2bc49a1eb70fe1bb6f595239581cc810e';
 
 const RETIRED_READINESS_NAME_KEYS = [
   'recoveryReadinessProject',
@@ -475,7 +474,7 @@ describe('deployment lane context', () => {
       expect(source).not.toContain(`: '${reviewedValue}'`);
     }
 
-    const planApprovalSource = readFileSync(new URL('./plan-approval.js', import.meta.url), 'utf8');
+    const planApprovalSource = readFileSync(new URL('./plan-package.js', import.meta.url), 'utf8');
     expect(planApprovalSource).not.toContain("deploymentEnvironment: 'develop'");
     expect(planApprovalSource).not.toContain("deploymentEnvironment !== 'develop'");
   });
@@ -490,7 +489,6 @@ describe('deployment lane context', () => {
       'bootstrap',
       'foundation',
       'prover',
-      'static-fast',
       'toolchain',
     ]);
     expect(Object.isFrozen(configuration)).toBe(true);
@@ -509,11 +507,6 @@ describe('deployment lane context', () => {
         'stark-ballot-simulator-pipeline-stark-dev-develop-app-publish-current-status',
       appDeploymentStatusPublisherRole: 'sbs-app-status-publisher-stark-dev-develop',
       appRetainedArtifactBucket: `sbs-app-pipeline-artifacts-stark-dev-develop-${ACCOUNT_ID}`,
-      ecrRetentionFunction: 'stark-ballot-simulator-stark-dev-develop-ecr-retention',
-      ecrRetentionLogGroup: '/aws/lambda/stark-ballot-simulator-stark-dev-develop-ecr-retention',
-      ecrRetentionPermissionsBoundary: 'sbs-ecr-retention-boundary-stark-dev-develop',
-      ecrRetentionRole: 'sbs-ecr-retention-stark-dev-develop',
-      ecrRetentionSchedule: 'stark-ballot-simulator-stark-dev-develop-ecr-retention-daily',
       finalizationStateMachine: 'stark-ballot-simulator-stark-dev-develop-finalization',
       proverEcsCluster: 'stark-ballot-simulator-stark-dev-develop-prover',
       proverEcsTaskFamily: 'stark-ballot-simulator-stark-dev-develop-prover',
@@ -529,23 +522,13 @@ describe('deployment lane context', () => {
       bootstrapTerraformAcceptancePublisherRole: 'sbs-terraform-acceptance-publisher-stark-dev-develop-bootstrap',
       foundationTerraformAcceptancePublisherRole: 'sbs-terraform-acceptance-publisher-stark-dev-develop-foundation',
     });
-    expect(Object.keys(target.sharedNames)).toHaveLength(94);
+    expect(Object.keys(target.sharedNames)).toHaveLength(81);
     expect(target.sharedNames).not.toHaveProperty('staticFrontendPublicationLeaseKey');
     for (const retiredName of RETIRED_READINESS_NAME_KEYS) {
       expect(target.sharedNames).not.toHaveProperty(retiredName);
     }
     expect(Object.keys(target.sharedNames.targetLambdaFunctions)).toHaveLength(6);
     expect(target.lanes.app.names.artifactBucket).toBe(`sbs-app-exec-artifacts-stark-dev-develop-${ACCOUNT_ID}`);
-    const staticFast = target.lanes['static-fast'];
-    if (staticFast === undefined) throw new Error('Development static-fast lane is missing.');
-    expect(staticFast.names.artifactBucket).toBe(`sbs-static-fast-exec-artifacts-stark-dev-develop-${ACCOUNT_ID}`);
-    expect(
-      new Set([
-        target.sharedNames.appRetainedArtifactBucket,
-        target.lanes.app.names.artifactBucket,
-        staticFast.names.artifactBucket,
-      ]).size,
-    ).toBe(3);
   });
 
   it('keeps Bootstrap acceptance publication separate from refresh-plan authority', () => {
@@ -851,7 +834,6 @@ describe('deployment lane context', () => {
 
   it('rejects inconsistent lane aliases for shared runtime authority', () => {
     for (const [lane, name, invalidValue, expectedError] of [
-      ['static-fast', 'pipelineRole', 'different-static-fast-role', 'appStaticFastPipelineRole'],
       [
         'bootstrap',
         'terraformSmokeRole',
@@ -872,17 +854,8 @@ describe('deployment lane context', () => {
   });
 
   it.each([
-    ['appStaticFastDeployProject', 'appStaticDeployProject', 'static-fast deploy project'],
-    ['appStaticFastDeployProject', 'appStaticFastGateProject', 'static-fast deploy project'],
-    ['appStaticFastDeployProject', 'appStaticFastSmokeProject', 'static-fast deploy project'],
-    ['appStaticFastDeployRole', 'appStaticDeployRole', 'static-fast deploy role'],
-    ['appStaticFastDeployRole', 'appStaticFastGateRole', 'static-fast deploy role'],
-    ['appStaticFastDeployRole', 'appStaticFastSmokeRole', 'static-fast deploy role'],
-    ['appStaticFastDeployRole', 'signatureVerifierRole', 'static-fast deploy role'],
-    ['appDeploymentStatusPublisherProject', 'appStaticFastDeployProject', 'status publisher project'],
     ['appDeploymentStatusPublisherProject', 'terraformDriftAppProject', 'status publisher project'],
     ['appDeploymentStatusPublisherRole', 'appAcceptancePublisherRole', 'status publisher role'],
-    ['appDeploymentStatusPublisherRole', 'appStaticFastDeployRole', 'status publisher role'],
     ['appDeploymentStatusPublisherRole', 'terraformDriftRunnerRole', 'status publisher role'],
   ] as const)('rejects a colliding App deploy authority in %s', (name, fullName, expectedError) => {
     const configuration = mutableDeploymentTargetConfiguration();
@@ -1035,7 +1008,6 @@ describe('deployment lane context', () => {
     ['toolchain', 'stark-ballot-simulator-pipeline-stark-dev-develop-toolchain-release', 'foundation'],
     ['prover', 'stark-ballot-simulator-pipeline-stark-dev-develop-prover-release', 'foundation'],
     ['app', 'stark-ballot-simulator-pipeline-stark-dev-develop-app', 'app'],
-    ['static-fast', 'stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast', 'app'],
   ] as const)('renders exact %s lane ownership and pipeline names', (lane, pipeline, scope) => {
     const context = renderDeploymentLaneContext({
       target: resolveAllowedDeploymentTarget('stark-dev/develop'),
@@ -1103,10 +1075,6 @@ describe('deployment lane context', () => {
           'stark-ballot-simulator-pipeline-stark-dev-develop-app-publish-current-status',
         appDeploymentStatusPublisherRole: 'sbs-app-status-publisher-stark-dev-develop',
         appRetainedArtifactBucket: `sbs-app-pipeline-artifacts-stark-dev-develop-${ACCOUNT_ID}`,
-        appSignaturePreflightPlanRole: 'stark-ballot-sim-sig-preflight-plan-stark-dev-develop-app',
-        appStaticFastDeployProject: 'stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast-deploy',
-        appStaticFastDeployRole: 'stark-ballot-sim-static-fast-deploy-stark-dev-develop-app',
-        appStaticFastGateProject: 'stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast-gate-and-build',
         pipeline: 'stark-ballot-simulator-pipeline-stark-dev-develop-app',
         releaseManifestBucket: 'stark-ballot-simulator-stark-dev-develop-release-manifests',
         sourceAction: 'Source',
@@ -1217,13 +1185,11 @@ describe('deployment lane context', () => {
 describe('production target configuration admission', () => {
   it('keeps development policy and configuration bytes unchanged', () => {
     const target = resolveAllowedDeploymentTarget('stark-dev/develop');
-    expect(resolveBootstrapSavedPlanApprovalAction(target)).toBe('ApproveInitialDevelopmentApply');
     expect(resolveFoundationPublicSubnetException(target)).toBe('accepted-for-develop-prover-egress');
     const admitted = parseDeploymentTargetConfiguration(cloneDeploymentTargetConfiguration());
     const development = admitted.allowedTargets['stark-dev/develop'];
     expect(Object.hasOwn(development, 'productionPolicy')).toBe(false);
     expect(canonicalJsonSha256(development)).toBe(EXPECTED_TARGET_CONFIGURATION_SHA256);
-    expect(() => resolveBootstrapSavedPlanApprovalAction({ ...target, accountId: '999999999999' })).toThrow('reviewed');
     expect(() => resolveFoundationPublicSubnetException({ ...target, environmentId: 'main' })).toThrow('reviewed');
   });
 
@@ -1234,7 +1200,6 @@ describe('production target configuration admission', () => {
       null,
       {},
       { bootstrapApprovalAction: 'ApproveBootstrapApply' },
-      { foundationPublicSubnetException: 'accepted-for-production-prover-egress' },
       { ...policy, bootstrapApprovalAction: 'ApproveInitialDevelopmentApply' },
       { ...policy, foundationPublicSubnetException: 'accepted-for-develop-prover-egress' },
       { ...policy, extra: true },
@@ -1258,9 +1223,6 @@ describe('production target configuration admission', () => {
     try {
       const configured = await import('./index.js');
       const target = configured.resolveAllowedDeploymentTarget('stark-prod/main');
-      expect(configured.resolveBootstrapSavedPlanApprovalAction(target)).toBe(
-        production.productionPolicy?.bootstrapApprovalAction,
-      );
       expect(configured.resolveFoundationPublicSubnetException(target)).toBe(
         production.productionPolicy?.foundationPublicSubnetException,
       );
@@ -1306,16 +1268,15 @@ describe('production target configuration admission', () => {
 
   it('renders each configured production lane and rejects mixed target contexts', async () => {
     const { configuration } = productionConfigurationFixture();
-    const previousDevelopmentContexts = ['bootstrap', 'foundation', 'toolchain', 'prover', 'app', 'static-fast'].map(
-      (lane) =>
-        renderDeploymentLaneContext({
-          target: resolveAllowedDeploymentTarget('stark-dev/develop'),
-          lane,
-          accountId: ACCOUNT_ID,
-          requestedControlSourceSha: SOURCE_SHA,
-          selectedApplicationSourceSha: SOURCE_SHA,
-          frameworkSourceSha: SOURCE_SHA,
-        }),
+    const previousDevelopmentContexts = ['bootstrap', 'foundation', 'toolchain', 'prover', 'app'].map((lane) =>
+      renderDeploymentLaneContext({
+        target: resolveAllowedDeploymentTarget('stark-dev/develop'),
+        lane,
+        accountId: ACCOUNT_ID,
+        requestedControlSourceSha: SOURCE_SHA,
+        selectedApplicationSourceSha: SOURCE_SHA,
+        frameworkSourceSha: SOURCE_SHA,
+      }),
     );
     vi.resetModules();
     vi.doMock('../deployment-targets.json', () => ({ default: configuration }));
@@ -1380,9 +1341,9 @@ describe('production target configuration admission', () => {
 
   it('rejects a production static-fast lane or a stray static-fast principal name', () => {
     const { configuration, development, production } = productionConfigurationFixture();
-    const staticFast = development.lanes['static-fast'];
-    if (staticFast === undefined) throw new Error('Missing static-fast fixture.');
-    production.lanes['static-fast'] = staticFast;
+    const app = development.lanes['app'];
+    if (app === undefined) throw new Error('Missing App fixture.');
+    production.lanes['static-fast'] = app;
     expect(() => parseDeploymentTargetConfiguration(configuration)).toThrow(
       'deployment target lanes must contain exactly',
     );

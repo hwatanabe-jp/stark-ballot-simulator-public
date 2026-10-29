@@ -1,5 +1,11 @@
 # Current Public Boundary Cutover Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: implemented (commit `930026f`).** This document defines the
 > explicit public-contract cutover that removes the remaining
 > projection-only and parse-only public compatibility residue left after

@@ -6,37 +6,37 @@
       "variants": {
         "default": {
           "state": "confirmed",
-          "imageId": "0xa869ba5ae3fcd9a54b3f4b81466f4056f31d4d1a2eb93cc432e7dbecc9d290a6",
+          "imageId": "0xdde08e57c98144b1b57cb79e1d6726e82b702a15a469a690e6caf5c8c81c28e8",
           "provenance": {
             "evidenceType": "accepted-prover-release",
-            "sourceSha": "1049ab609a4508d8ed732e8218fbbb2223b601ed",
-            "proverImageDigest": "sha256:0b42fff47daeec126fbff2acce684d3a6de116599e1ea696737d73f667cde2c1",
-            "candidateMetadataSha256": "8279cab7f3e056f10cbc98fda16beb7620c12217a0cf715f1a83c280919d71e2",
-            "releaseRecordSha256": "ca2b43b4e0bc798e88edbed16711797d24d365ec5f9d95f72b9ed1fb9f549c5f",
-            "toolchainArtifactRecordSha256": "29fc48a9fb92b50eaa0dba3572e817a708e7e4ce350a16ad44f5d9fccca5c197"
+            "sourceSha": "3ebaee8211f12b5e813e6d399c601cb0064b3a42",
+            "proverImageDigest": "sha256:76387d8bb354fa7437c36d92e642f642c3562007955128b58f6b5c145fca1324",
+            "candidateMetadataSha256": "3313c8438ecc1f6421176dac39f4db22c0c8113a4fc5bfa984c1fec8a4da8350",
+            "releaseRecordSha256": "1e1ab1017b219fdb1fe149799e6a724499282284ecd8dd9a8e8bfbf062be80b5",
+            "toolchainArtifactRecordSha256": "daa45d521a750c0f409646882eafe8655fc5da8685cccf57390ef05b009a9cd9"
           }
         },
         "x86_64": {
           "state": "confirmed",
-          "imageId": "0x3410888ad3f61652273a40c31556f4fc50cf9443ab5c6d1f7a162683779b243d",
+          "imageId": "0xb545c4a95f560f6025c8cb9d66427e699da807efb34668a4dade1239cc2edcb5",
           "provenance": {
             "evidenceType": "local-guest-build",
-            "compiledAt": "2026-09-12T18:48:04Z",
+            "compiledAt": "2026-10-23T20:25:33Z",
             "buildProfile": "release+production",
-            "hostRustVersion": "1.97.1",
-            "hostRustCommit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+            "hostRustVersion": "1.99.0",
+            "hostRustCommit": "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4",
             "risc0Version": "3.0.6",
             "risc0Commit": "1cc70cf05033a79ebc90f07c679cb4bd1cd301b9",
             "guestToolchain": "r0.1.97.0",
             "guestToolchainCommit": "e638c6cfea1eff5fbbb24a27e60538e3760d21b8",
-            "guestElfSha256": "fe394c97dc2f2fb298b7d584982f43c461b36ebd8847a06363d0892cafc122b2",
-            "guestProgramBinarySha256": "ddc6a877a45a76f6fa18273eead9f34905bfd32beca5feb55319313f02ad50e3",
-            "hostBinarySha256": "b94374d8fd6f8365d9274a1c98b14374c3aad721474e6dfca9fdded4feee5825",
-            "zkvmCargoLockSha256": "aefe71d744326c7125a9df34c564963c5b8d781979ffa45e0a2bb7e667c9ef9c"
+            "guestElfSha256": "a608c5e4c042ce8112a99b282140415edc27087b373c81082de71af0475b996b",
+            "guestProgramBinarySha256": "b78922a82340f5611b2e9bbc23c3b48a40d8d76476994c98682fda5992b2f560",
+            "hostBinarySha256": "a9fe2328ec4f671530590f1015883f340128aca0619d6ed09103e222f5c79b3f",
+            "zkvmCargoLockSha256": "3119d380215eebf8a367c5470d60922f7afcb763ca69fc9e2c67a29400b31c89"
           }
         }
       },
-      "description": "Method 14 tally contract after unused guest-source removal - default is confirmed by the accepted managed ARM64 Prover release; x86_64 is confirmed from a fresh local production guest build",
+      "description": "Method 14 tally contract - default confirmed from an accepted managed ARM64 Prover release for the current dependencies; x86_64 independently confirmed from a fresh local production guest build",
       "features": [
         "STH digest binding",
         "CT leaf usage tags",
@@ -61,8 +61,8 @@
   "current": "14",
   "deprecated": [],
   "metadata": {
-    "lastUpdated": "2026-09-12T20:24:58Z",
+    "lastUpdated": "2026-10-25T09:36:27Z",
     "purpose": "ImageID to methodVersion mapping for STARK Ballot Simulator",
-    "notes": "Method version 14 remains current. Removing unused VoteCount::from_u32 changes guest bytes without changing the semantic contract. The default variant is confirmed by the accepted managed ARM64 Prover release. The x86_64 variant is independently confirmed from a fresh-target production build using the pinned toolchain. Runtime selection remains explicit and never falls back between variants."
+    "notes": "Method version 14 remains current. The serde_json and sha2 dependency updates preserve both confirmed ImageIDs. The default variant is confirmed from the accepted managed ARM64 Prover release for the current source. The x86_64 variant retains its fresh local production build provenance. Runtime selection remains explicit and never falls back between variants."
   }
 }

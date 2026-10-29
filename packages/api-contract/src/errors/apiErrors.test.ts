@@ -38,6 +38,7 @@ const ERROR_MESSAGE_CHARACTERIZATION = [
   [ErrorCode.ASYNC_FINALIZATION_DISABLED, '非同期集計は無効です'],
   [ErrorCode.CANCELLATION_UNSUPPORTED, 'キャンセルはサポートされていません'],
   [ErrorCode.FINALIZATION_NOT_CANCELLABLE, '現在の状態では集計をキャンセルできません'],
+  [ErrorCode.FINALIZATION_NOT_CURRENT, '指定された集計は現在の集計ではありません'],
   [ErrorCode.VERIFICATION_OBSERVATION_CONFLICT, '現在の検証結果と観測内容が一致しません'],
   [ErrorCode.INVALID_VOTE_CHOICE, '無効な投票選択です'],
   [ErrorCode.ALREADY_VOTED, 'すでに投票済みです'],

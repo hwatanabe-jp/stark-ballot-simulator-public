@@ -3,7 +3,7 @@
  */
 
 import {
-  createTestInput,
+  createMockZkvmInput,
   createTestJournal,
   createTestVoteWithProof,
   generateBulletinRoot,
@@ -11,7 +11,8 @@ import {
   generateRandomBytes32,
   generateSTHParameters,
 } from './test-helpers';
-import { CURRENT_METHOD_VERSION, computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
+import { currentZkvmJournalSchema } from '@stark-ballot/api-contract/schemas/verification';
+import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 describe('test-helpers', () => {
   describe('createTestVoteWithProof', () => {
@@ -42,9 +43,9 @@ describe('test-helpers', () => {
     });
   });
 
-  describe('createTestInput', () => {
-    it('creates a valid ZkVMInput with defaults', () => {
-      const input = createTestInput();
+  describe('createMockZkvmInput', () => {
+    it('creates a structural mock ZkVMInput with defaults', () => {
+      const input = createMockZkvmInput();
 
       expect(input.electionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
       expect(input.bulletinRoot).toMatch(/^0x[0-9a-f]{64}$/i);
@@ -54,7 +55,7 @@ describe('test-helpers', () => {
     });
 
     it('creates an input with the requested number of votes', () => {
-      const input = createTestInput({ voteCount: 5 });
+      const input = createMockZkvmInput({ voteCount: 5 });
 
       expect(input.votes).toHaveLength(5);
       expect(input.totalExpected).toBe(5);
@@ -66,11 +67,7 @@ describe('test-helpers', () => {
     it('creates a valid current ZkVMJournal', () => {
       const journal = createTestJournal();
 
-      expect(journal.electionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-      expect(journal.sthDigest).toMatch(/^0x[0-9a-f]{64}$/i);
-      expect(journal.verifiedTally).toHaveLength(5);
-      expect(journal.seenBitmapRoot).toMatch(/^0x[0-9a-f]{64}$/i);
-      expect(journal.methodVersion).toBe(CURRENT_METHOD_VERSION);
+      expect(currentZkvmJournalSchema.parse(journal)).toEqual(journal);
     });
 
     it('uses the same seen and included bitmap root when no presented slot was rejected', () => {

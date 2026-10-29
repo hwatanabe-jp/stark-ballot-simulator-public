@@ -23,6 +23,18 @@ function votingSession(overrides: Record<string, unknown> = {}): Record<string, 
   };
 }
 
+function castSession(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return votingSession({
+    myVote: 'A',
+    myCommit: HEX_A,
+    myRand: HEX_B,
+    voteId: '6321f4a2-39b7-44fb-9b25-73118ed10ffc',
+    bulletinIndex: 0,
+    bulletinRootAtCast: HEX_A,
+    ...overrides,
+  });
+}
+
 function finalizationSnapshot(): NonNullable<ReturnType<typeof resolveCanonicalFinalizationPayload>> {
   const snapshot = resolveCanonicalFinalizationPayload({
     finalizationId: 'finalization-1',
@@ -75,7 +87,36 @@ describe('admitStoredSessionData', () => {
     ['bulletinIndex', -1],
     ['bulletinRootAtCast', 'not-hex'],
   ])('rejects invalid optional field %s', (field, value) => {
-    expect(admitStoredSessionData(votingSession({ [field]: value }))).toBeNull();
+    expect(admitStoredSessionData(castSession({ [field]: value }))).toBeNull();
+  });
+
+  it.each(['voting', 'finalizing', 'verifying'])('admits complete evidence in phase %s', (phase) => {
+    const record = castSession({ phase, ...(phase === 'verifying' ? { finalizeResult: finalizationSnapshot() } : {}) });
+    expect(admitStoredSessionData(record)).toEqual(record);
+  });
+
+  describe.each(['lastActivity', 'expiresAt', 'bulletinIndex', 'verificationRequestedAt'])('%s domain', (field) => {
+    function record(value: unknown): Record<string, unknown> {
+      return castSession({
+        phase: 'verifying',
+        finalizeResult: finalizationSnapshot(),
+        lastActivity: 0,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        verificationRequestedAt: NOW,
+        [field]: value,
+      });
+    }
+    it.each([0, Number.MAX_SAFE_INTEGER])('admits boundary %s', (value) => {
+      const candidate = record(value);
+      expect(admitStoredSessionData(candidate)).toEqual(candidate);
+    });
+    it.each([Number.MAX_SAFE_INTEGER + 1, 0.5, -1, NaN, Infinity, -Infinity, '1', null])('rejects %s', (value) => {
+      expect(admitStoredSessionData(record(value))).toBeNull();
+    });
+  });
+
+  it('rejects expiry before last activity', () => {
+    expect(admitStoredSessionData(votingSession({ expiresAt: NOW - 1 }))).toBeNull();
   });
 
   it('rejects partial private opening evidence', () => {

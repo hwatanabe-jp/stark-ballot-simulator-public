@@ -5,7 +5,12 @@ import type {
   ArtifactReadResult,
   ArtifactRepresentationIdentity,
 } from '@stark-ballot/application/verification/artifact-reader';
-import { resolveArtifactRange, type ArtifactReaderLimits } from '@stark-ballot/node-adapters/artifact-reader';
+import {
+  admitArtifactReadSize,
+  assertValidArtifactReaderLimits,
+  resolveArtifactRange,
+  type ArtifactReaderLimits,
+} from '@stark-ballot/node-adapters/artifact-reader';
 import { getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { buildFinalizationArtifactS3Keys } from '../finalize/artifact-key-layout';
 import { downloadRangeFromS3, downloadS3Object, headS3Object, type S3ByteRange } from './s3-download';
@@ -38,18 +43,6 @@ export interface S3ArtifactReaderOptions {
   profile: ResolvedRuntimeProfile;
 }
 
-function assertPositiveSafeInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} must be a positive safe integer`);
-  }
-}
-
-function assertValidLimits(limits: ArtifactReaderLimits): void {
-  assertPositiveSafeInteger(limits.bundleInlineMaxBytes, 'bundleInlineMaxBytes');
-  assertPositiveSafeInteger(limits.bundleRangeMaxBytes, 'bundleRangeMaxBytes');
-  assertPositiveSafeInteger(limits.reportMaxBytes, 'reportMaxBytes');
-}
-
 function defaultDependencies(profile: ResolvedRuntimeProfile): S3ArtifactReaderDependencies {
   return {
     headObject: (key) => headS3Object(profile, key),
@@ -63,20 +56,24 @@ function artifactKey(request: ArtifactReadRequest): string {
   return request.artifact === 'bundle' ? keys.bundleS3Key : keys.reportS3Key;
 }
 
+const MISSING_OBJECT_CODES = new Set(['NoSuchKey', 'NotFound', 'NotFoundError']);
+const S3_FAILURE_KINDS = new Map<string, ArtifactReadFailureKind>([
+  ['AccessDenied', 'accessDenied'],
+  ['Forbidden', 'accessDenied'],
+  ['RequestTimeout', 'timeout'],
+  ['RequestTimeoutException', 'timeout'],
+  ['TimeoutError', 'timeout'],
+  ['SlowDown', 'throttled'],
+  ['Throttling', 'throttled'],
+  ['ThrottlingException', 'throttled'],
+]);
+
 function classifyS3Failure(error: unknown): ArtifactReadResult {
   const code = getStringProperty(error, 'Code') ?? getStringProperty(error, 'code') ?? getStringProperty(error, 'name');
-  if (code === 'NoSuchKey' || code === 'NotFound' || code === 'NotFoundError') {
+  if (code !== undefined && MISSING_OBJECT_CODES.has(code)) {
     return { kind: 'notFound' };
   }
-
-  let failureKind: ArtifactReadFailureKind = 'unknown';
-  if (code === 'AccessDenied' || code === 'Forbidden') {
-    failureKind = 'accessDenied';
-  } else if (code === 'RequestTimeout' || code === 'RequestTimeoutException' || code === 'TimeoutError') {
-    failureKind = 'timeout';
-  } else if (code === 'SlowDown' || code === 'Throttling' || code === 'ThrottlingException') {
-    failureKind = 'throttled';
-  }
+  const failureKind = code === undefined ? 'unknown' : (S3_FAILURE_KINDS.get(code) ?? 'unknown');
   return { kind: 'unavailable', failureKind };
 }
 
@@ -117,8 +114,80 @@ function matchesRangeDownload(download: S3ArtifactObjectDownload, range: S3ByteR
   );
 }
 
+async function readFullArtifact(
+  dependencies: S3ArtifactReaderDependencies,
+  key: string,
+  metadata: S3ArtifactObjectMetadata,
+): Promise<ArtifactReadResult> {
+  const totalBytes = metadata.contentLength;
+  let download: S3ArtifactObjectDownload;
+  try {
+    download = await dependencies.readObject(key, metadata);
+  } catch (error) {
+    return classifyS3Failure(error);
+  }
+  if (!matchesFullDownload(download, totalBytes) || !hasConsistentIdentity(metadata, download)) {
+    return { kind: 'unavailable', failureKind: 'unknown' };
+  }
+  return {
+    kind: 'full',
+    bytes: Uint8Array.from(download.body),
+    totalBytes,
+    representation: representationIdentity(metadata, download),
+  };
+}
+
+async function readRangeArtifact(
+  dependencies: S3ArtifactReaderDependencies,
+  key: string,
+  metadata: S3ArtifactObjectMetadata,
+  range: S3ByteRange,
+): Promise<ArtifactReadResult> {
+  const totalBytes = metadata.contentLength;
+  let download: S3ArtifactObjectDownload;
+  try {
+    download = await dependencies.readRange(key, range, metadata);
+  } catch (error) {
+    return classifyS3Failure(error);
+  }
+  if (!matchesRangeDownload(download, range, totalBytes) || !hasConsistentIdentity(metadata, download)) {
+    return { kind: 'unavailable', failureKind: 'unknown' };
+  }
+  return {
+    kind: 'range',
+    bytes: Uint8Array.from(download.body),
+    totalBytes,
+    start: range.start,
+    end: range.end,
+    representation: representationIdentity(metadata, download),
+  };
+}
+
+function readArtifactRepresentation(
+  request: ArtifactReadRequest,
+  dependencies: S3ArtifactReaderDependencies,
+  key: string,
+  metadata: S3ArtifactObjectMetadata,
+  limits: ArtifactReaderLimits,
+): ArtifactReadResult | Promise<ArtifactReadResult> {
+  const totalBytes = metadata.contentLength;
+  const sizeFailure = admitArtifactReadSize(request, totalBytes, limits);
+  if (sizeFailure) return sizeFailure;
+
+  if (request.range === undefined) {
+    return readFullArtifact(dependencies, key, metadata);
+  }
+
+  const range = resolveArtifactRange(request.range, totalBytes, limits.bundleRangeMaxBytes);
+  if (!range) {
+    return { kind: 'invalidRange', totalBytes };
+  }
+
+  return readRangeArtifact(dependencies, key, metadata, range);
+}
+
 export function createS3ArtifactReader(options: S3ArtifactReaderOptions): ArtifactReader {
-  assertValidLimits(options.limits);
+  assertValidArtifactReaderLimits(options.limits);
   if (!options.dependencies) {
     getS3Config(options.profile);
   }
@@ -145,59 +214,7 @@ export function createS3ArtifactReader(options: S3ArtifactReaderOptions): Artifa
       if (!hasRepresentationIdentity(metadata)) {
         return { kind: 'unavailable', failureKind: 'unknown' };
       }
-      const totalBytes = metadata.contentLength;
-
-      if (
-        request.range === undefined &&
-        totalBytes >
-          (request.artifact === 'bundle' ? options.limits.bundleInlineMaxBytes : options.limits.reportMaxBytes)
-      ) {
-        return { kind: 'tooLarge', totalBytes };
-      }
-      if (request.artifact === 'report' && request.range !== undefined) {
-        return { kind: 'invalidRange', totalBytes };
-      }
-
-      if (request.range === undefined) {
-        let download: S3ArtifactObjectDownload;
-        try {
-          download = await dependencies.readObject(key, metadata);
-        } catch (error) {
-          return classifyS3Failure(error);
-        }
-        if (!matchesFullDownload(download, totalBytes) || !hasConsistentIdentity(metadata, download)) {
-          return { kind: 'unavailable', failureKind: 'unknown' };
-        }
-        return {
-          kind: 'full',
-          bytes: Uint8Array.from(download.body),
-          totalBytes,
-          representation: representationIdentity(metadata, download),
-        };
-      }
-
-      const range = resolveArtifactRange(request.range, totalBytes, options.limits.bundleRangeMaxBytes);
-      if (!range) {
-        return { kind: 'invalidRange', totalBytes };
-      }
-
-      let download: S3ArtifactObjectDownload;
-      try {
-        download = await dependencies.readRange(key, range, metadata);
-      } catch (error) {
-        return classifyS3Failure(error);
-      }
-      if (!matchesRangeDownload(download, range, totalBytes) || !hasConsistentIdentity(metadata, download)) {
-        return { kind: 'unavailable', failureKind: 'unknown' };
-      }
-      return {
-        kind: 'range',
-        bytes: Uint8Array.from(download.body),
-        totalBytes,
-        start: range.start,
-        end: range.end,
-        representation: representationIdentity(metadata, download),
-      };
+      return readArtifactRepresentation(request, dependencies, key, metadata, options.limits);
     },
   };
 }

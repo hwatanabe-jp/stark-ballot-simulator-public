@@ -20,7 +20,7 @@ export const PUBLIC_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
   'receiptPublication',
 ];
 
-export const RESULT_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = ['proofBundleStatus'];
+const RESULT_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = ['proofBundleStatus'];
 
 export const VERIFY_MY_KNOWLEDGE_KEYS: ReadonlyArray<keyof KnowledgeData> = [
   'electionId',

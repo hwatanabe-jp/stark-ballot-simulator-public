@@ -1,15 +1,15 @@
-import * as ecr from '@aws-sdk/client-ecr';
+import { isSha256 } from '../../image-signature-verifier/asset-files.mjs';
+import { createEcrSigningStatusLookup } from '../../image-signature-verifier/signing-status.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isImageVerificationReasonCode,
+  isImageVerificationResult,
   parseImageSignatureInvocation,
   verifyImageSignature,
 } from '../../image-signature-verifier/verifier.mjs';
 
-const { DescribeImageSigningStatusCommand, ECRClient } = ecr;
 const cleanupAndSerializationMarginMs = 5_000;
-const verifierVersion = 'notation@1.3.2+aws-signer-plugin@1.0.2292';
 const preservedRejectionReasons = new Set([
   'SIGNING_NOT_READY',
   'SIGNING_FAILED',
@@ -56,51 +56,13 @@ function parseConfiguration(environment) {
   });
   const assetManifestSha256 = environment['IMAGE_SIGNATURE_VERIFIER_EXPECTED_ASSET_MANIFEST_SHA256'];
   const trustRootSha256 = environment['IMAGE_SIGNATURE_VERIFIER_EXPECTED_TRUST_ROOT_SHA256'];
-  const maxStatusAttempts = parseBoundedInteger(environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPTS'], 1, 10);
-  const statusAttemptTimeoutMs = parseBoundedInteger(
-    environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPT_TIMEOUT_MS'],
-    250,
-    15_000,
-  );
-  const statusRetryDelayMs = parseBoundedInteger(
-    environment['IMAGE_SIGNATURE_VERIFIER_STATUS_RETRY_DELAY_MS'],
-    0,
-    5_000,
-  );
-  const verifierTimeoutMs = parseBoundedInteger(environment['IMAGE_SIGNATURE_VERIFIER_TIMEOUT_MS'], 1_000, 60_000);
-  const handlerDeadlineMs = parseBoundedInteger(
-    environment['IMAGE_SIGNATURE_VERIFIER_HANDLER_DEADLINE_MS'],
-    10_000,
-    120_000,
-  );
-  if (
-    !expectedInvocation ||
-    typeof assetManifestSha256 !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(assetManifestSha256) ||
-    typeof trustRootSha256 !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(trustRootSha256) ||
-    maxStatusAttempts === undefined ||
-    statusAttemptTimeoutMs === undefined ||
-    statusRetryDelayMs === undefined ||
-    verifierTimeoutMs === undefined ||
-    handlerDeadlineMs === undefined ||
-    verifierTimeoutMs +
-      maxStatusAttempts * statusAttemptTimeoutMs +
-      (maxStatusAttempts - 1) * statusRetryDelayMs +
-      cleanupAndSerializationMarginMs >
-      handlerDeadlineMs
-  ) {
-    return undefined;
-  }
+  const timing = parseHandlerTiming(environment);
+  if (!expectedInvocation || !isSha256(assetManifestSha256) || !isSha256(trustRootSha256) || !timing) return undefined;
   return {
     expectedInvocation,
     assetManifestSha256,
     trustRootSha256,
-    maxStatusAttempts,
-    statusAttemptTimeoutMs,
-    statusRetryDelayMs,
-    verifierTimeoutMs,
-    handlerDeadlineMs,
+    ...timing,
   };
 }
 
@@ -110,40 +72,6 @@ function parseConfiguration(environment) {
  */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} result
- * @returns {result is import('../../image-signature-verifier/verifier.mjs').ImageVerificationResult}
- */
-function isInternalVerifierResult(result) {
-  if (!isRecord(result) || result['mode'] !== 'cryptographic') {
-    return false;
-  }
-  if (result['result'] === 'VERIFIED') {
-    return (
-      Object.keys(result).sort().join('\0') ===
-        'assetManifestSha256\0mode\0result\0trustPolicySha256\0verifierAssets\0verifierVersion' &&
-      result['verifierVersion'] === verifierVersion &&
-      /^[0-9a-f]{64}$/.test(String(result['assetManifestSha256'])) &&
-      /^[0-9a-f]{64}$/.test(String(result['trustPolicySha256'])) &&
-      isRecord(result['verifierAssets']) &&
-      Object.keys(result['verifierAssets']).sort().join('\0') ===
-        'awsSignerPluginVersion\0ecrCredentialHelperVersion\0notationVersion\0trustRootSha256' &&
-      result['verifierAssets']['notationVersion'] === '1.3.2' &&
-      result['verifierAssets']['awsSignerPluginVersion'] === '1.0.2292' &&
-      result['verifierAssets']['ecrCredentialHelperVersion'] === '0.12.0' &&
-      /^[0-9a-f]{64}$/.test(String(result['verifierAssets']['trustRootSha256']))
-    );
-  }
-  return (
-    (result['result'] === 'VERIFICATION_FAILED' ||
-      result['result'] === 'VERIFIER_TIMEOUT' ||
-      result['result'] === 'VERIFIER_ERROR') &&
-    Object.keys(result).sort().join('\0') === 'mode\0reasonCode\0result' &&
-    typeof result['reasonCode'] === 'string' &&
-    /^[A-Z][A-Z0-9_]{0,63}$/.test(result['reasonCode'])
-  );
 }
 
 /**
@@ -163,7 +91,7 @@ function isInternalVerifierResult(result) {
  * }}
  */
 function normalizeLambdaResult(result, configuration) {
-  if (!isInternalVerifierResult(result)) {
+  if (!isImageVerificationResult(result)) {
     return {
       result: 'REJECTED',
       mode: 'cryptographic',
@@ -225,7 +153,7 @@ function normalizeLambdaResult(result, configuration) {
  * @returns {string}
  */
 function selectInternalDiagnosticReason(result, configuration) {
-  if (!isInternalVerifierResult(result)) {
+  if (!isImageVerificationResult(result)) {
     return 'VERIFIER_RESULT_INVALID';
   }
   if (result.result === 'VERIFIED') {
@@ -276,36 +204,6 @@ function safeLog(log, record) {
   }
 }
 
-export function createEcrSigningStatusLookup() {
-  /** @type {Map<string, InstanceType<typeof ECRClient>>} */
-  const clients = new Map();
-  /**
-   * @param {{
-   *   imageRegion: string;
-   *   registryId: string;
-   *   repositoryName: string;
-   *   imageDigest: string;
-   * }} invocation
-   * @param {AbortSignal} abortSignal
-   */
-  return async (invocation, abortSignal) => {
-    let client = clients.get(invocation.imageRegion);
-    if (!client) {
-      client = new ECRClient({ region: invocation.imageRegion });
-      clients.set(invocation.imageRegion, client);
-    }
-    const response = await client.send(
-      new DescribeImageSigningStatusCommand({
-        registryId: invocation.registryId,
-        repositoryName: invocation.repositoryName,
-        imageId: { imageDigest: invocation.imageDigest },
-      }),
-      { abortSignal },
-    );
-    return response.signingStatuses;
-  };
-}
-
 /**
  * @typedef {{
  *   environment: Record<string, string | undefined>;
@@ -338,15 +236,13 @@ export function createImageSignatureVerifierHandler(options) {
    */
   const imageSignatureVerifierHandler = async (event, context = {}) => {
     const startedAt = now();
-    const requestId =
-      isRecord(context) &&
-      typeof context['awsRequestId'] === 'string' &&
-      /^[A-Za-z0-9-]{1,128}$/.test(context['awsRequestId'])
-        ? context['awsRequestId']
-        : undefined;
+    const requestId = verifierRequestId(context);
     safeLog(log, {
       service: 'image-signature-verifier',
       event: 'verification_started',
+      node_version: process.versions.node,
+      openssl_version: process.versions.openssl,
+      undici_version: process.versions['undici'],
       ...(requestId ? { requestId } : {}),
     });
 
@@ -410,3 +306,47 @@ export const handler = createImageSignatureVerifierHandler({
   assetRoot: defaultAssetRoot,
   temporaryRoot: '/tmp',
 });
+
+/** @param {Record<string,string|undefined>} environment */
+function parseHandlerTiming(environment) {
+  const maxStatusAttempts = parseBoundedInteger(environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPTS'], 1, 10);
+  const statusAttemptTimeoutMs = parseBoundedInteger(
+    environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPT_TIMEOUT_MS'],
+    250,
+    15_000,
+  );
+  const statusRetryDelayMs = parseBoundedInteger(
+    environment['IMAGE_SIGNATURE_VERIFIER_STATUS_RETRY_DELAY_MS'],
+    0,
+    5_000,
+  );
+  const verifierTimeoutMs = parseBoundedInteger(environment['IMAGE_SIGNATURE_VERIFIER_TIMEOUT_MS'], 1_000, 60_000);
+  const handlerDeadlineMs = parseBoundedInteger(
+    environment['IMAGE_SIGNATURE_VERIFIER_HANDLER_DEADLINE_MS'],
+    10_000,
+    120_000,
+  );
+  if (
+    maxStatusAttempts === undefined ||
+    statusAttemptTimeoutMs === undefined ||
+    statusRetryDelayMs === undefined ||
+    verifierTimeoutMs === undefined ||
+    handlerDeadlineMs === undefined ||
+    verifierTimeoutMs +
+      maxStatusAttempts * statusAttemptTimeoutMs +
+      (maxStatusAttempts - 1) * statusRetryDelayMs +
+      cleanupAndSerializationMarginMs >
+      handlerDeadlineMs
+  )
+    return undefined;
+  return { maxStatusAttempts, statusAttemptTimeoutMs, statusRetryDelayMs, verifierTimeoutMs, handlerDeadlineMs };
+}
+
+/** @param {unknown} context */
+function verifierRequestId(context) {
+  return isRecord(context) &&
+    typeof context['awsRequestId'] === 'string' &&
+    /^[A-Za-z0-9-]{1,128}$/.test(context['awsRequestId'])
+    ? context['awsRequestId']
+    : undefined;
+}

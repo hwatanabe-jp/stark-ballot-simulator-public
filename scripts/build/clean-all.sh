@@ -41,7 +41,7 @@ echo "Removing temporary files..."
 find . -name "*.tmp" -delete 2>/dev/null || true
 find . -name "*.temp" -delete 2>/dev/null || true
 find infra/terraform -path "*/.terraform" -prune -o -type f \( -name "*.local.hcl" -o -name "*.local.tfvars" -o -name "*.local.json" -o -name "*.tfplan" -o -path "infra/terraform/app/tfplan*" \) -exec rm -f {} + 2>/dev/null || true
-rm -rf .tmp .temp infra/terraform/legacy/.tmp
+rm -rf .tmp .temp
 
 # Remove editor swap files
 echo "Removing editor swap files..."

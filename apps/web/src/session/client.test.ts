@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   captureSessionIdentity,
@@ -17,7 +18,7 @@ import {
 import type { ServerIssuedSessionIdentity, SessionData } from './types';
 import { resolveCanonicalFinalizationPayload } from '@stark-ballot/web/finalize/client-finalization-result';
 import { clearClientFinalizedProjection } from '@stark-ballot/web/finalize/client-finalization-boundary';
-import { getNumberProperty, getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getNumberProperty, getStringProperty, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
 const ELECTION_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -52,8 +53,7 @@ function identity(
   overrides: Partial<ServerIssuedSessionIdentity> = {},
 ): ServerIssuedSessionIdentity {
   return {
-    sessionId,
-    capabilityToken,
+    ...admitSessionIdentity({ sessionId, capabilityToken }),
     electionId: ELECTION_ID,
     electionConfigHash: ELECTION_CONFIG_HASH,
     logId: LOG_ID,
@@ -83,7 +83,7 @@ function storedVotingSession(
 function readStoredSession(): Record<string, unknown> {
   const raw = localStorageMock.getItem('starkBallotSession') || '{}';
   const payload: unknown = JSON.parse(raw);
-  if (!isRecord(payload)) {
+  if (!isNonNullObject(payload)) {
     throw new Error('Stored session is invalid');
   }
   return payload;
@@ -156,9 +156,9 @@ describe('Session Management', () => {
     });
 
     it('throws when the capability token is empty', () => {
-      expect(() => initializeSession(identity('server-session-id', ''))).toThrow(
-        'Invalid server-issued session identity',
-      );
+      const invalidIdentity = identity('server-session-id', 'capability');
+      Reflect.set(invalidIdentity, 'capabilityToken', '');
+      expect(() => initializeSession(invalidIdentity)).toThrow('Invalid server-issued session identity');
       expect(localStorageMock.getItem('starkBallotSession')).toBeNull();
     });
 

@@ -11,7 +11,7 @@ import {
   buildAuthenticatedBitmapProofContext,
   verifyBitmapMerkleProof,
 } from '@stark-ballot/verification/merkle/bitmap-merkle-tree';
-import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getNumberProperty, getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 
 const mockRandomUUID = vi.fn();
 type MockErrorPayload = {
@@ -237,7 +237,7 @@ describe('mockApiFetch', () => {
     expect(getMockState().voteTimestamp).toBe(timestamp);
     const conflict = request('B');
     expect(conflict.status).toBe(400);
-    expect(getRecordProperty(await readJsonRecord(conflict, 'conflicting opening'), 'error')?.['code']).toBe(
+    expect(getObjectProperty(await readJsonRecord(conflict, 'conflicting opening'), 'error')?.['code']).toBe(
       'ALREADY_VOTED',
     );
     expect(getMockState().voteChoice).toBe('A');
@@ -615,8 +615,8 @@ describe('mockApiFetch', () => {
       reason: 'finalization_not_current',
       message: 'Requested finalization is not the current finalized authority',
     });
-    expect(runResponse.status).toBe(500);
-    expect(runPayload.error?.code).toBe('INVALID_FINALIZATION_ARTIFACT');
+    expect(runResponse.status).toBe(409);
+    expect(runPayload.error?.code).toBe('FINALIZATION_NOT_CURRENT');
     expect(observationResponse.status).toBe(409);
     expect(observationPayload.error?.code).toBe('VERIFICATION_OBSERVATION_CONFLICT');
   });
@@ -729,7 +729,7 @@ describe('mockApiFetch', () => {
     });
     expect(sthResponse.status).toBe(200);
     const sthPayload = await readJsonRecord(sthResponse, 'mock signed tree head');
-    const sth = getRecordProperty(getRecordProperty(sthPayload, 'data'), 'sth');
+    const sth = getObjectProperty(getObjectProperty(sthPayload, 'data'), 'sth');
     expect(getStringProperty(sth, 'logId')).toBeTypeOf('string');
     expect(getNumberProperty(sth, 'treeSize')).toBeTypeOf('number');
 
@@ -739,7 +739,7 @@ describe('mockApiFetch', () => {
     );
     expect(inputCommitmentResponse.status).toBe(200);
     const inputCommitmentPayload = await readJsonRecord(inputCommitmentResponse, 'mock input commitment');
-    const inputCommitment = getRecordProperty(inputCommitmentPayload, 'data');
+    const inputCommitment = getObjectProperty(inputCommitmentPayload, 'data');
     expect(getStringProperty(inputCommitment, 'inputCommitment')).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
@@ -1032,34 +1032,17 @@ describe('mockApiFetch', () => {
         'X-Session-Capability': capabilityToken,
       },
     });
-    const payload = (await statusResponse.json()) as {
-      data?: {
-        result?: {
-          authority?: {
-            journal?: {
-              methodVersion?: number;
-              bulletinRoot?: string;
-              excludedSlots?: number;
-              seenIndicesCount?: number;
-            };
-          };
-          presentation?: {
-            bulletinRoot?: string;
-            excludedSlots?: number;
-            seenIndicesCount?: number;
-          };
-        };
-      };
-    };
-    const journal = payload.data?.result?.authority?.journal;
-    const presentation = payload.data?.result?.presentation;
+    const payload = CurrentFinalizationResponseSchema.parse(await statusResponse.json());
+    if (payload.data?.status !== 'succeeded') throw new Error('Expected a completed mock finalization');
+    const journal = payload.data.result.authority.journal;
+    const presentation = payload.data.result.presentation;
 
     expect(statusResponse.status).toBe(200);
-    expect(journal?.methodVersion).toBe(CURRENT_METHOD_VERSION);
-    expect(journal?.bulletinRoot).toBe(presentation?.bulletinRoot);
-    expect(journal?.excludedSlots).toBe(presentation?.excludedSlots);
+    expect(journal.methodVersion).toBe(CURRENT_METHOD_VERSION);
+    expect(journal.bulletinRoot).toBe(presentation.bulletinRoot);
+    expect(journal.excludedSlots).toBe(presentation.excludedSlots);
     expect(journal).not.toHaveProperty('excludedCount');
-    expect(journal?.seenIndicesCount).toBe(presentation?.seenIndicesCount);
+    expect(journal.seenIndicesCount).toBe(presentation.seenIndicesCount);
   });
 
   it('serves the S5 mock finalization and verification resources with current-contract metrics', async () => {

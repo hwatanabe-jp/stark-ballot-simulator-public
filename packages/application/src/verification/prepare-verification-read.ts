@@ -1,3 +1,4 @@
+import { isNonNegativeSafeInteger } from '@stark-ballot/validation/unknown-value-guards';
 import type { FinalizationId, FinalizationResultAuthority } from '../finalize/finalization-types';
 import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import type { SessionId } from '@stark-ballot/domain/types/identifiers';
@@ -117,14 +118,9 @@ function isCompleteSessionAuthority(source: VerificationReadSource): source is V
   if (
     typeof electionId !== 'string' ||
     electionId.length === 0 ||
-    typeof electionConfigHash !== 'string' ||
-    !isValidHexString(electionConfigHash, 32) ||
-    typeof logId !== 'string' ||
-    !isValidHexString(logId, 32) ||
-    !userVote ||
-    !Number.isSafeInteger(userVote.index) ||
-    userVote.index < 0 ||
-    !isValidHexString(userVote.commitment, 32)
+    !isAuthorityHash(electionConfigHash) ||
+    !isAuthorityHash(logId) ||
+    !hasCompleteUserVote(userVote)
   ) {
     return false;
   }
@@ -230,4 +226,14 @@ export async function prepareVerificationRead(
             },
           },
   };
+}
+
+function isAuthorityHash(value: unknown): value is string {
+  return typeof value === 'string' && isValidHexString(value, 32);
+}
+
+function hasCompleteUserVote(
+  userVote: VerificationReadSource['userVote'],
+): userVote is NonNullable<VerificationReadSource['userVote']> {
+  return !!userVote && isNonNegativeSafeInteger(userVote.index) && isValidHexString(userVote.commitment, 32);
 }

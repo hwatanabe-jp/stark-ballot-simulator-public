@@ -1,3 +1,4 @@
+import { assertNoFrontendFindings, runFrontendCheck } from './findings';
 import { promises as fs } from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
@@ -159,51 +160,52 @@ function scanContent(filePath: string, content: string): Finding[] {
   }));
 }
 
+const IMPORT_SPECIFIER_RULES: ReadonlyArray<{ reason: string; matches: (specifier: string) => boolean }> = [
+  {
+    reason: 'Storybook dependency import',
+    matches: (specifier) =>
+      specifier === 'storybook' || specifier.startsWith('storybook/') || specifier.startsWith('@storybook/'),
+  },
+  {
+    reason: 'Storybook source import',
+    matches: (specifier) =>
+      /\.stories(?:\.[cm]?[jt]sx?)?$/u.test(specifier) || /(?:^|\/)\.storybook(?:\/|$)/u.test(specifier),
+  },
+  {
+    reason: 'Next runtime import',
+    matches: (specifier) => /^next\/(?:navigation|link|dynamic|font|headers|server)$/.test(specifier),
+  },
+  { reason: 'server import', matches: (specifier) => isServerAliasSpecifier(specifier) },
+  { reason: 'Next API route import', matches: (specifier) => isNextApiAliasSpecifier(specifier) },
+  { reason: 'store implementation import', matches: (specifier) => isStoreAliasSpecifier(specifier) },
+  {
+    reason: 'AWS adapter package import',
+    matches: (specifier) => isAwsAdapterSpecifier(specifier) && !isStoreAliasSpecifier(specifier),
+  },
+  { reason: 'Node adapter package import', matches: (specifier) => isNodeAdapterSpecifier(specifier) },
+  {
+    reason: 'private zkVM semantic descriptor import',
+    matches: (specifier) => isPrivateZkvmSemanticDescriptorSpecifier(specifier),
+  },
+  { reason: 'AWS SDK import', matches: (specifier) => specifier.startsWith('@aws-sdk/') },
+  {
+    reason: 'domain package import',
+    matches: (specifier) => specifier === '@stark-ballot/domain' || specifier.startsWith('@stark-ballot/domain/'),
+  },
+  {
+    reason: 'application package import',
+    matches: (specifier) =>
+      (specifier === '@stark-ballot/application' || specifier.startsWith('@stark-ballot/application/')) &&
+      !BROWSER_SAFE_APPLICATION_SPECIFIERS.has(specifier),
+  },
+  { reason: 'Node builtin import', matches: (specifier) => isNodeBuiltinSpecifier(specifier) },
+];
+
 function scanImportSpecifier(filePath: string, specifier: string): Finding[] {
-  const findings: Finding[] = [];
-  if (specifier === 'storybook' || specifier.startsWith('storybook/') || specifier.startsWith('@storybook/')) {
-    findings.push({ file: filePath, reason: 'Storybook dependency import' });
-  }
-  if (/\.stories(?:\.[cm]?[jt]sx?)?$/u.test(specifier) || /(?:^|\/)\.storybook(?:\/|$)/u.test(specifier)) {
-    findings.push({ file: filePath, reason: 'Storybook source import' });
-  }
-  if (/^next\/(?:navigation|link|dynamic|font|headers|server)$/.test(specifier)) {
-    findings.push({ file: filePath, reason: 'Next runtime import' });
-  }
-  if (isServerAliasSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'server import' });
-  }
-  if (isNextApiAliasSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'Next API route import' });
-  }
-  if (isStoreAliasSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'store implementation import' });
-  }
-  if (isAwsAdapterSpecifier(specifier) && !isStoreAliasSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'AWS adapter package import' });
-  }
-  if (isNodeAdapterSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'Node adapter package import' });
-  }
-  if (isPrivateZkvmSemanticDescriptorSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'private zkVM semantic descriptor import' });
-  }
-  if (specifier.startsWith('@aws-sdk/')) {
-    findings.push({ file: filePath, reason: 'AWS SDK import' });
-  }
-  if (specifier === '@stark-ballot/domain' || specifier.startsWith('@stark-ballot/domain/')) {
-    findings.push({ file: filePath, reason: 'domain package import' });
-  }
-  if (
-    (specifier === '@stark-ballot/application' || specifier.startsWith('@stark-ballot/application/')) &&
-    !BROWSER_SAFE_APPLICATION_SPECIFIERS.has(specifier)
-  ) {
-    findings.push({ file: filePath, reason: 'application package import' });
-  }
-  if (isNodeBuiltinSpecifier(specifier)) {
-    findings.push({ file: filePath, reason: 'Node builtin import' });
-  }
-  return findings;
+  return IMPORT_SPECIFIER_RULES.filter(({ matches }) => matches(specifier)).map(({ reason }) => ({
+    file: filePath,
+    reason,
+  }));
 }
 
 function isPrivateZkvmSemanticDescriptorSpecifier(specifier: string): boolean {
@@ -269,6 +271,65 @@ function isResolvedNextApiImport(cwd: string, resolved: string): boolean {
   return isResolvedImportUnder(cwd, resolved, 'apps/api/src/server/api');
 }
 
+const RESOLVED_IMPORT_RULES: ReadonlyArray<{
+  reason: string;
+  matches: (specifier: string, cwd: string, resolved: string) => boolean;
+}> = [
+  {
+    reason: 'store implementation import',
+    matches: (specifier, cwd, resolved) => !isStoreAliasSpecifier(specifier) && isResolvedStoreImport(cwd, resolved),
+  },
+  {
+    reason: 'AWS adapter package import',
+    matches: (specifier, cwd, resolved) =>
+      !isAwsAdapterSpecifier(specifier) &&
+      !isResolvedStoreImport(cwd, resolved) &&
+      isResolvedAwsAdapterImport(cwd, resolved),
+  },
+  {
+    reason: 'Node adapter package import',
+    matches: (specifier, cwd, resolved) =>
+      !isNodeAdapterSpecifier(specifier) && isResolvedNodeAdapterImport(cwd, resolved),
+  },
+  {
+    reason: 'server import',
+    matches: (specifier, cwd, resolved) => !isServerAliasSpecifier(specifier) && isResolvedServerImport(cwd, resolved),
+  },
+  {
+    reason: 'Next API route import',
+    matches: (specifier, cwd, resolved) =>
+      !isNextApiAliasSpecifier(specifier) && isResolvedNextApiImport(cwd, resolved),
+  },
+];
+
+async function collectImportDependencies(
+  filePath: string,
+  content: string,
+  context: { cwd: string; findings: Finding[]; pending: string[] },
+): Promise<void> {
+  const { cwd, findings, pending } = context;
+  for (const { specifier, typeOnly } of extractImportReferences(content)) {
+    const specifierFindings = scanImportSpecifier(filePath, specifier);
+    findings.push(...specifierFindings);
+    if (specifierFindings.length > 0 || typeOnly || !isLocalSpecifier(specifier)) {
+      continue;
+    }
+
+    const resolved = await resolveLocalImport(filePath, specifier, cwd);
+    if (resolved) {
+      findings.push(
+        ...RESOLVED_IMPORT_RULES.filter(({ matches }) => matches(specifier, cwd, resolved)).map(({ reason }) => ({
+          file: filePath,
+          reason,
+        })),
+      );
+      pending.push(resolved);
+    } else if (!(await resolvesIntentionalAssetImport(filePath, specifier, cwd))) {
+      findings.push({ file: filePath, reason: `unresolved local import: ${specifier}` });
+    }
+  }
+}
+
 export async function checkBrowserImportBoundary(options: CheckOptions = {}): Promise<Finding[]> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const defaultEntrypoint = path.resolve(cwd, DEFAULT_ENTRYPOINT);
@@ -294,39 +355,7 @@ export async function checkBrowserImportBoundary(options: CheckOptions = {}): Pr
 
     const content = await fs.readFile(filePath, 'utf-8');
     findings.push(...scanContent(filePath, content));
-    for (const { specifier, typeOnly } of extractImportReferences(content)) {
-      const specifierFindings = scanImportSpecifier(filePath, specifier);
-      findings.push(...specifierFindings);
-      if (specifierFindings.length > 0 || typeOnly || !isLocalSpecifier(specifier)) {
-        continue;
-      }
-
-      const resolved = await resolveLocalImport(filePath, specifier, cwd);
-      if (resolved) {
-        if (!isStoreAliasSpecifier(specifier) && isResolvedStoreImport(cwd, resolved)) {
-          findings.push({ file: filePath, reason: 'store implementation import' });
-        }
-        if (
-          !isAwsAdapterSpecifier(specifier) &&
-          !isResolvedStoreImport(cwd, resolved) &&
-          isResolvedAwsAdapterImport(cwd, resolved)
-        ) {
-          findings.push({ file: filePath, reason: 'AWS adapter package import' });
-        }
-        if (!isNodeAdapterSpecifier(specifier) && isResolvedNodeAdapterImport(cwd, resolved)) {
-          findings.push({ file: filePath, reason: 'Node adapter package import' });
-        }
-        if (!isServerAliasSpecifier(specifier) && isResolvedServerImport(cwd, resolved)) {
-          findings.push({ file: filePath, reason: 'server import' });
-        }
-        if (!isNextApiAliasSpecifier(specifier) && isResolvedNextApiImport(cwd, resolved)) {
-          findings.push({ file: filePath, reason: 'Next API route import' });
-        }
-        pending.push(resolved);
-      } else if (!(await resolvesIntentionalAssetImport(filePath, specifier, cwd))) {
-        findings.push({ file: filePath, reason: `unresolved local import: ${specifier}` });
-      }
-    }
+    await collectImportDependencies(filePath, content, { cwd, findings, pending });
   }
 
   return findings;
@@ -334,18 +363,12 @@ export async function checkBrowserImportBoundary(options: CheckOptions = {}): Pr
 
 async function main(): Promise<void> {
   const findings = await checkBrowserImportBoundary();
-  if (findings.length > 0) {
-    for (const finding of findings) {
-      console.error(`[browser-import-boundary] ${path.relative(process.cwd(), finding.file)}: ${finding.reason}`);
-    }
-    throw new Error(`Browser import-boundary check failed with ${findings.length} finding(s).`);
-  }
+  assertNoFrontendFindings(
+    findings.map((finding) => ({ ...finding, file: path.relative(process.cwd(), finding.file) })),
+    'browser-import-boundary',
+    'Browser import-boundary check',
+  );
   console.log('[browser-import-boundary] resolved transitive frontend graph from apps/web/src/main.tsx');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  void main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exit(1);
-  });
-}
+runFrontendCheck(import.meta.url, main);

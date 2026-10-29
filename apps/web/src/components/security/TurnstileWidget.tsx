@@ -5,7 +5,7 @@ import type { ComponentType, ReactElement, RefAttributes } from 'react';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { useTranslation } from '@stark-ballot/web/hooks';
 import { useCspNonce } from '@stark-ballot/web/components/security/CspNonceProvider';
-import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
+import { readPublicRuntimeEnv } from '@stark-ballot/runtime-config/env/public-runtime-config';
 import { resolveBrowserRuntimeProfile } from '@stark-ballot/runtime-config/env/public-runtime-config';
 
 type TurnstileHandle = {
@@ -42,20 +42,10 @@ function buildTurnstileBypassToken(): string {
   return BYPASS_TOKEN_PARTS.join('-');
 }
 
-export function TurnstileWidget({
-  onTokenChange,
-  action,
-  disabled = false,
-}: TurnstileWidgetProps): ReactElement | null {
-  const { t } = useTranslation();
+function useTurnstileExpiry(onTokenChange: TurnstileWidgetProps['onTokenChange']) {
   const [, setToken] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const turnstileRef = useRef<TurnstileHandle | null>(null);
-  const bypassEnabled = isTurnstileBypassEnabled();
-  const siteKey = readBrowserPublicEnv('VITE_TURNSTILE_SITE_KEY');
-  const cspNonce = useCspNonce();
-  const [TurnstileComponent] = useState<TurnstileRenderer>(() => Turnstile as TurnstileRenderer);
 
   const resetTimer = useCallback(() => {
     if (timeoutRef.current) {
@@ -91,6 +81,22 @@ export function TurnstileWidget({
     setToken(null);
     onTokenChange(null);
   }, [onTokenChange]);
+
+  return { expired, handleSuccess, handleExpire };
+}
+
+export function TurnstileWidget({
+  onTokenChange,
+  action,
+  disabled = false,
+}: TurnstileWidgetProps): ReactElement | null {
+  const { t } = useTranslation();
+  const turnstileRef = useRef<TurnstileHandle | null>(null);
+  const bypassEnabled = isTurnstileBypassEnabled();
+  const siteKey = readPublicRuntimeEnv('VITE_TURNSTILE_SITE_KEY');
+  const cspNonce = useCspNonce();
+  const [TurnstileComponent] = useState<TurnstileRenderer>(() => Turnstile as TurnstileRenderer);
+  const { expired, handleSuccess, handleExpire } = useTurnstileExpiry(onTokenChange);
 
   const resetWidget = useCallback(() => {
     if (turnstileRef.current?.reset) {

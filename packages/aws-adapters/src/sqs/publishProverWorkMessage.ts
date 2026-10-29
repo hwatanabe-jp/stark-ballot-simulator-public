@@ -1,4 +1,5 @@
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendWorkMessage } from './send-work-message';
+import { SQSClient } from '@aws-sdk/client-sqs';
 import type { FinalizationWorkItem } from '@stark-ballot/application/finalize/finalization-work-item';
 import { PROVER_WORK_RECORD_TYPE, ProverWorkMessageSchema } from './proverWorkMessage';
 import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
@@ -8,7 +9,6 @@ import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/ru
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 let sqsClient: SQSClient | null = null;
-const SQS_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 function getSqsClient(region: string): SQSClient {
   if (!sqsClient) {
@@ -76,20 +76,12 @@ export async function publishProverWorkMessage(
             ...buildS3ProverPayload(message, profile.external.artifactStorage.prefix),
           });
     const payload = JSON.stringify(parsedMessage);
-    const response = await getSqsClient(profile.external.region).send(
-      new SendMessageCommand({
-        QueueUrl: queueUrl,
-        MessageBody: payload,
-      }),
-    );
-    if (!response.MessageId || !SQS_MESSAGE_ID_PATTERN.test(response.MessageId)) {
-      throw new Error('SQS publish response did not include a valid message ID');
-    }
+    const messageId = await sendWorkMessage(getSqsClient(profile.external.region), queueUrl, payload);
     emitCanonicalEvent({
       event: 'queue_publish',
       queue: 'prover',
       result: 'succeeded',
-      sqs_message_id: response.MessageId,
+      sqs_message_id: messageId,
       ...correlation,
     });
   } catch (error) {

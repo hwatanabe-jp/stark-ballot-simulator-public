@@ -98,7 +98,7 @@ function resolveStatusFromPayload(payload: VerificationResource): VerificationSt
   return verificationStatus ?? 'not_run';
 }
 
-async function fetchVerificationPayload(sessionId: string, finalizationId: string): Promise<VerificationResource> {
+function requirePollingSession(sessionId: string, finalizationId: string) {
   const session = getSessionData();
   if (!session || session.sessionId !== sessionId) {
     throw new StarkPollingError('Verification session authority is unavailable', true, 'SESSION_NOT_FOUND');
@@ -108,20 +108,24 @@ async function fetchVerificationPayload(sessionId: string, finalizationId: strin
     throw new StarkPollingError('Verification finalization authority is unavailable', true, 'FINALIZATION_ID_MISMATCH');
   }
 
+  return session;
+}
+
+function resolvePollingRequestError(error: unknown): unknown {
+  if (!(error instanceof ApiClientError)) return error;
+  const errorCode = readStandardApiErrorCode(error.responseBody);
+  const fatal = error.status === 401 || error.status === 403 || error.status === 404;
+  const resolvedMessage = readStandardApiErrorMessage(error.responseBody) ?? errorCode ?? error.statusText;
+  return new StarkPollingError(resolvedMessage || 'Verification API error', fatal, errorCode);
+}
+
+async function fetchVerificationPayload(sessionId: string, finalizationId: string): Promise<VerificationResource> {
+  const session = requirePollingSession(sessionId, finalizationId);
+
   try {
     return await getVerification(session, finalizationId);
   } catch (error) {
-    if (error instanceof StarkPollingError) {
-      throw error;
-    }
-    if (error instanceof ApiClientError) {
-      const errorCode = readStandardApiErrorCode(error.responseBody);
-      const fatal = error.status === 401 || error.status === 403 || error.status === 404;
-      const resolvedMessage = readStandardApiErrorMessage(error.responseBody) ?? errorCode ?? error.statusText;
-      const message = resolvedMessage || 'Verification API error';
-      throw new StarkPollingError(message, fatal, errorCode);
-    }
-    throw error;
+    throw resolvePollingRequestError(error);
   }
 }
 
@@ -192,6 +196,19 @@ function resolveNextInterval(baseIntervalMs: number): number {
   return nextInterval;
 }
 
+function isCurrentPollingState(state: PollingState): boolean {
+  return !state.cancelled && pollingState === state;
+}
+
+function handlePollingFailure(state: PollingState, error: unknown, poll: () => Promise<void>): void {
+  if (error instanceof StarkPollingError && error.fatal) {
+    clearClientStateForFatalPollingError(state.sessionId, error);
+    finalizePolling(state);
+    return;
+  }
+  scheduleNextPoll(state, poll);
+}
+
 /**
  * Start polling the verification resource for the given session until STARK verification completes or times out.
  * Stops automatically when the session disappears, a terminal status arrives, or a fatal error occurs.
@@ -243,7 +260,7 @@ export function startStarkVerificationPolling(options: PollingOptions): void {
   pollingState = state;
 
   const poll = async () => {
-    if (state.cancelled || pollingState !== state) {
+    if (!isCurrentPollingState(state)) {
       return;
     }
     if (!hasActiveSession(state.sessionId, state.finalizationId)) {
@@ -277,15 +294,7 @@ export function startStarkVerificationPolling(options: PollingOptions): void {
 
       finalizePolling(state);
     } catch (error) {
-      const fatal = error instanceof StarkPollingError ? error.fatal : false;
-      if (fatal) {
-        if (error instanceof StarkPollingError) {
-          clearClientStateForFatalPollingError(state.sessionId, error);
-        }
-        finalizePolling(state);
-        return;
-      }
-      scheduleNextPoll(state, poll);
+      handlePollingFailure(state, error, poll);
     }
   };
 

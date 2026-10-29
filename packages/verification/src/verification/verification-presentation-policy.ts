@@ -1,6 +1,7 @@
 import {
   VERIFICATION_CHECK_DEFINITIONS,
   getVerificationRequiredCheckIdsForStep,
+  getVerificationStepInputs,
   type VerificationCheck,
   type VerificationCheckId,
 } from '@stark-ballot/verification/checks';
@@ -28,7 +29,7 @@ import {
 
 export { VERIFICATION_SUMMARY_STATUS_VALUES, VERIFICATION_SUMMARY_TONE_VALUES };
 
-export const VERIFICATION_AVAILABILITY_VALUES = ['available', 'unavailable', 'corrupt'] as const;
+const VERIFICATION_AVAILABILITY_VALUES = ['available', 'unavailable', 'corrupt'] as const;
 export type VerificationAvailability = (typeof VERIFICATION_AVAILABILITY_VALUES)[number];
 
 export const VERIFICATION_DISPLAY_STATUS_VALUES = ['verified', 'failed', 'warning', 'demo_only'] as const;
@@ -284,6 +285,27 @@ const VERIFICATION_STEP_IDS = [
   'stark_verification',
 ] as const satisfies readonly VerificationStepId[];
 
+/** Apply the current presentation policy while retaining admitted server step metadata. */
+export function projectVerificationPresentationSteps(
+  steps: readonly {
+    readonly id: VerificationStepId;
+    readonly inputs?: readonly string[] | undefined;
+    readonly error?: string | undefined;
+  }[],
+  policy: VerificationPresentationPolicyResult,
+) {
+  const serverSteps = new Map(steps.map((step) => [step.id, step] as const));
+  return VERIFICATION_STEP_IDS.map((id) => {
+    const serverStep = serverSteps.get(id);
+    return {
+      id,
+      status: policy.stageStatuses[id],
+      inputs: serverStep?.inputs ? [...serverStep.inputs] : getVerificationStepInputs(id),
+      ...(serverStep?.error ? { error: serverStep.error } : {}),
+    };
+  });
+}
+
 const HARD_FAILURE_CHECK_IDS = new Set<VerificationCheckId>([
   'recorded_consistency_proof',
   'counted_missing_indices_zero',
@@ -480,6 +502,19 @@ export function hasCoherentPublicFactDerivedCheckStatuses(input: {
   };
 }): boolean {
   const statusById = new Map(input.checks.map((check) => [check.id, check.status]));
+  if (!hasCoherentCanonicalFactChecks(input, statusById)) return false;
+  const zkGateStatus = resolvePublicFactZkGate(input.verificationStatus, statusById.get('stark_receipt_verify'));
+  return (
+    hasCoherentPublicMyVoteCheck(input, zkGateStatus) &&
+    hasCoherentRecordedFactChecks(input, statusById) &&
+    hasCoherentCountedFactChecks(input, statusById, zkGateStatus)
+  );
+}
+
+type PublicFactCheckInput = Parameters<typeof hasCoherentPublicFactDerivedCheckStatuses>[0];
+type PublicFactStatuses = ReadonlyMap<VerificationCheckId, VerificationStepStatus>;
+
+function hasCoherentCanonicalFactChecks(input: PublicFactCheckInput, statusById: PublicFactStatuses): boolean {
   for (const definition of VERIFICATION_CHECK_DEFINITIONS) {
     const status = statusById.get(definition.id);
     if (status === undefined || (definition.category === 'cast_as_intended' && status !== 'not_run')) {
@@ -493,13 +528,21 @@ export function hasCoherentPublicFactDerivedCheckStatuses(input: {
     return false;
   }
 
-  const starkReceiptStatus = statusById.get('stark_receipt_verify');
-  const zkGateStatus =
-    input.verificationStatus === 'dev_mode'
-      ? starkReceiptStatus === 'not_run'
-        ? 'not_run'
-        : undefined
-      : resolveZkGateStatus(input.verificationStatus);
+  return true;
+}
+
+function resolvePublicFactZkGate(
+  verificationStatus: VerificationStatus,
+  starkReceiptStatus: VerificationStepStatus | undefined,
+): ReturnType<typeof resolveZkGateStatus> {
+  if (verificationStatus === 'dev_mode') return starkReceiptStatus === 'not_run' ? 'not_run' : undefined;
+  return resolveZkGateStatus(verificationStatus);
+}
+
+function hasCoherentPublicMyVoteCheck(
+  input: PublicFactCheckInput,
+  zkGateStatus: ReturnType<typeof resolveZkGateStatus>,
+): boolean {
   const myVoteIncludedCheck = input.checks.find((check) => check.id === 'counted_my_vote_included');
   if (myVoteIncludedCheck === undefined) {
     return false;
@@ -508,7 +551,18 @@ export function hasCoherentPublicFactDerivedCheckStatuses(input: {
     if (myVoteIncludedCheck.status !== zkGateStatus || myVoteIncludedCheck.noteKey !== undefined) {
       return false;
     }
-  } else if (input.voterEvidence.availability === 'unavailable') {
+  } else {
+    return hasCoherentUngatedMyVoteCheck(input, myVoteIncludedCheck);
+  }
+
+  return true;
+}
+
+function hasCoherentUngatedMyVoteCheck(
+  input: PublicFactCheckInput,
+  myVoteIncludedCheck: PublicFactCheckInput['checks'][number],
+): boolean {
+  if (input.voterEvidence.availability === 'unavailable') {
     const expectedNote =
       input.proof.excludedSlots > 0
         ? 'pages.verify.stepsCard.notes.myVoteIncluded.excluded'
@@ -523,6 +577,10 @@ export function hasCoherentPublicFactDerivedCheckStatuses(input: {
     return false;
   }
 
+  return true;
+}
+
+function hasCoherentRecordedFactChecks(input: PublicFactCheckInput, statusById: PublicFactStatuses): boolean {
   const recordedCheckIds = [
     'recorded_index_in_range',
     'recorded_inclusion_proof',
@@ -556,6 +614,14 @@ export function hasCoherentPublicFactDerivedCheckStatuses(input: {
     }
   }
 
+  return true;
+}
+
+function hasCoherentCountedFactChecks(
+  input: PublicFactCheckInput,
+  statusById: PublicFactStatuses,
+  zkGateStatus: ReturnType<typeof resolveZkGateStatus>,
+): boolean {
   if (
     zkGateStatus !== undefined &&
     (statusById.get('counted_election_manifest_consistent') !== zkGateStatus ||
@@ -621,57 +687,83 @@ export function hasCoherentPublicVerifierChecks(input: {
     return false;
   }
 
-  switch (input.verifierResult.status) {
-    case 'not_run':
-      return imageIdCheck.status === 'not_run' && receiptCheck.status === 'not_run';
-    case 'running':
-      return imageIdCheck.status === 'running' && receiptCheck.status === 'running';
-    case 'failed':
-      return imageIdCheck.status === 'failed' && receiptCheck.status === 'failed';
+  const status = input.verifierResult.status;
+  if (isUnverifiedReceiptStatus(status)) return imageIdCheck.status === status && receiptCheck.status === status;
+  switch (status) {
     case 'success':
       return (
         receiptCheck.status === 'success' &&
         imageIdCheck.status === (input.verifierResult.report === undefined ? 'not_run' : 'success')
       );
-    case 'dev_mode': {
-      if (receiptCheck.status === 'not_run' && imageIdCheck.status === 'not_run') {
-        return true;
-      }
-      const expectedImageStatus =
-        input.verifierResult.report === undefined
-          ? 'not_run'
-          : input.verifierResult.report.receipt_image_id === null
-            ? 'failed'
-            : 'success';
-      return receiptCheck.status === 'success' && imageIdCheck.status === expectedImageStatus;
-    }
+    case 'dev_mode':
+      return hasCoherentDevelopmentVerifierChecks(input, imageIdCheck, receiptCheck);
   }
+}
+
+function isUnverifiedReceiptStatus(status: VerificationStatus): status is 'not_run' | 'running' | 'failed' {
+  return status === 'not_run' || status === 'running' || status === 'failed';
+}
+
+function hasCoherentDevelopmentVerifierChecks(
+  input: Parameters<typeof hasCoherentPublicVerifierChecks>[0],
+  imageIdCheck: VerificationCheckStatusEvidence,
+  receiptCheck: VerificationCheckStatusEvidence,
+): boolean {
+  if (receiptCheck.status === 'not_run' && imageIdCheck.status === 'not_run') {
+    return true;
+  }
+  const expectedImageStatus =
+    input.verifierResult.report === undefined
+      ? 'not_run'
+      : input.verifierResult.report.receipt_image_id === null
+        ? 'failed'
+        : 'success';
+  return receiptCheck.status === 'success' && imageIdCheck.status === expectedImageStatus;
+}
+
+function hasSameVerificationSummary(
+  left: VerificationSummaryResult | null,
+  right: SerializableVerificationPresentationPolicy['summary'],
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.status === right.status && left.tone === right.tone && left.messageKey === right.messageKey;
+}
+
+function hasSameDisplayDecision(
+  left: VerificationDisplayDecision,
+  right: SerializableVerificationPresentationPolicy['display'],
+): boolean {
+  return (
+    left.readiness === right.readiness &&
+    left.source === right.source &&
+    left.status === right.status &&
+    left.renderedStatus === right.renderedStatus
+  );
+}
+
+function hasSamePresentationExplanation(
+  derived: VerificationPresentationPolicyResult,
+  candidate: SerializableVerificationPresentationPolicy,
+): boolean {
+  return (
+    derived.publishedTallyMismatch === candidate.publishedTallyMismatch &&
+    derived.devModeEvidence === candidate.devModeEvidence &&
+    derived.missingEvidence === candidate.missingEvidence &&
+    derived.explanationKey === candidate.explanationKey
+  );
 }
 
 function hasSamePresentationPolicy(
   derived: VerificationPresentationPolicyResult,
   candidate: SerializableVerificationPresentationPolicy,
 ): boolean {
-  const derivedSummary = derived.summary;
-  const candidateSummary = candidate.summary;
   return (
-    ((derivedSummary === null && candidateSummary === null) ||
-      (derivedSummary !== null &&
-        candidateSummary !== null &&
-        derivedSummary.status === candidateSummary.status &&
-        derivedSummary.tone === candidateSummary.tone &&
-        derivedSummary.messageKey === candidateSummary.messageKey)) &&
+    hasSameVerificationSummary(derived.summary, candidate.summary) &&
     hasSameStageStatuses(derived.stageStatuses, candidate.stageStatuses) &&
     derived.evidenceFullyVerified === candidate.evidenceFullyVerified &&
     derived.fullyVerifiedLabelEligible === candidate.fullyVerifiedLabelEligible &&
-    derived.display.readiness === candidate.display.readiness &&
-    derived.display.source === candidate.display.source &&
-    derived.display.status === candidate.display.status &&
-    derived.display.renderedStatus === candidate.display.renderedStatus &&
-    derived.publishedTallyMismatch === candidate.publishedTallyMismatch &&
-    derived.devModeEvidence === candidate.devModeEvidence &&
-    derived.missingEvidence === candidate.missingEvidence &&
-    derived.explanationKey === candidate.explanationKey
+    hasSameDisplayDecision(derived.display, candidate.display) &&
+    hasSamePresentationExplanation(derived, candidate)
   );
 }
 
@@ -799,40 +891,58 @@ export function hasCoherentTamperPresentation(input: {
   );
 }
 
-/** Recomputes every public fact that can authorize the fully verified presentation. */
-export function hasCoherentFullyVerifiedPresentationEvidence(input: FullyVerifiedPresentationEvidenceInput): boolean {
-  const verificationReport = input.verificationReport;
-  if (
-    input.scenarioId !== 'S0' ||
-    input.verificationStatus !== 'success' ||
-    input.voterEvidence.availability !== 'available' ||
-    normalizeHexString(input.proof.seenBitmapRoot) !== normalizeHexString(input.proof.includedBitmapRoot) ||
-    (verificationReport !== undefined &&
-      (verificationReport.status !== 'success' ||
-        !hasCoherentVerificationReportExpectedImageId(verificationReport, input.proof.imageId) ||
-        verificationReport.receipt_image_id === null ||
-        normalizeHexString(verificationReport.receipt_image_id) !== normalizeHexString(input.proof.imageId))) ||
-    !hasCoherentAvailableVoterEvidence({
-      voterEvidence: input.voterEvidence,
-      proofAuthority: input.proof,
-    }) ||
-    !hasCoherentTamperPresentation({
+function hasSuccessfulPresentationReceipt(
+  report: FullyVerifiedPresentationEvidenceInput['verificationReport'],
+  imageId: string,
+): boolean {
+  return (
+    report === undefined ||
+    (report.status === 'success' &&
+      hasCoherentVerificationReportExpectedImageId(report, imageId) &&
+      report.receipt_image_id !== null &&
+      normalizeHexString(report.receipt_image_id) === normalizeHexString(imageId))
+  );
+}
+
+function hasCompletePublicVotePartition(proof: FullyVerifiedPresentationEvidenceInput['proof']): boolean {
+  return (
+    proof.missingSlots === 0 &&
+    proof.invalidPresentedSlots === 0 &&
+    proof.rejectedRecords === 0 &&
+    proof.excludedSlots === 0 &&
+    proof.treeSize === proof.totalExpected &&
+    proof.seenIndicesCount === proof.treeSize
+  );
+}
+
+function hasHonestTamperPresentation(input: FullyVerifiedPresentationEvidenceInput): boolean {
+  return (
+    hasCoherentTamperPresentation({
       scenarioId: input.scenarioId,
       tamperDetected: input.presentation.tamperDetected ?? false,
       tamperedCount: input.presentation.tamperedCount ?? 0,
       proof: input.proof,
       tamperSummary: input.presentation.tamperSummary,
-    }) ||
-    input.presentation.tamperDetected === true ||
-    input.proof.missingSlots !== 0 ||
-    input.proof.invalidPresentedSlots !== 0 ||
-    input.proof.rejectedRecords !== 0 ||
-    input.proof.excludedSlots !== 0 ||
-    input.proof.treeSize !== input.proof.totalExpected ||
-    input.proof.seenIndicesCount !== input.proof.treeSize
-  ) {
-    return false;
-  }
+    }) && input.presentation.tamperDetected !== true
+  );
+}
+
+function hasAdmissibleFullyVerifiedFacts(input: FullyVerifiedPresentationEvidenceInput): boolean {
+  return (
+    input.scenarioId === 'S0' &&
+    input.verificationStatus === 'success' &&
+    input.voterEvidence.availability === 'available' &&
+    normalizeHexString(input.proof.seenBitmapRoot) === normalizeHexString(input.proof.includedBitmapRoot) &&
+    hasSuccessfulPresentationReceipt(input.verificationReport, input.proof.imageId) &&
+    hasCoherentAvailableVoterEvidence({ voterEvidence: input.voterEvidence, proofAuthority: input.proof }) &&
+    hasHonestTamperPresentation(input) &&
+    hasCompletePublicVotePartition(input.proof)
+  );
+}
+
+/** Recomputes every public fact that can authorize the fully verified presentation. */
+export function hasCoherentFullyVerifiedPresentationEvidence(input: FullyVerifiedPresentationEvidenceInput): boolean {
+  if (!hasAdmissibleFullyVerifiedFacts(input)) return false;
 
   const checks = projectCanonicalVerificationChecks(input.checks, false);
   if (!checks) {
@@ -887,7 +997,7 @@ function hasFailClosedExclusionSignal(context: VerificationSummaryContext): bool
   if (definedCounts.some((value) => !Number.isSafeInteger(value) || value < 0)) {
     return true;
   }
-  if ((missingSlots ?? 0) > 0 || (invalidPresentedSlots ?? 0) > 0 || (excludedSlots ?? 0) > 0) {
+  if (definedCounts.some((value) => value > 0)) {
     return true;
   }
   return (
@@ -911,6 +1021,25 @@ function hasHardFailure(checks: readonly VerificationCheck[], context: Verificat
   );
 }
 
+function hasSuccessfulProofChecks(checks: readonly VerificationCheck[]): boolean {
+  const receiptSucceeded = checks.some((check) => check.id === 'stark_receipt_verify' && check.status === 'success');
+  const imageIdChecks = checks.filter((check) => check.id === 'stark_image_id_match');
+  const imageIdSucceededOrAbsent =
+    imageIdChecks.length === 0 || imageIdChecks.some((check) => check.status === 'success');
+  return receiptSucceeded && imageIdSucceededOrAbsent;
+}
+
+function resolvePresentationVerificationStatus(
+  verificationStatus: VerificationStatus | undefined,
+  verificationReportStatus: VerificationStatus | undefined,
+): VerificationStatus | undefined {
+  const resolvedStatus =
+    verificationStatus === 'running' || verificationStatus === 'not_run'
+      ? verificationStatus
+      : (verificationReportStatus ?? verificationStatus);
+  return resolvedStatus;
+}
+
 function hasExplicitProofFailure(
   checks: readonly VerificationCheck[],
   verificationStatus: VerificationStatus | undefined,
@@ -920,18 +1049,11 @@ function hasExplicitProofFailure(
     return true;
   }
 
-  const receiptSucceeded = checks.some((check) => check.id === 'stark_receipt_verify' && check.status === 'success');
-  const imageIdChecks = checks.filter((check) => check.id === 'stark_image_id_match');
-  const imageIdSucceededOrAbsent =
-    imageIdChecks.length === 0 || imageIdChecks.some((check) => check.status === 'success');
   const proofSucceeded =
     verificationReportStatus === 'success' ||
     verificationReportStatus === 'dev_mode' ||
-    (receiptSucceeded && imageIdSucceededOrAbsent);
-  const resolvedStatus =
-    verificationStatus === 'running' || verificationStatus === 'not_run'
-      ? verificationStatus
-      : (verificationReportStatus ?? verificationStatus);
+    hasSuccessfulProofChecks(checks);
+  const resolvedStatus = resolvePresentationVerificationStatus(verificationStatus, verificationReportStatus);
 
   return resolvedStatus === 'failed' && !proofSucceeded;
 }
@@ -962,15 +1084,77 @@ const NOT_RUN_STAGE_STATUSES: VerificationStageStatuses = {
   stark_verification: 'not_run',
 };
 
+function hasDevelopmentPresentationEvidence(
+  input: VerificationPresentationPolicyInput,
+  checks: readonly VerificationCheck[],
+): boolean {
+  return (
+    input.context?.devModeEvidence === true ||
+    input.verificationStatus === 'dev_mode' ||
+    input.verificationReportStatus === 'dev_mode' ||
+    checks.some((check) => check.evidence === 'demo')
+  );
+}
+
+function deriveAvailableDisplay(
+  input: VerificationPresentationPolicyInput,
+  checks: readonly VerificationCheck[],
+  summary: VerificationSummaryResult | null,
+  hardFailureDetected: boolean,
+  explicitServerFailureStatus: VerificationExplicitServerFailureStatus | null,
+): VerificationDisplayDecision {
+  return resolveVerificationDisplayDecision({
+    verificationStarted: input.verificationStarted ?? true,
+    sequenceComplete: input.sequenceComplete ?? true,
+    hasCheckPending: checks.some((check) => check.status === 'pending' || check.status === 'running'),
+    explicitServerFailureStatus,
+    summaryTone: summary?.tone ?? null,
+    hasVerificationChecks: checks.length > 0,
+    hardFailureDetected,
+  });
+}
+
+function hasFullyVerifiedSummaryEvidence(
+  summary: VerificationSummaryResult | null,
+  hardFailureDetected: boolean,
+  explicitServerFailureStatus: VerificationExplicitServerFailureStatus | null,
+): summary is VerificationSummaryResult & { status: 'fully_verified'; tone: 'verified' } {
+  return (
+    summary?.status === 'fully_verified' &&
+    summary.tone === 'verified' &&
+    !hardFailureDetected &&
+    explicitServerFailureStatus === null
+  );
+}
+
+function deriveIneligiblePresentationPolicy(
+  summary: VerificationSummaryResult | null,
+  stageStatuses: VerificationStageStatuses,
+  evidenceFullyVerified: boolean,
+  display: VerificationDisplayDecision,
+  devModeEvidence: boolean,
+): VerificationPresentationPolicyResult {
+  if (isFullyVerifiedDisplayDecision(display)) {
+    throw new Error('Verification presentation policy derived contradictory fully verified facts');
+  }
+  return {
+    summary,
+    stageStatuses,
+    evidenceFullyVerified,
+    fullyVerifiedLabelEligible: false,
+    display,
+    publishedTallyMismatch: summary?.status === 'published_tally_mismatch',
+    devModeEvidence,
+    missingEvidence: summary === null || summary.status === 'missing_evidence',
+    ...(summary?.messageKey ? { explanationKey: summary.messageKey } : {}),
+  };
+}
+
 export function deriveVerificationPresentationPolicy(
   input: VerificationPresentationPolicyInput,
 ): VerificationPresentationPolicyResult {
   const checks = input.checks ? [...input.checks] : [];
-  const devModeEvidence =
-    input.context?.devModeEvidence === true ||
-    input.verificationStatus === 'dev_mode' ||
-    input.verificationReportStatus === 'dev_mode' ||
-    checks.some((check) => check.evidence === 'demo');
+  const devModeEvidence = hasDevelopmentPresentationEvidence(input, checks);
 
   if (input.availability !== 'available') {
     return {
@@ -994,21 +1178,12 @@ export function deriveVerificationPresentationPolicy(
   const explicitServerFailureStatus =
     input.explicitServerFailureStatus ??
     (hasExplicitProofFailure(checks, input.verificationStatus, input.verificationReportStatus) ? 'failed' : null);
-  const hasCheckPending = checks.some((check) => check.status === 'pending' || check.status === 'running');
-  const display = resolveVerificationDisplayDecision({
-    verificationStarted: input.verificationStarted ?? true,
-    sequenceComplete: input.sequenceComplete ?? true,
-    hasCheckPending,
-    explicitServerFailureStatus,
-    summaryTone: summary?.tone ?? null,
-    hasVerificationChecks: checks.length > 0,
+  const display = deriveAvailableDisplay(input, checks, summary, hardFailureDetected, explicitServerFailureStatus);
+  const evidenceFullyVerified = hasFullyVerifiedSummaryEvidence(
+    summary,
     hardFailureDetected,
-  });
-  const evidenceFullyVerified =
-    summary?.status === 'fully_verified' &&
-    summary.tone === 'verified' &&
-    !hardFailureDetected &&
-    explicitServerFailureStatus === null;
+    explicitServerFailureStatus,
+  );
 
   const stageStatuses = deriveStageStatuses(checks, context);
   if (
@@ -1037,20 +1212,5 @@ export function deriveVerificationPresentationPolicy(
     };
   }
 
-  const ineligibleResult = {
-    summary,
-    stageStatuses,
-    evidenceFullyVerified,
-    fullyVerifiedLabelEligible: false as const,
-    display,
-    publishedTallyMismatch: summary?.status === 'published_tally_mismatch',
-    devModeEvidence,
-    missingEvidence: summary === null || summary.status === 'missing_evidence',
-    ...(summary?.messageKey ? { explanationKey: summary.messageKey } : {}),
-  };
-
-  if (isFullyVerifiedDisplayDecision(display)) {
-    throw new Error('Verification presentation policy derived contradictory fully verified facts');
-  }
-  return { ...ineligibleResult, display };
+  return deriveIneligiblePresentationPolicy(summary, stageStatuses, evidenceFullyVerified, display, devModeEvidence);
 }

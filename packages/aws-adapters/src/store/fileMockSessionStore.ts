@@ -1,3 +1,28 @@
+import { evaluateStoredVoteCommand, type PreparedVoteWrite } from './session-vote-writes';
+import {
+  admitMappedObservation,
+  restoreMappedVerificationSnapshot,
+  readMappedFinalization,
+  requireMappedSucceededFinalization,
+  prepareMappedFinalizationCommand,
+  installMappedVoteMutation,
+  describeBotVoteAddition,
+} from './mapped-session-records';
+import { SessionCommandStore, type VerificationWriteMode } from './session-command-store';
+import { assertNoPrematureCommitArtifacts } from './successfulFinalizationReplay';
+import {
+  cloneSessionIdentity as cloneIdentity,
+  cloneSessionVoting,
+  createDefaultSessionRecords,
+  cloneRuntimeMetadata,
+} from './session-records';
+import { assertSuccessfulFinalizationReplay, admitReplayArtifacts } from './successfulFinalizationReplay';
+import {
+  AWS_RUNNING_PAYLOAD_KEYS,
+  AWS_FAILED_PAYLOAD_KEYS,
+  AWS_TIMED_OUT_PAYLOAD_KEYS,
+} from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
+import { assertAllowedFinalizationPayloadKeys } from '@stark-ballot/application/finalize/finalization-store';
 /**
  * File-backed session store for local production-build tests.
  *
@@ -7,7 +32,6 @@
 
 import { encodeFinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-storage';
 import crypto from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -16,25 +40,17 @@ import {
   buildFinalizationCommand,
   requestedFinalizationStatus,
   type FinalizationBitmapRecord,
-  type FinalizationFailedPayload,
   type FinalizationQueuedPayload,
-  type FinalizationRunningPayload,
   type FinalizationStore,
   type SuccessfulFinalizationCommitInput,
   type SuccessfulFinalizationCommitResult,
-  type FinalizationSucceededPayload,
-  type FinalizationTimedOutPayload,
 } from '@stark-ballot/application/finalize/finalization-store';
+import { admitPersistedFinalizationBitmapData } from '@stark-ballot/application/finalize/finalization-bitmap-admission';
 import {
-  admitFinalizationBitmapDisposition,
-  admitPersistedFinalizationBitmapData,
-} from '@stark-ballot/application/finalize/finalization-bitmap-admission';
-import {
-  admitSuccessfulFinalizationReceipt,
   admitSuccessfulFinalizationCommitRecord,
   assertSuccessfulFinalizationLifecycleAdmission,
-  assertDirectSuccessfulFinalizationPayload,
-  buildDirectSuccessfulFinalizationCommitRecord,
+  admitSuccessfulFinalizationEvidence,
+  buildPublishedSuccessfulFinalization,
   cloneSuccessfulFinalizationRecord,
   isSuccessfulFinalizationRecord,
 } from '@stark-ballot/application/finalize/successful-finalization-commit-admission';
@@ -44,6 +60,8 @@ import {
 } from '@stark-ballot/application/finalize/finalization-record';
 import {
   parseVerificationResultRecord,
+  isTerminalVerificationStatus,
+  createVerificationResultRecord,
   type VerificationResultRecord,
   type VerificationResultStore,
 } from '@stark-ballot/application/finalize/finalization-result-store';
@@ -54,8 +72,8 @@ import {
 } from '@stark-ballot/application/finalize/finalization-transition-policy';
 import type { FinalizationId, FinalizationState } from '@stark-ballot/application/finalize/finalization-types';
 import {
-  buildSessionRecords,
-  evaluateSessionVoteMutation,
+  type SessionVoteMutation,
+  type SessionVoteCommand,
 } from '@stark-ballot/application/session/session-mutation-policy';
 import type {
   SessionVoteMutationStore,
@@ -66,51 +84,47 @@ import type {
   AwsFinalizationDeliveryMetadataStore,
   AwsVerificationDeliveryMetadataInput,
 } from '@stark-ballot/aws-adapters/finalize/finalizationDeliveryMetadataStore';
-import { parseAwsFinalizationRuntimeMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationMetadataAdmission';
 import {
-  assertNoAwsRuntimeTransitionMetadata,
+  admitOptionalAwsRuntimeMetadata,
+  mergeRuntimeBundleDelivery,
+  mergeFinalizationRuntimeMetadata,
+  projectRuntimeBundleDelivery,
+} from '@stark-ballot/aws-adapters/finalize/finalizationMetadataAdmission';
+import {
   type AwsFinalizationFailedPayload,
   type AwsFinalizationRunningPayload,
   type AwsFinalizationRuntimeMetadata,
   type AwsFinalizationRuntimeMetadataStore,
   type AwsFinalizationRuntimeTransitionStore,
-  type AwsFinalizationSucceededPayload,
   type AwsFinalizationTimedOutPayload,
-  type AwsSucceededTransitionMetadata,
 } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
 import { recordFinalizationStorePersistenceOutcome } from '@stark-ballot/aws-adapters/finalize/finalizationTransitionObservability';
-import { deriveExactCtProof } from '@stark-ballot/aws-adapters/store/ct-proof';
+import {
+  readStoredVoteProof,
+  readIndexedVoteProof,
+  type VoteWithCtProof,
+  type TimestampedCtProof,
+} from '@stark-ballot/aws-adapters/store/ct-proof';
 import { logger } from '@stark-ballot/diagnostics/logger';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import type {
-  AddVoteResult,
-  BotVoteCommand,
   SessionIdentityRecord,
   SessionVotingRecord,
   StoredVoteRecord,
-  UserVoteCommand,
 } from '@stark-ballot/domain/types/sessionRecords';
 import { parseSessionIdentityRecord } from '@stark-ballot/domain/types/sessionRecords';
 import type { SessionVotingSummary, VoteStore } from '@stark-ballot/domain/types/voteStore';
 import {
   parseVerificationObservation,
-  parseVerificationObservationWrite,
   resolveVerificationObservationRecord,
   type RecordVerificationObservationResult,
   type VerificationObservation,
   type VerificationObservationWrite,
 } from '@stark-ballot/domain/types/verificationObservation';
-import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
 import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { VerificationResult } from '@stark-ballot/verification/shared/types';
-import {
-  buildDefaultElectionConfig,
-  getDefaultElectionConfigHash,
-} from '@stark-ballot/zkvm-contract/zkvm/election-config';
-import { generateLogId } from '@stark-ballot/zkvm-contract/zkvm/log-id';
-import { createElectionId } from '@stark-ballot/zkvm-contract/zkvm/types';
-import { computeSuccessfulFinalizationReceiptHash } from './successfulFinalizationReceipt';
+import { assertReceiptPublicationCounter, prepareReceiptPublication } from './successfulFinalizationReceipt';
 import {
   createEmptyFileStoreState,
   parseFileStoreSnapshot,
@@ -133,67 +147,9 @@ type MutationResult<T> = {
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_RETRY_MS = 10;
-const FINALIZATION_QUEUED_PAYLOAD_KEYS = new Set(['finalizationId', 'queuedAtMs', 'scenarioContext', 'observability']);
-const FINALIZATION_RUNNING_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'scenarioContext',
-  'observability',
-]);
-const FINALIZATION_SUCCEEDED_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'completedAtMs',
-  'scenarioContext',
-  'finalizationResult',
-  'observability',
-]);
-const FINALIZATION_FAILED_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'failedAtMs',
-  'scenarioContext',
-  'error',
-  'observability',
-]);
-const FINALIZATION_TIMED_OUT_PAYLOAD_KEYS = new Set([
-  'finalizationId',
-  'queuedAtMs',
-  'startedAtMs',
-  'timeoutAtMs',
-  'scenarioContext',
-  'observability',
-]);
-const AWS_RUNNING_PAYLOAD_KEYS = new Set([...FINALIZATION_RUNNING_PAYLOAD_KEYS, 'stepFunctionsArn']);
-const AWS_SUCCEEDED_PAYLOAD_KEYS = new Set([
-  ...FINALIZATION_SUCCEEDED_PAYLOAD_KEYS,
-  'stepFunctionsArn',
-  'bundleMetadata',
-]);
-const AWS_FAILED_PAYLOAD_KEYS = new Set([...FINALIZATION_FAILED_PAYLOAD_KEYS, 'stepFunctionsArn']);
-const AWS_TIMED_OUT_PAYLOAD_KEYS = new Set([...FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'stepFunctionsArn']);
 
 function scopedKey(sessionId: SessionId, finalizationId: string): string {
   return `${sessionId}\u0000${finalizationId}`;
-}
-
-function assertAllowedPayloadKeys(value: object, allowed: ReadonlySet<string>, label: string): void {
-  if (Object.keys(value).some((key) => !allowed.has(key))) {
-    throw new Error(`Invalid ${label} payload`);
-  }
-}
-
-function cloneIdentity(identity: SessionIdentityRecord): SessionIdentityRecord {
-  return {
-    ...identity,
-    electionConfig: {
-      ...identity.electionConfig,
-      choices: [...identity.electionConfig.choices],
-    },
-  };
 }
 
 function cloneVoting(voting: SessionVotingRecord): SessionVotingRecord {
@@ -201,24 +157,7 @@ function cloneVoting(voting: SessionVotingRecord): SessionVotingRecord {
   for (const [, vote] of Array.from(voting.votes.entries()).sort(([left], [right]) => left - right)) {
     bulletin.appendVote(vote.voteId, vote.commit.slice(2));
   }
-  return {
-    ...voting,
-    votes: new Map(Array.from(voting.votes, ([index, vote]) => [index, { ...vote }])),
-    bulletin,
-    bulletinRootHistory: voting.bulletinRootHistory.map((snapshot) => ({ ...snapshot })),
-    userParticipation: { ...voting.userParticipation },
-  };
-}
-
-function isTerminalVerificationStatus(status: VerificationResult['status']): boolean {
-  return status === 'success' || status === 'failed' || status === 'dev_mode';
-}
-
-function cloneRuntimeMetadata(metadata: AwsFinalizationRuntimeMetadata): AwsFinalizationRuntimeMetadata {
-  return {
-    ...metadata,
-    ...(metadata.bundleMetadata ? { bundleMetadata: { ...metadata.bundleMetadata } } : {}),
-  };
+  return cloneSessionVoting({ ...voting, bulletin });
 }
 
 function cloneDeliveryMetadata(metadata: AwsVerificationDeliveryMetadataInput): AwsVerificationDeliveryMetadataInput {
@@ -226,6 +165,7 @@ function cloneDeliveryMetadata(metadata: AwsVerificationDeliveryMetadataInput): 
 }
 
 export class FileMockSessionStore
+  extends SessionCommandStore
   implements
     VoteStore,
     SessionVoteMutationStore,
@@ -246,6 +186,7 @@ export class FileMockSessionStore
   private readonly lockDirectory: string;
 
   constructor() {
+    super();
     const configuredDirectory = process.env['FILE_MOCK_STORE_DIR'];
     this.storageDir = configuredDirectory
       ? path.resolve(configuredDirectory)
@@ -360,17 +301,7 @@ export class FileMockSessionStore
   }
 
   private currentFinalization(sessionId: SessionId): FinalizationRecord | null {
-    const finalizationId = this.state.currentFinalizationIdBySession.get(sessionId);
-    if (!finalizationId) {
-      return null;
-    }
-    const record = finalizationRecordCodec.admit(
-      this.state.finalizationRecords.get(scopedKey(sessionId, finalizationId)),
-    );
-    if (!record || record.sessionId !== sessionId || record.finalizationId !== finalizationId) {
-      throw new Error('Current finalization record is missing or invalid');
-    }
-    return record;
+    return readMappedFinalization(sessionId, this.state.currentFinalizationIdBySession, this.state.finalizationRecords);
   }
 
   private touchVotingRecord(sessionId: SessionId, atMs = Date.now()): void {
@@ -387,15 +318,7 @@ export class FileMockSessionStore
         typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
       );
       const createdAtMs = Date.now();
-      const records = buildSessionRecords({
-        sessionId,
-        electionId: createElectionId(),
-        electionConfigHash: getDefaultElectionConfigHash(),
-        electionConfig: buildDefaultElectionConfig(),
-        logId: generateLogId(`file-mock-${sessionId}`),
-        createdAtMs,
-        lastActivityMs: createdAtMs,
-      });
+      const records = createDefaultSessionRecords(sessionId, `file-mock-${sessionId}`, createdAtMs);
       const identity = parseSessionIdentityRecord(records.identity);
       if (!identity) {
         throw new Error('Session creation produced invalid lifecycle records');
@@ -445,101 +368,27 @@ export class FileMockSessionStore
     });
   }
 
-  async addVote(
+  protected override mutateVotes<T>(
     sessionId: SessionId,
-    voteData: UserVoteCommand,
-  ): Promise<Result<AddVoteResult, SessionVoteStoreError>> {
-    return this.mutate<Result<AddVoteResult, SessionVoteStoreError>>(() => {
+    command: SessionVoteCommand,
+    prepareWrite: (mutation: SessionVoteMutation) => PreparedVoteWrite<T>,
+  ): Promise<Result<T, SessionVoteStoreError>> {
+    return this.mutate<Result<T, SessionVoteStoreError>>(() => {
       const identity = parseSessionIdentityRecord(this.state.identityRecords.get(sessionId));
       if (!identity || identity.sessionId !== sessionId) {
-        if (this.snapshotAdmissionFailed) {
-          throw new Error('Session identity is missing or invalid');
-        }
-        return {
-          value: { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } },
-          dirty: false,
-        };
+        if (this.snapshotAdmissionFailed) throw new Error('Session identity is missing or invalid');
+        return { value: { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } }, dirty: false };
       }
       const voting = this.requireVoting(sessionId);
-      const outcome = evaluateSessionVoteMutation(
-        {
-          identity,
-          voting,
-          finalization: this.currentFinalization(sessionId),
-        },
-        { kind: 'append_user_vote', vote: voteData },
-        {
-          generateVoteId,
-          nowMs: Date.now,
-        },
-      );
-      if (!outcome.ok) {
-        return { value: outcome, dirty: false };
+      const outcome = evaluateStoredVoteCommand(identity, voting, this.currentFinalization(sessionId), command);
+      if (!outcome.ok) return { value: outcome, dirty: false };
+      const write = prepareWrite(outcome.value);
+      if (!write.mutation) return { value: { ok: true, value: write.value }, dirty: false };
+      installMappedVoteMutation(sessionId, write.mutation, this.state.votingRecords, this.state.voteIdIndex);
+      if (write.mutation.kind === 'bot_votes_appended' && write.mutation.indexIntents.length > 0) {
+        logger.info('[FileMockStore] Bot votes added', describeBotVoteAddition(write.mutation));
       }
-      const mutation = outcome.value;
-      if (mutation.kind === 'user_vote_replayed') {
-        return { value: { ok: true, value: mutation.castResult }, dirty: false };
-      }
-      if (mutation.kind !== 'user_vote_appended') {
-        throw new Error('Session vote mutation invariant violated');
-      }
-      this.state.votingRecords.set(sessionId, mutation.nextVoting);
-      for (const intent of mutation.indexIntents) {
-        this.state.voteIdIndex.set(intent.voteId, { sessionId, index: intent.index });
-      }
-      return { value: { ok: true, value: mutation.castResult }, dirty: true };
-    });
-  }
-
-  async addBotVotes(
-    sessionId: SessionId,
-    votes: readonly BotVoteCommand[],
-  ): Promise<Result<void, SessionVoteStoreError>> {
-    return this.mutate<Result<void, SessionVoteStoreError>>(() => {
-      const identity = parseSessionIdentityRecord(this.state.identityRecords.get(sessionId));
-      if (!identity || identity.sessionId !== sessionId) {
-        if (this.snapshotAdmissionFailed) {
-          throw new Error('Session identity is missing or invalid');
-        }
-        return {
-          value: { ok: false, error: { code: ApplicationErrorCode.SESSION_NOT_FOUND } },
-          dirty: false,
-        };
-      }
-      const voting = this.requireVoting(sessionId);
-      const outcome = evaluateSessionVoteMutation(
-        {
-          identity,
-          voting,
-          finalization: this.currentFinalization(sessionId),
-        },
-        { kind: 'append_bot_votes', votes },
-        {
-          generateVoteId,
-          nowMs: Date.now,
-        },
-      );
-      if (!outcome.ok) {
-        return { value: outcome, dirty: false };
-      }
-      const mutation = outcome.value;
-      if (mutation.kind !== 'bot_votes_appended') {
-        throw new Error('Session vote mutation invariant violated');
-      }
-      this.state.votingRecords.set(sessionId, mutation.nextVoting);
-      for (const intent of mutation.indexIntents) {
-        this.state.voteIdIndex.set(intent.voteId, { sessionId, index: intent.index });
-      }
-      if (mutation.indexIntents.length > 0) {
-        logger.info('[FileMockStore] Bot votes added', {
-          addedCount: mutation.indexIntents.length,
-          totalBotCount: mutation.nextVoting.botCount,
-          firstBotIndex: mutation.indexIntents[0]?.index,
-          lastBotIndex: mutation.indexIntents.at(-1)?.index,
-          bulletinSize: mutation.nextVoting.bulletin.getSize(),
-        });
-      }
-      return { value: { ok: true, value: undefined }, dirty: true };
+      return { value: { ok: true, value: write.value }, dirty: true };
     });
   }
 
@@ -604,58 +453,17 @@ export class FileMockSessionStore
     return voteData ? { voteData: { ...voteData }, index: owner.index } : null;
   }
 
-  async getVoteByIdWithProof(
-    sessionId: SessionId,
-    voteId: string,
-  ): Promise<{
-    voteData: StoredVoteRecord;
-    leafIndex: number;
-    merklePath: string[];
-    bulletinRootAtCast: string;
-    treeSize: number;
-  } | null> {
-    const voteInfo = await this.getVoteById(sessionId, voteId);
-    const voting = await this.getVotingRecord(sessionId);
-    if (!voteInfo || !voting) {
-      return null;
-    }
-    return {
-      voteData: voteInfo.voteData,
-      ...deriveExactCtProof({
-        bulletin: voting.bulletin,
-        voteId: voteInfo.voteData.voteId,
-        leafIndex: voteInfo.index,
-        rootAtCast: voteInfo.voteData.rootAtCast,
-      }),
-    };
+  async getVoteByIdWithProof(sessionId: SessionId, voteId: string): Promise<VoteWithCtProof | null> {
+    return readStoredVoteProof(this, sessionId, voteId);
   }
 
-  async getVoteProof(voteId: string): Promise<{
-    leafIndex: number;
-    merklePath: string[];
-    bulletinRootAtCast: string;
-    treeSize: number;
-    timestamp: number;
-  } | null> {
+  async getVoteProof(voteId: string): Promise<TimestampedCtProof | null> {
     await Promise.resolve();
     this.ensureFresh();
-    const owner = this.state.voteIdIndex.get(voteId);
-    if (!owner) {
-      return null;
-    }
-    const proof = await this.getVoteByIdWithProof(owner.sessionId, voteId);
-    return proof
-      ? {
-          leafIndex: proof.leafIndex,
-          merklePath: proof.merklePath,
-          bulletinRootAtCast: proof.bulletinRootAtCast,
-          treeSize: proof.treeSize,
-          timestamp: proof.voteData.timestamp,
-        }
-      : null;
+    return readIndexedVoteProof(this, this.state.voteIdIndex.get(voteId), voteId);
   }
 
-  async getCurrentFinalizationRecord(sessionId: SessionId): Promise<FinalizationRecord | null> {
+  override async getCurrentFinalizationRecord(sessionId: SessionId): Promise<FinalizationRecord | null> {
     await Promise.resolve();
     this.ensureFresh();
     this.requireIdentity(sessionId);
@@ -675,67 +483,45 @@ export class FileMockSessionStore
     return record?.sessionId === sessionId && record.finalizationId === finalizationId ? record : null;
   }
 
-  private async applyFinalizationCommand(
+  private publishTransitionMetadata(
+    command: FinalizationTransitionCommand,
+    record: FinalizationRecord,
+    runtimeMetadata: AwsFinalizationRuntimeMetadata | undefined,
+  ): boolean {
+    if (
+      !runtimeMetadata ||
+      record.finalizationId !== command.finalizationId ||
+      record.state.status !== requestedFinalizationStatus(command)
+    )
+      return false;
+    const key = scopedKey(command.sessionId, command.finalizationId);
+    this.state.runtimeMetadataRecords.set(key, cloneRuntimeMetadata(runtimeMetadata));
+    const delivery = projectRuntimeBundleDelivery(runtimeMetadata);
+    if (delivery) this.state.deliveryMetadataRecords.set(key, delivery);
+    return true;
+  }
+
+  protected override async applyFinalizationCommand(
     command: FinalizationTransitionCommand,
     observability?: FinalizationQueuedPayload['observability'],
     runtimeMetadata?: AwsFinalizationRuntimeMetadata,
   ): Promise<AppliedFinalizationTransition> {
     const applied = await this.mutate(() => {
       this.requireIdentity(command.sessionId);
-      const before = this.currentFinalization(command.sessionId);
-      const outcome = evaluateFinalizationTransition({
-        authority: { currentRecord: before },
+      const prepared = prepareMappedFinalizationCommand(
         command,
-        evaluatedAtMs: Date.now(),
-      });
-      if (outcome.kind === 'invalid') {
-        throw new Error(`Invalid finalization transition: ${outcome.reason}`);
-      }
-      let record = before;
-      let mutated = false;
-      let dirty = false;
-      if (outcome.kind === 'applied') {
-        record = finalizationRecordCodec.admit(outcome.mutations.nextRecord) ?? null;
-        if (!record) {
-          throw new Error('Finalization transition produced an invalid record');
-        }
+        this.state.currentFinalizationIdBySession,
+        this.state.finalizationRecords,
+      );
+      const { record, mutated } = prepared;
+      if (mutated) {
         this.state.finalizationRecords.set(scopedKey(command.sessionId, command.finalizationId), record);
         this.state.currentFinalizationIdBySession.set(command.sessionId, command.finalizationId);
         this.touchVotingRecord(command.sessionId);
-        mutated = true;
-        dirty = true;
       }
-      if (!record) {
-        throw new Error(`Finalization transition was not applied: ${outcome.reason}`);
-      }
-      if (
-        runtimeMetadata &&
-        record.finalizationId === command.finalizationId &&
-        record.state.status === requestedFinalizationStatus(command)
-      ) {
-        const key = scopedKey(command.sessionId, command.finalizationId);
-        this.state.runtimeMetadataRecords.set(key, cloneRuntimeMetadata(runtimeMetadata));
-        if (runtimeMetadata.bundleMetadata) {
-          this.state.deliveryMetadataRecords.set(key, {
-            ...(runtimeMetadata.bundleMetadata.s3BundleKey
-              ? { s3BundleKey: runtimeMetadata.bundleMetadata.s3BundleKey }
-              : {}),
-            ...(runtimeMetadata.bundleMetadata.s3UploadedAtMs === undefined
-              ? {}
-              : { s3UploadedAtMs: runtimeMetadata.bundleMetadata.s3UploadedAtMs }),
-          });
-        }
-        dirty = true;
-      }
-      return {
-        value: {
-          record,
-          mutated,
-          outcome,
-          before,
-        },
-        dirty,
-      };
+      let dirty = mutated;
+      if (this.publishTransitionMetadata(command, record, runtimeMetadata)) dirty = true;
+      return { value: prepared, dirty };
     });
 
     recordFinalizationStorePersistenceOutcome({
@@ -751,84 +537,11 @@ export class FileMockSessionStore
     return applied;
   }
 
-  async markFinalizationQueued(sessionId: SessionId, payload: FinalizationQueuedPayload): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_QUEUED_PAYLOAD_KEYS, 'queued finalization');
-    return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'queue', payload), payload.observability)
-    ).record;
-  }
-
-  async markFinalizationRunning(
-    sessionId: SessionId,
-    payload: FinalizationRunningPayload,
-  ): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_RUNNING_PAYLOAD_KEYS, 'running finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'start', payload), payload.observability)
-    ).record;
-  }
-
-  async markFinalizationSucceeded(
-    sessionId: SessionId,
-    payload: FinalizationSucceededPayload,
-  ): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_SUCCEEDED_PAYLOAD_KEYS, 'succeeded finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    assertDirectSuccessfulFinalizationPayload(payload);
-    const current = await this.getCurrentFinalizationRecord(sessionId);
-    const command = buildFinalizationCommand(sessionId, 'succeed', payload);
-    const admission = evaluateFinalizationTransition({
-      authority: { currentRecord: current },
-      command,
-      evaluatedAtMs: Date.now(),
-    });
-    if (admission.kind === 'invalid') {
-      throw new Error(`Invalid finalization transition: ${admission.reason}`);
-    }
-    if (
-      current &&
-      (current.finalizationId !== payload.finalizationId ||
-        current.state.status === 'failed' ||
-        current.state.status === 'timeout')
-    ) {
-      return (await this.applyFinalizationCommand(command, payload.observability)).record;
-    }
-    const committed = await this.commitSuccessfulFinalization({
-      record: buildDirectSuccessfulFinalizationCommitRecord(sessionId, payload, current),
-      bitmap: { availability: 'unavailable' },
-      ...(payload.observability ? { observability: payload.observability } : {}),
-    });
-    return committed.record;
-  }
-
-  async markFinalizationFailed(sessionId: SessionId, payload: FinalizationFailedPayload): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_FAILED_PAYLOAD_KEYS, 'failed finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return (
-      await this.applyFinalizationCommand(buildFinalizationCommand(sessionId, 'fail', payload), payload.observability)
-    ).record;
-  }
-
-  async markFinalizationTimedOut(
-    sessionId: SessionId,
-    payload: FinalizationTimedOutPayload,
-  ): Promise<FinalizationRecord> {
-    assertAllowedPayloadKeys(payload, FINALIZATION_TIMED_OUT_PAYLOAD_KEYS, 'timed-out finalization');
-    assertNoAwsRuntimeTransitionMetadata(payload as AwsSucceededTransitionMetadata);
-    return (
-      await this.applyFinalizationCommand(
-        buildFinalizationCommand(sessionId, 'time_out', payload),
-        payload.observability,
-      )
-    ).record;
-  }
-
   async markAwsFinalizationRunning(
     sessionId: SessionId,
     payload: AwsFinalizationRunningPayload,
   ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_RUNNING_PAYLOAD_KEYS, 'AWS running finalization');
+    assertAllowedFinalizationPayloadKeys(payload, AWS_RUNNING_PAYLOAD_KEYS, 'AWS running finalization');
     const { stepFunctionsArn, ...semanticPayload } = payload;
     const applied = await this.applyFinalizationCommand(
       buildFinalizationCommand(sessionId, 'start', semanticPayload),
@@ -840,66 +553,11 @@ export class FileMockSessionStore
     return applied.record.state;
   }
 
-  async markAwsFinalizationSucceeded(
-    sessionId: SessionId,
-    payload: AwsFinalizationSucceededPayload,
-  ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_SUCCEEDED_PAYLOAD_KEYS, 'AWS succeeded finalization');
-    const { stepFunctionsArn, bundleMetadata, finalizationResult, ...common } = payload;
-    const current = await this.getCurrentFinalizationRecord(sessionId);
-    if (
-      current &&
-      (current.finalizationId !== payload.finalizationId ||
-        (current.state.status !== 'pending' &&
-          current.state.status !== 'running' &&
-          current.state.status !== 'succeeded'))
-    ) {
-      return current.state;
-    }
-    const bitmap =
-      finalizationResult.artifacts.bitmap.availability === 'available'
-        ? { availability: 'available' as const, data: finalizationResult.artifacts.bitmap.data }
-        : { availability: 'unavailable' as const };
-    const requested = finalizationRecordCodec.admit({
-      sessionId,
-      finalizationId: payload.finalizationId,
-      scenarioContext: common.scenarioContext ?? current?.scenarioContext,
-      state: {
-        status: 'succeeded',
-        finalizationId: payload.finalizationId,
-        queuedAtMs: common.queuedAtMs,
-        startedAtMs: common.startedAtMs,
-        completedAtMs: common.completedAtMs,
-      },
-      finalizationResult: {
-        finalizationId: payload.finalizationId,
-        ...finalizationResult,
-      },
-    });
-    if (!requested || requested.state.status !== 'succeeded') {
-      throw new Error('Invalid AWS succeeded finalization record');
-    }
-    const runtimeMetadata =
-      stepFunctionsArn === undefined && bundleMetadata === undefined
-        ? undefined
-        : {
-            ...(stepFunctionsArn === undefined ? {} : { stepFunctionsArn }),
-            ...(bundleMetadata === undefined ? {} : { bundleMetadata }),
-          };
-    const committed = await this.commitSuccessfulFinalization({
-      record: requested as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
-      bitmap,
-      ...(runtimeMetadata ? { runtimeMetadata } : {}),
-      ...(common.observability ? { observability: common.observability } : {}),
-    });
-    return committed.record.state;
-  }
-
   async markAwsFinalizationFailed(
     sessionId: SessionId,
     payload: AwsFinalizationFailedPayload,
   ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_FAILED_PAYLOAD_KEYS, 'AWS failed finalization');
+    assertAllowedFinalizationPayloadKeys(payload, AWS_FAILED_PAYLOAD_KEYS, 'AWS failed finalization');
     const { stepFunctionsArn, ...semanticPayload } = payload;
     const applied = await this.applyFinalizationCommand(
       buildFinalizationCommand(sessionId, 'fail', semanticPayload),
@@ -915,7 +573,7 @@ export class FileMockSessionStore
     sessionId: SessionId,
     payload: AwsFinalizationTimedOutPayload,
   ): Promise<FinalizationState> {
-    assertAllowedPayloadKeys(payload, AWS_TIMED_OUT_PAYLOAD_KEYS, 'AWS timed-out finalization');
+    assertAllowedFinalizationPayloadKeys(payload, AWS_TIMED_OUT_PAYLOAD_KEYS, 'AWS timed-out finalization');
     const { stepFunctionsArn, ...semanticPayload } = payload;
     const applied = await this.applyFinalizationCommand(
       buildFinalizationCommand(sessionId, 'time_out', semanticPayload),
@@ -937,7 +595,7 @@ export class FileMockSessionStore
     return metadata ? cloneRuntimeMetadata(metadata) : undefined;
   }
 
-  async recordAwsProofBundlePublication(
+  override async recordAwsProofBundlePublication(
     sessionId: SessionId,
     finalizationId: FinalizationId,
     metadata: AwsVerificationDeliveryMetadataInput,
@@ -947,14 +605,6 @@ export class FileMockSessionStore
       this.state.deliveryMetadataRecords.set(scopedKey(sessionId, finalizationId), cloneDeliveryMetadata(metadata));
       return { value: undefined, dirty: true };
     });
-  }
-
-  recordAwsVerificationDeliveryMetadata(
-    sessionId: SessionId,
-    finalizationId: FinalizationId,
-    metadata: AwsVerificationDeliveryMetadataInput,
-  ): Promise<void> {
-    return this.recordAwsProofBundlePublication(sessionId, finalizationId, metadata);
   }
 
   async getAwsVerificationDeliveryMetadata(
@@ -968,11 +618,7 @@ export class FileMockSessionStore
   }
 
   private requireSucceededFinalization(sessionId: SessionId, finalizationId: FinalizationId): FinalizationRecord {
-    const record = this.currentFinalization(sessionId);
-    if (!record || record.finalizationId !== finalizationId || record.state.status !== 'succeeded') {
-      throw new Error('Finalization is unavailable for verification');
-    }
-    return record;
+    return requireMappedSucceededFinalization(this.currentFinalization(sessionId), finalizationId);
   }
 
   async getVerificationResultRecord(
@@ -988,9 +634,11 @@ export class FileMockSessionStore
     return record?.sessionId === sessionId && record.finalizationId === finalizationId ? record : null;
   }
 
-  async markVerificationRunning(
+  protected override async writeVerificationResult(
     sessionId: SessionId,
     finalizationId: FinalizationId,
+    verificationResult: VerificationResult,
+    mode: VerificationWriteMode,
   ): Promise<VerificationResultRecord> {
     return this.mutate(() => {
       this.requireSucceededFinalization(sessionId, finalizationId);
@@ -999,18 +647,10 @@ export class FileMockSessionStore
       if (current && isTerminalVerificationStatus(current.verificationResult.status)) {
         return { value: current, dirty: false };
       }
-      this.verificationRollbackSnapshots.set(key, current);
-      const record = parseVerificationResultRecord({
-        sessionId,
-        finalizationId,
-        verificationResult: {
-          status: 'running',
-        },
-      });
-      if (!record) {
-        throw new Error('Invalid verification result record');
-      }
+      if (mode === 'start') this.verificationRollbackSnapshots.set(key, current);
+      const record = createVerificationResultRecord(sessionId, finalizationId, verificationResult);
       this.state.verificationResultRecords.set(key, record);
+      if (mode === 'complete') this.verificationRollbackSnapshots.delete(key);
       this.touchVotingRecord(sessionId);
       return { value: record, dirty: true };
     });
@@ -1020,42 +660,9 @@ export class FileMockSessionStore
     await this.mutate(() => {
       this.requireSucceededFinalization(sessionId, finalizationId);
       const key = scopedKey(sessionId, finalizationId);
-      const snapshot = this.verificationRollbackSnapshots.get(key);
-      this.verificationRollbackSnapshots.delete(key);
-      if (snapshot) {
-        this.state.verificationResultRecords.set(key, snapshot);
-      } else {
-        this.state.verificationResultRecords.delete(key);
-      }
+      restoreMappedVerificationSnapshot(key, this.verificationRollbackSnapshots, this.state.verificationResultRecords);
       this.touchVotingRecord(sessionId);
       return { value: undefined, dirty: true };
-    });
-  }
-
-  async completeVerificationResult(
-    sessionId: SessionId,
-    finalizationId: FinalizationId,
-    verificationResult: VerificationResult,
-  ): Promise<VerificationResultRecord> {
-    return this.mutate(() => {
-      this.requireSucceededFinalization(sessionId, finalizationId);
-      const key = scopedKey(sessionId, finalizationId);
-      const current = parseVerificationResultRecord(this.state.verificationResultRecords.get(key)) ?? null;
-      if (current && isTerminalVerificationStatus(current.verificationResult.status)) {
-        return { value: current, dirty: false };
-      }
-      const record = parseVerificationResultRecord({
-        sessionId,
-        finalizationId,
-        verificationResult,
-      });
-      if (!record) {
-        throw new Error('Invalid verification result record');
-      }
-      this.state.verificationResultRecords.set(key, record);
-      this.verificationRollbackSnapshots.delete(key);
-      this.touchVotingRecord(sessionId);
-      return { value: record, dirty: true };
     });
   }
 
@@ -1066,17 +673,7 @@ export class FileMockSessionStore
   ): Promise<RecordVerificationObservationResult> {
     return this.mutate<RecordVerificationObservationResult>(() => {
       this.requireIdentity(sessionId);
-      const observationWrite = parseVerificationObservationWrite(input);
-      if (!observationWrite) {
-        throw new Error('Invalid verification observation');
-      }
-      const requested = parseVerificationObservation({
-        finalizationId,
-        ...observationWrite,
-      });
-      if (!requested) {
-        throw new Error('Invalid verification observation');
-      }
+      const requested = admitMappedObservation(finalizationId, input);
       const key = scopedKey(sessionId, finalizationId);
       const existing = parseVerificationObservation(this.state.verificationObservationRecords.get(key));
       const resolution = resolveVerificationObservationRecord(
@@ -1117,27 +714,46 @@ export class FileMockSessionStore
     return admitPersistedFinalizationBitmapData(finalization, this.state.bitmapRecords.get(key)) ?? null;
   }
 
-  async commitSuccessfulFinalization(
+  private writeSuccessfulArtifacts(
+    key: string,
+    artifacts: Parameters<typeof assertSuccessfulFinalizationReplay>[1],
+    receiptPublication: SuccessfulFinalizationCommitResult['receiptPublication'],
+  ): void {
+    const { record: successful, receipt, verification, bitmap, runtimeMetadata, deliveryMetadata } = artifacts;
+    if (receipt && receiptPublication) {
+      this.state.receiptRecords.set(key, {
+        sessionId: successful.sessionId,
+        finalizationId: successful.finalizationId,
+        receiptHash: receiptPublication.receiptHash,
+        boardIndex: receiptPublication.boardIndex,
+        receipt: { ...receipt },
+      });
+      this.state.receiptCounter += 1;
+    }
+    if (verification) {
+      this.state.verificationResultRecords.set(key, verification);
+    }
+    if (bitmap.availability === 'available') {
+      this.state.bitmapRecords.set(key, {
+        sessionId: successful.sessionId,
+        finalizationId: successful.finalizationId,
+        ...encodeFinalizationBitmapData(bitmap.data),
+      });
+    }
+    if (runtimeMetadata) {
+      this.state.runtimeMetadataRecords.set(key, cloneRuntimeMetadata(runtimeMetadata));
+    }
+    if (deliveryMetadata) {
+      this.state.deliveryMetadataRecords.set(key, cloneDeliveryMetadata(deliveryMetadata));
+    }
+  }
+
+  override async commitSuccessfulFinalization(
     input: SuccessfulFinalizationCommitInput & { runtimeMetadata?: AwsFinalizationRuntimeMetadata },
   ): Promise<SuccessfulFinalizationCommitResult> {
     const requested = admitSuccessfulFinalizationCommitRecord(input.record);
-    const bitmap = admitFinalizationBitmapDisposition(requested, input.bitmap);
-    const receipt = admitSuccessfulFinalizationReceipt(input.receipt);
-    const verification = input.verificationResult
-      ? parseVerificationResultRecord({
-          sessionId: requested.sessionId,
-          finalizationId: requested.finalizationId,
-          verificationResult: input.verificationResult,
-        })
-      : undefined;
-    if (input.verificationResult && !verification) {
-      throw new Error('Invalid verification result record');
-    }
-    const runtimePatch =
-      input.runtimeMetadata === undefined ? undefined : parseAwsFinalizationRuntimeMetadata(input.runtimeMetadata);
-    if (input.runtimeMetadata !== undefined && !runtimePatch) {
-      throw new Error('Invalid AWS finalization runtime metadata');
-    }
+    const { bitmap, receipt, verification } = admitSuccessfulFinalizationEvidence(requested, input);
+    const runtimePatch = admitOptionalAwsRuntimeMetadata(input.runtimeMetadata);
     const key = scopedKey(requested.sessionId, requested.finalizationId);
     const result = await this.mutate<{
       outcome: SuccessfulFinalizationCommitResult;
@@ -1146,64 +762,16 @@ export class FileMockSessionStore
     }>(() => {
       this.requireIdentity(requested.sessionId);
       const existingReceipt = this.state.receiptRecords.get(key);
-      if (
-        existingReceipt &&
-        receipt &&
-        (!Number.isSafeInteger(this.state.receiptCounter) || this.state.receiptCounter <= existingReceipt.boardIndex)
-      ) {
-        throw new Error('Receipt board counter does not cover the persisted publication');
-      }
+      assertReceiptPublicationCounter(existingReceipt, receipt, this.state.receiptCounter);
       const existingRuntime = this.state.runtimeMetadataRecords.get(key);
       const runtimeMetadata = runtimePatch
-        ? {
-            ...(existingRuntime ?? {}),
-            ...runtimePatch,
-            ...(existingRuntime?.bundleMetadata || runtimePatch.bundleMetadata
-              ? {
-                  bundleMetadata: {
-                    ...(existingRuntime?.bundleMetadata ?? {}),
-                    ...(runtimePatch.bundleMetadata ?? {}),
-                  },
-                }
-              : {}),
-          }
+        ? mergeFinalizationRuntimeMetadata(existingRuntime, runtimePatch)
         : undefined;
       const existingDelivery = this.state.deliveryMetadataRecords.get(key);
-      const deliveryMetadata = runtimeMetadata?.bundleMetadata
-        ? {
-            ...(existingDelivery ?? {}),
-            ...(runtimeMetadata.bundleMetadata.s3BundleKey
-              ? { s3BundleKey: runtimeMetadata.bundleMetadata.s3BundleKey }
-              : {}),
-            ...(runtimeMetadata.bundleMetadata.s3UploadedAtMs === undefined
-              ? {}
-              : { s3UploadedAtMs: runtimeMetadata.bundleMetadata.s3UploadedAtMs }),
-          }
-        : undefined;
-      const receiptHash = receipt
-        ? (existingReceipt?.receiptHash ?? computeSuccessfulFinalizationReceiptHash(receipt))
-        : undefined;
-      const boardIndex = receipt ? (existingReceipt?.boardIndex ?? this.state.receiptCounter) : undefined;
-      const receiptPublication =
-        receipt && receiptHash !== undefined && boardIndex !== undefined
-          ? { receiptHash, boardIndex, timestamp: receipt.timestamp }
-          : undefined;
-      const committed = finalizationRecordCodec.admit({
-        ...requested,
-        finalizationResult: {
-          ...requested.finalizationResult,
-          artifacts: {
-            ...requested.finalizationResult.artifacts,
-            ...(receiptPublication
-              ? { receiptPublication: { availability: 'available' as const, publication: receiptPublication } }
-              : {}),
-          },
-        },
-      });
-      if (!committed || committed.state.status !== 'succeeded') {
-        throw new Error('Invalid successful finalization commit');
-      }
-      const successful = committed as Extract<FinalizationRecord, { state: { status: 'succeeded' } }>;
+      const deliveryMetadata = mergeRuntimeBundleDelivery(existingDelivery, runtimeMetadata);
+      const receiptPublication = prepareReceiptPublication(receipt, existingReceipt, this.state.receiptCounter);
+      const committed = buildPublishedSuccessfulFinalization(requested, receiptPublication);
+      const successful = committed;
       const outcome: SuccessfulFinalizationCommitResult = {
         record: successful,
         bitmap,
@@ -1214,37 +782,25 @@ export class FileMockSessionStore
       const hasExistingBitmap = this.state.bitmapRecords.has(key);
       const hasExistingVerification = this.state.verificationResultRecords.has(key);
       if (isSuccessfulFinalizationRecord(before)) {
-        const existingBitmap = hasExistingBitmap
-          ? admitPersistedFinalizationBitmapData(before, this.state.bitmapRecords.get(key))
-          : undefined;
-        if (hasExistingBitmap && !existingBitmap) {
-          throw new Error('Invalid persisted finalization bitmap');
-        }
-        const expectedBitmap =
-          bitmap.availability === 'available'
-            ? { sessionId: requested.sessionId, finalizationId: requested.finalizationId, ...bitmap.data }
-            : undefined;
-        const existingVerification = hasExistingVerification
-          ? parseVerificationResultRecord(this.state.verificationResultRecords.get(key))
-          : undefined;
-        if (hasExistingVerification && !existingVerification) {
-          throw new Error('Invalid persisted verification result record');
-        }
-        if (
-          !isDeepStrictEqual(before, successful) ||
-          !isDeepStrictEqual(existingReceipt?.receipt, receipt) ||
-          !isDeepStrictEqual(existingBitmap, expectedBitmap) ||
-          (verification !== undefined && !isDeepStrictEqual(existingVerification, verification)) ||
-          (runtimeMetadata !== undefined && !isDeepStrictEqual(existingRuntime, runtimeMetadata)) ||
-          (deliveryMetadata !== undefined && !isDeepStrictEqual(existingDelivery, deliveryMetadata))
-        ) {
-          throw new Error('Successful finalization commit conflicts with existing authority');
-        }
+        const { existingBitmap, existingVerification } = admitReplayArtifacts(
+          before,
+          { present: hasExistingBitmap, value: this.state.bitmapRecords.get(key) },
+          { present: hasExistingVerification, value: this.state.verificationResultRecords.get(key) },
+        );
+        assertSuccessfulFinalizationReplay(
+          {
+            record: before,
+            receipt: existingReceipt?.receipt,
+            bitmap: existingBitmap,
+            verification: existingVerification,
+            runtimeMetadata: existingRuntime,
+            deliveryMetadata: existingDelivery,
+          },
+          { record: successful, receipt, bitmap, verification, runtimeMetadata, deliveryMetadata },
+        );
         return { value: { outcome, published: false, before }, dirty: false };
       }
-      if (hasExistingBitmap || hasExistingVerification) {
-        throw new Error('Successful finalization artifacts exist before terminal authority');
-      }
+      assertNoPrematureCommitArtifacts(hasExistingBitmap, hasExistingVerification);
       const { finalizationId: _finalizationId, ...authority } = successful.finalizationResult;
       void _finalizationId;
       const transition = evaluateFinalizationTransition({
@@ -1266,32 +822,11 @@ export class FileMockSessionStore
       }
       this.state.finalizationRecords.set(key, cloneSuccessfulFinalizationRecord(successful));
       this.state.currentFinalizationIdBySession.set(successful.sessionId, successful.finalizationId);
-      if (receipt && receiptPublication) {
-        this.state.receiptRecords.set(key, {
-          sessionId: successful.sessionId,
-          finalizationId: successful.finalizationId,
-          receiptHash: receiptPublication.receiptHash,
-          boardIndex: receiptPublication.boardIndex,
-          receipt: { ...receipt },
-        });
-        this.state.receiptCounter += 1;
-      }
-      if (verification) {
-        this.state.verificationResultRecords.set(key, verification);
-      }
-      if (bitmap.availability === 'available') {
-        this.state.bitmapRecords.set(key, {
-          sessionId: successful.sessionId,
-          finalizationId: successful.finalizationId,
-          ...encodeFinalizationBitmapData(bitmap.data),
-        });
-      }
-      if (runtimeMetadata) {
-        this.state.runtimeMetadataRecords.set(key, cloneRuntimeMetadata(runtimeMetadata));
-      }
-      if (deliveryMetadata) {
-        this.state.deliveryMetadataRecords.set(key, cloneDeliveryMetadata(deliveryMetadata));
-      }
+      this.writeSuccessfulArtifacts(
+        key,
+        { record: successful, receipt, verification, bitmap, runtimeMetadata, deliveryMetadata },
+        receiptPublication,
+      );
       this.touchVotingRecord(successful.sessionId);
       return { value: { outcome, published: true, before }, dirty: true };
     });

@@ -40,6 +40,8 @@ docker run "${container_posture[@]}" \
     prover_home=/home/prover
     test "$(id -u)" = 10001
     test "$(id -g)" = 10001
+    setpriv --no-new-privs --inh-caps=-all --ambient-caps=-all /bin/sh -c \
+      "grep -Eq \"^NoNewPrivs:[[:space:]]+1$\" /proc/self/status"
     test "$HOME" = "$prover_home"
     test "$RISC0_HOME" = /opt/risc0
     test "$RISC0_SERVER_PATH" = /opt/risc0/bin/r0vm

@@ -6,6 +6,7 @@ import { loadPublicImageIdMapping } from '@stark-ballot/node-adapters/image-id-m
 import { getDefaultExecutor } from '@stark-ballot/node-adapters/zkvm/executor-factory';
 import { invokeVerifierService } from '@stark-ballot/node-adapters/verifier-service-client';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
+import { resolvePublicBundlePolicy } from '@stark-ballot/verification/public-bundle-manifest';
 import { resolveExpectedImageId } from '@stark-ballot/verification/image-id';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -20,10 +21,8 @@ import {
   persistProofVerificationBundle,
 } from '../api/adapters/proofBundleLocalArtifacts';
 import { createApiProofBundleService } from '../api/adapters/proofBundleService';
-import { publishVerificationBundleArtifacts } from '../api/adapters/verificationBundleS3Upload';
-import { describeFinalizationExecution, stopFinalizationExecution } from '../api/adapters/finalizationStepFunctions';
-
-export type { StepFunctionsExecutionDetails } from '../api/adapters/finalizationStepFunctions';
+import { publishVerificationBundleArtifacts } from '@stark-ballot/aws-adapters/finalize/publish-verification-artifacts';
+import { stopFinalizationExecution } from '../api/adapters/finalizationStepFunctions';
 
 type BoundFinalizeRateLimit = (
   clientIp?: Parameters<typeof enforceFinalizeRateLimit>[1],
@@ -38,10 +37,6 @@ type BoundFinalizeCancelRateLimit = (
 type BoundPersistAsyncProverInput = (
   options: Omit<Parameters<typeof persistAsyncProverInputToS3>[0], 'profile'>,
 ) => ReturnType<typeof persistAsyncProverInputToS3>;
-
-type BoundDescribeFinalizationExecution = (
-  executionArn: Parameters<typeof describeFinalizationExecution>[1],
-) => ReturnType<typeof describeFinalizationExecution>;
 
 type BoundStopFinalizationExecution = (
   executionArn: Parameters<typeof stopFinalizationExecution>[1],
@@ -58,7 +53,6 @@ export interface FinalizationDependencies {
   enforceFinalizeRateLimit: BoundFinalizeRateLimit;
   enforceFinalizeCancelRateLimit: BoundFinalizeCancelRateLimit;
   recordFinalizeRateLimit: typeof recordFinalizeRateLimit;
-  describeFinalizationExecution: BoundDescribeFinalizationExecution;
   stopFinalizationExecution: BoundStopFinalizationExecution;
 }
 
@@ -75,7 +69,8 @@ function createProofBundleService(
     {
       persistBundle: persistProofVerificationBundle,
       invokeVerifier: invokeVerifierService,
-      publishBundleArtifacts: (input) => publishVerificationBundleArtifacts({ profile, ...input }),
+      publishBundleArtifacts: (input) =>
+        publishVerificationBundleArtifacts({ profile, ...input, policy: resolvePublicBundlePolicy('sync') }),
       createMockVerificationReport,
       recordBundlePublication: ({ sessionId, finalizationId, ...metadata }) =>
         store.recordAwsProofBundlePublication(sessionId, finalizationId, metadata),
@@ -110,7 +105,6 @@ export function createFinalizationDependencies(
     enforceFinalizeRateLimit: (clientIp, options) => enforceFinalizeRateLimit(profile, clientIp, options),
     enforceFinalizeCancelRateLimit: (clientIp, limiter) => enforceFinalizeCancelRateLimit(profile, clientIp, limiter),
     recordFinalizeRateLimit,
-    describeFinalizationExecution: (executionArn) => describeFinalizationExecution(profile, executionArn),
     stopFinalizationExecution: (executionArn, reason) => stopFinalizationExecution(profile, executionArn, reason),
   };
   return {

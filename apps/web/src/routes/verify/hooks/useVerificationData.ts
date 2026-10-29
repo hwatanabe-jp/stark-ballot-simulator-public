@@ -30,7 +30,7 @@ import type { VerificationPayload } from '../lib/verification-data';
 import { projectVerificationResource, resolveBundleCandidate } from '../lib/verification-data';
 import { admitVerificationResourceSnapshot } from '../lib/verification-response-admission';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
+import { readPublicRuntimeEnv } from '@stark-ballot/runtime-config/env/public-runtime-config';
 import { resolveConfiguredSthSources } from '@stark-ballot/web/verification/sthSources';
 
 const SESSION_ERROR_KEY = 'pages.verify.sessionError';
@@ -72,6 +72,53 @@ function resolveFailClosedResourceError(
   });
 }
 
+function resolveInitialVerificationSnapshot(initialSessionIdentity: SessionIdentity | null) {
+  const initialSnapshot = getStarkVerificationSnapshot();
+  const session = initialSessionIdentity ? getSessionDataForIdentity(initialSessionIdentity) : null;
+  const finalization = resolveCanonicalFinalizationPayload(session?.finalizeResult);
+  if (
+    !initialSnapshot ||
+    session?.sessionId !== initialSnapshot.sessionId ||
+    finalization?.finalizationId !== initialSnapshot.finalizationId
+  ) {
+    return { session, data: null, receivedAt: 0 };
+  }
+  const resource = admitVerificationResourceSnapshot(initialSnapshot.payload, finalization.finalizationId);
+  const projection = projectVerificationResource(resource, session, {
+    sthSourcesConfigured: resolveConfiguredSthSources(readPublicRuntimeEnv).length > 0,
+  });
+  return {
+    session,
+    data: projection.availability === 'available' ? projection.data : null,
+    receivedAt: initialSnapshot.receivedAt,
+  };
+}
+
+function saveVerificationKnowledge(
+  parsed: VerificationPayload,
+  sessionId: string,
+  identity: SessionIdentity | null,
+): void {
+  // Save verification data to knowledge store
+  mergeKnowledgeFromApi(
+    { ...parsed },
+    {
+      omitKeys: VERIFICATION_GATED_KEYS,
+      ...omitUndefinedProperties({ expectedSessionId: identity?.sessionId }),
+    },
+  );
+  // Set proof bundle status when verification data is available
+  if (resolveBundleCandidate(parsed, sessionId)) {
+    const currentBundleStatus = getKnowledgeValue('proofBundleStatus');
+    if (currentBundleStatus !== 'downloaded') {
+      saveKnowledgeData(
+        { proofBundleStatus: currentBundleStatus ?? 'not_downloaded' },
+        omitUndefinedProperties({ expectedSessionId: identity?.sessionId }),
+      );
+    }
+  }
+}
+
 export function useVerificationData({
   t,
   sessionIdentityRef,
@@ -86,41 +133,16 @@ export function useVerificationData({
       ),
     [sessionIdentityRef, t],
   );
-  const initialSnapshot = getStarkVerificationSnapshot();
-  let initialData: VerificationPayload | null = null;
-  const initialSession = initialSessionIdentity ? getSessionDataForIdentity(initialSessionIdentity) : null;
-  const initialFinalizationSnapshot = resolveCanonicalFinalizationPayload(initialSession?.finalizeResult);
-  const initialSnapshotAt =
-    initialSnapshot &&
-    initialSession?.sessionId === initialSnapshot.sessionId &&
-    initialFinalizationSnapshot?.finalizationId === initialSnapshot.finalizationId
-      ? initialSnapshot.receivedAt
-      : 0;
-  if (
-    initialSnapshot &&
-    initialSession?.sessionId === initialSnapshot.sessionId &&
-    initialFinalizationSnapshot?.finalizationId === initialSnapshot.finalizationId
-  ) {
-    const resource = admitVerificationResourceSnapshot(
-      initialSnapshot.payload,
-      initialFinalizationSnapshot.finalizationId,
-    );
-    const projection = projectVerificationResource(resource, initialSession, {
-      sthSourcesConfigured: resolveConfiguredSthSources(readBrowserPublicEnv).length > 0,
-    });
-    if (projection.availability === 'available') {
-      initialData = projection.data;
-    }
-  }
+  const initial = resolveInitialVerificationSnapshot(initialSessionIdentity);
   const [fetchTrigger, setFetchTrigger] = useState(0);
   const [loading, setLoading] = useState(true);
   const [serverValidated, setServerValidated] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<VerificationPayload | null>(initialData);
+  const [data, setData] = useState<VerificationPayload | null>(initial.data);
   const [hasVerificationContinuationAuthority, setHasVerificationContinuationAuthority] = useState(
-    hasContinuationAuthority(initialSession),
+    hasContinuationAuthority(initial.session),
   );
-  const latestSnapshotAtRef = useRef(initialSnapshotAt);
+  const latestSnapshotAtRef = useRef(initial.receivedAt);
 
   useEffect(() => {
     const unsubscribe = subscribeStarkVerificationSnapshot((snapshot) => {
@@ -148,7 +170,7 @@ export function useVerificationData({
       }
       const resource = admitVerificationResourceSnapshot(snapshot.payload, finalization.finalizationId);
       const projection = projectVerificationResource(resource, session, {
-        sthSourcesConfigured: resolveConfiguredSthSources(readBrowserPublicEnv).length > 0,
+        sthSourcesConfigured: resolveConfiguredSthSources(readPublicRuntimeEnv).length > 0,
       });
       if (projection.availability !== 'available') {
         setData(null);
@@ -195,7 +217,7 @@ export function useVerificationData({
     }
 
     const projection = projectVerificationResource(resource, session, {
-      sthSourcesConfigured: resolveConfiguredSthSources(readBrowserPublicEnv).length > 0,
+      sthSourcesConfigured: resolveConfiguredSthSources(readPublicRuntimeEnv).length > 0,
     });
     if (projection.availability !== 'available') {
       throw resolveFailClosedResourceError(projection.availability, projection.message, sessionIdentityRef.current);
@@ -204,24 +226,7 @@ export function useVerificationData({
     const parsed = projection.data;
     latestSnapshotAtRef.current = Math.max(latestSnapshotAtRef.current, Date.now());
     setServerValidated(true);
-    // Save verification data to knowledge store
-    mergeKnowledgeFromApi(
-      { ...parsed },
-      {
-        omitKeys: VERIFICATION_GATED_KEYS,
-        ...omitUndefinedProperties({ expectedSessionId: sessionIdentityRef.current?.sessionId }),
-      },
-    );
-    // Set proof bundle status when verification data is available
-    if (resolveBundleCandidate(parsed, session.sessionId)) {
-      const currentBundleStatus = getKnowledgeValue('proofBundleStatus');
-      if (currentBundleStatus !== 'downloaded') {
-        saveKnowledgeData(
-          { proofBundleStatus: currentBundleStatus ?? 'not_downloaded' },
-          omitUndefinedProperties({ expectedSessionId: sessionIdentityRef.current?.sessionId }),
-        );
-      }
-    }
+    saveVerificationKnowledge(parsed, session.sessionId, sessionIdentityRef.current);
     setData(parsed);
     setError(null);
     return parsed;

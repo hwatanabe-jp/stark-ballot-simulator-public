@@ -31,7 +31,12 @@ import {
   timestampMsSchema,
   turnstileTokenFields,
 } from './primitives';
-import { currentZkvmJournalSchema, publicProofSummaryBaseShape, receiptSchema } from './verification';
+import {
+  currentZkvmJournalSchema,
+  journalFieldMatches,
+  publicProofSummaryBaseShape,
+  receiptSchema,
+} from './verification';
 import { inclusionProofSchema, publicReceiptPublicationSchema, voteReceiptSchema } from './votes';
 
 export const finalizationQueueSchema = publicObject({
@@ -46,17 +51,10 @@ export const finalizationProgressSchema = publicObject({
   updatedAtMs: timestampMsSchema,
 });
 
-export const finalizationOrchestratorSchema = publicObject({
-  status: s.string().nullable(),
-  startTimeMs: timestampMsSchema.nullable(),
-  stopTimeMs: timestampMsSchema.nullable(),
-});
-
 export const finalizationRuntimeDiagnosticsSchema = publicObject({
   asyncMode: s.enum(['enabled', 'disabled']),
   queue: finalizationQueueSchema.optional().nullable(),
   progress: finalizationProgressSchema.optional(),
-  orchestrator: finalizationOrchestratorSchema.optional().nullable(),
 });
 
 function hasSameNormalizedHex(left: string, right: string): boolean {
@@ -182,36 +180,9 @@ function hasCoherentFinalizationJournalPresentation(
   ..._coverage: [FinalizationJournalPresentationSharedFieldCoverage] extends [never] ? [] : [never]
 ): boolean {
   void _coverage;
-  return FINALIZATION_JOURNAL_PRESENTATION_SHARED_FIELDS.every((field) => {
-    const journalValue = journal[field];
-    const presentationValue = presentation[field];
-    switch (field) {
-      case 'bulletinRoot':
-      case 'sthDigest':
-      case 'seenBitmapRoot':
-      case 'includedBitmapRoot':
-      case 'inputCommitment':
-        return (
-          typeof journalValue === 'string' &&
-          typeof presentationValue === 'string' &&
-          hasSameNormalizedHex(journalValue, presentationValue)
-        );
-      case 'verifiedTally':
-        return (
-          Array.isArray(journalValue) &&
-          Array.isArray(presentationValue) &&
-          journalValue.every((value, index) => value === presentationValue[index])
-        );
-      case 'missingSlots':
-      case 'invalidPresentedSlots':
-      case 'rejectedRecords':
-      case 'totalExpected':
-      case 'treeSize':
-      case 'excludedSlots':
-      case 'seenIndicesCount':
-        return journalValue === presentationValue;
-    }
-  });
+  return FINALIZATION_JOURNAL_PRESENTATION_SHARED_FIELDS.every((field) =>
+    journalFieldMatches(field, journal[field], presentation[field]),
+  );
 }
 
 const finalizationUserVoteSchema = publicObject({
@@ -332,6 +303,29 @@ function hasFailClosedFinalizationVerificationStatus(
   );
 }
 
+function checkFinalizationArtifactAvailability(
+  result: {
+    presentation: Infer<typeof finalizationPresentationSchema>;
+    artifactAvailability: Infer<typeof finalizationArtifactAvailabilitySchema>;
+  },
+  context: { addIssue(issue: { message: string }): void },
+): void {
+  const hasReport = result.presentation.verificationReport !== undefined;
+  const reportAvailable = result.artifactAvailability.report === 'available';
+  const hasOmittedFailedReportArtifact =
+    result.presentation.verificationStatus === 'failed' && !hasReport && reportAvailable;
+  if (hasReport !== reportAvailable && !hasOmittedFailedReportArtifact) {
+    context.addIssue({ message: 'Finalization report availability contradicts report presence' });
+  }
+
+  if (
+    result.artifactAvailability.seenBitmap === 'available' &&
+    result.artifactAvailability.includedBitmap !== 'available'
+  ) {
+    context.addIssue({ message: 'Seen bitmap availability requires included bitmap availability' });
+  }
+}
+
 export const finalizationResultSchema = publicObject({
   authority: finalizationAuthoritySchema,
   presentation: finalizationPresentationSchema,
@@ -358,20 +352,7 @@ export const finalizationResultSchema = publicObject({
     context.addIssue({ message: 'Finalization verification status is not fail closed' });
   }
 
-  const hasReport = result.presentation.verificationReport !== undefined;
-  const reportAvailable = result.artifactAvailability.report === 'available';
-  const hasOmittedFailedReportArtifact =
-    result.presentation.verificationStatus === 'failed' && !hasReport && reportAvailable;
-  if (hasReport !== reportAvailable && !hasOmittedFailedReportArtifact) {
-    context.addIssue({ message: 'Finalization report availability contradicts report presence' });
-  }
-
-  if (
-    result.artifactAvailability.seenBitmap === 'available' &&
-    result.artifactAvailability.includedBitmap !== 'available'
-  ) {
-    context.addIssue({ message: 'Seen bitmap availability requires included bitmap availability' });
-  }
+  checkFinalizationArtifactAvailability(result, context);
 });
 documentOpenApiRefinement(
   finalizationResultSchema,
@@ -456,7 +437,6 @@ export const CurrentFinalizationResponseSchema = apiResponseSchema(FinalizationR
 
 export type FinalizationQueue = Infer<typeof finalizationQueueSchema>;
 export type FinalizationProgress = Infer<typeof finalizationProgressSchema>;
-export type FinalizationOrchestrator = Infer<typeof finalizationOrchestratorSchema>;
 export type FinalizationRuntimeDiagnostics = Infer<typeof finalizationRuntimeDiagnosticsSchema>;
 export type FinalizationResult = Infer<typeof finalizationResultSchema>;
 export type FinalizationResource = Infer<typeof FinalizationResourceSchema>;

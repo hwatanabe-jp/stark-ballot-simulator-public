@@ -1,8 +1,9 @@
 # Repository formatting
 
 `pnpm format` and `pnpm format:check` use Oxfmt with the central
-[configuration](../../oxfmt.config.ts). The existing source and documentation
-scope and generated/vendor exclusions are retained.
+[configuration](../../oxfmt.config.ts). They cover `ts`, `tsx`, `js`, `jsx`,
+`json`, and `md` files, including `AGENTS.md`. The configuration excludes the
+generated Public Specs build, bundled vendor scripts, and Lean's `.lake` directory.
 
 The configuration sorts package manifest fields and dependencies, and Tailwind
 classes using the web application's CSS theme. It preserves import evaluation

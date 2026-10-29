@@ -4,15 +4,6 @@ import {
 } from '@stark-ballot/api-contract/schemas/finalizations';
 import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
-import { getRecordProperty } from '@stark-ballot/validation/unknown-value-guards';
-
-function getStringProperty(value: unknown, key: string): string | undefined {
-  if (typeof value !== 'object' || value === null) {
-    return undefined;
-  }
-  const candidate = (value as Record<string, unknown>)[key];
-  return typeof candidate === 'string' ? candidate : undefined;
-}
 
 export class CurrentFinalizationError extends Error {
   public readonly status: number;
@@ -26,15 +17,7 @@ export class CurrentFinalizationError extends Error {
   }
 }
 
-export function resolveCurrentFinalizationErrorCode(error: unknown): string | null {
-  if (!(error instanceof CurrentFinalizationError)) {
-    return null;
-  }
-
-  return getStringProperty(getRecordProperty(error.responseBody, 'error'), 'code') ?? null;
-}
-
-export function parseCurrentFinalizationResponse(input: unknown): FinalizationResource | null {
+function parseCurrentFinalizationResponse(input: unknown): FinalizationResource | null {
   const parsed = CurrentFinalizationResponseSchema.safeParse(input);
   if (!parsed.success) {
     const firstIssue = parsed.error.issues[0];

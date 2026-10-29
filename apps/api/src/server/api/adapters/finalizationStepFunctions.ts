@@ -1,4 +1,4 @@
-import { DescribeExecutionCommand, SFNClient, StopExecutionCommand } from '@aws-sdk/client-sfn';
+import { SFNClient, StopExecutionCommand } from '@aws-sdk/client-sfn';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 let sfnClient: SFNClient | null = null;
@@ -15,24 +15,6 @@ function getStepFunctionsClient(profile: ResolvedRuntimeProfile): SFNClient {
 
 export function _setStepFunctionsClient(client: SFNClient | null): void {
   sfnClient = client;
-}
-
-export type StepFunctionsExecutionDetails = {
-  status: string | null;
-  startTimeMs: number | null;
-  stopTimeMs: number | null;
-};
-
-export async function describeFinalizationExecution(
-  profile: ResolvedRuntimeProfile,
-  executionArn: string,
-): Promise<StepFunctionsExecutionDetails> {
-  const response = await getStepFunctionsClient(profile).send(new DescribeExecutionCommand({ executionArn }));
-  return {
-    status: response.status ?? null,
-    startTimeMs: response.startDate ? response.startDate.getTime() : null,
-    stopTimeMs: response.stopDate ? response.stopDate.getTime() : null,
-  };
 }
 
 export async function stopFinalizationExecution(

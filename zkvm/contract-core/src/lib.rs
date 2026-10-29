@@ -33,7 +33,7 @@ pub use semantic_contract::{
     INCLUDED_BITMAP_ARTIFACT_VERSION, PUBLIC_INPUT_ARTIFACT_SCHEMA, PUBLIC_INPUT_ARTIFACT_VERSION,
     PUBLIC_INPUT_CANONICAL_FILE_NAME, SEEN_BITMAP_ARTIFACT_SCHEMA, SEEN_BITMAP_ARTIFACT_VERSION,
 };
-pub use sha256::{compute_commitment, verify_commitment};
+pub use sha256::compute_commitment;
 pub use types::{
     AggregatorInput, VerificationOutput, VoteWithProof, CURRENT_METHOD_VERSION,
     VERIFIED_TALLY_WIDTH,

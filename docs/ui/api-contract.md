@@ -1,7 +1,7 @@
 # UI 向け API 契約（現行実装）
 
-本書は現行 UI が利用する API と、検証画面から参照可能な owner-scoped evidence API の契約をまとめる。
-将来案や移行履歴ではなく、現在の route inventory、schema、handler、tests を記述対象とする。
+本書は、現在の route inventory、schema、handler、tests に基づき、現行 UI が利用する API と、
+検証画面から参照可能な owner-scoped evidence API の契約をまとめる。
 
 実装上の正は次の順で確認する。
 
@@ -38,8 +38,8 @@ response schema を使用する。
 
 ### Active retained owner inspection / evidence
 
-これらは通常の画面遷移そのものではないが、owner-scoped verification evidence を取得する現行 route である。
-full-bulletin や private bitmap sidecar を public anonymous surface として公開するものではない。
+以下は、セッション所有者が検証用の証拠を取得するための route である。通常の画面遷移とは別に利用する。
+取得には path session と capability が必要で、full-bulletin や private bitmap sidecar の無認証公開は行わない。
 
 | Method | Path                                                                        | Auth scope                    | 主用途                              |
 | ------ | --------------------------------------------------------------------------- | ----------------------------- | ----------------------------------- |
@@ -80,6 +80,38 @@ full-bulletin や private bitmap sidecar を public anonymous surface として�
 本番での必須条件と bypass 可否は route admission control と runtime config に従う。
 セッション作成の profile ごとの受付条件と主要応答は
 [POST `/api/sessions`](#post-apisessions) にまとめる。
+
+### AWS REST Gateway transport
+
+本番 API は Regional REST API と内部の `live` stage を使用する。公開 `/api/...` path に
+stage 名は含めない。投票、集計作成・取消、検証開始・観測の 5 POST body には、共通 request
+schema から生成した Gateway model を適用する。セッション作成は body の省略を許容する。
+Gateway の検査に加え、Hono でも runtime validation を行う。
+
+Gateway の body 検査は capability/origin 認証より先に行われるため、body と認証の両方が
+不正な request は `issues` のない `400 INVALID_REQUEST` となりうる。local Hono は自身の
+admission 順序に従う。Gateway の `429` は `RATE_LIMITED`、integration の `504` は
+`INTERNAL_ERROR` を返し、default error は元の status を保持する。Edge/AWS の `413` は
+共通 JSON envelope でない場合がある。GatewayResponse の CORS は public body rejection
+にだけ付け、OPTIONS と通常応答の CORS は Hono が所有する。
+
+Lambda は REST `requestContext.extendedRequestId` を必須とし、`meta.requestId`、
+`x-request-id`、access log はこの trusted value を共有する。client が上書きできる
+`requestContext.requestId` や外部からの ID header は authority としない。
+Gateway は binary media types を設定せず response streaming を使用する。JSON request は
+検査可能な text のまま扱い、ZIP/Range の bytes は `Accept` の順序に依存しない。
+artifact の読み出し上限と配布方法は
+[Bundle と report の公開境界](#bundle-と-report-の公開境界) に従う。
+
+### Method と再送
+
+HEAD は `404` で GET handler の実行前に拒否する。public OPTIONS は CORS preflight として扱い、
+internal callback には適用しない。405/Allow は提供しない。
+セッション作成・投票・同期集計作成は `200`、非同期集計受付は `202` を使う。
+投票の同一 opening 再送は元の receipt、異なる opening は `400 ALREADY_VOTED`、
+vote ID/commitment 重複は `409 DUPLICATE_VOTE`。Location、ID指定集計GET、履歴resourceは提供しない。
+取消は POST action であり、保存状態は failed/USER_CANCELLED。再取消・完了との競合は `409`。
+取消の async mode 判定は handler が所有し、route は通常の path/capability/body admission の後に渡す。
 
 ### 値と共通型
 
@@ -192,16 +224,19 @@ type FinalizationQueue = {
 };
 ```
 
-- `concurrencyLimit` は `PROVER_MAX_CONCURRENT_PROVERS`、default `2` の順。
+- `concurrencyLimit` は `PROVER_MAX_CONCURRENT_PROVERS`、default `2` の順で決まる診断値。
+  AWS Batch の実行枠や現在の空き容量を保証する値ではない。
 - `estimatedDurationMs` の現行 default は `360000`。
 - SQS depth、queue position、estimated start/completion は公開 payload に含めない。
 - create の async 応答と current resource で同じ `FinalizationResource` shape を使う。
 - current resource の `runtimeDiagnostics.progress` は `running` のときに
   `startedAtMs` と estimate から導出する参考値。
-- UI は `queuedAtMs`, `startedAtMs`,
-  `runtimeDiagnostics.queue.estimatedDurationMs` から表示曲線を算出し、API の
-  `runtimeDiagnostics.progress.percent` を実測値として扱わない。
-- pending/running では queue object を返しうる。terminal state、queue URL 未設定、非 async path では `null` または省略。
+- UI は running 時に `startedAtMs` と `runtimeDiagnostics.queue.estimatedDurationMs`
+  （省略時は `360000`）から表示曲線を算出し、pending 時は `0%` とする。
+  `queuedAtMs` は表示曲線に使わず、API の `runtimeDiagnostics.progress.percent` を実測値として扱わない。
+- pending/running では queue object を返しうる。terminal state と非 async path では `null` または省略。
+  AWS target profile は `PROVER_WORK_QUEUE_URL` を必須とし、欠落時は runtime admission で失敗する。
+  queue helper の URL 未指定時の `null` は、有効な target 設定として許容される経路ではない。
 - internal prover/verification SQS message は numeric generation field を持たず、closed discriminator
   `recordType: "prover-work"` または `recordType: "verification-work"` を使う。
 
@@ -271,6 +306,9 @@ admission 時に検証する。矛盾する値を補正して成功 resource に
 - completed ZIP は default-deny manifest に対する archive admission を通過したものだけを配布する。
 - bundle は byte ranges をサポートする。4 MiB を超える bundle の range なし request は fail closed。
 - report が 4 MiB を超える場合は fail closed。
+- Lambda は上限付きの buffered read で artifact を取得し、report は保存された bytes を返す。
+  [AWS REST Gateway transport](#aws-rest-gateway-transport) の streaming は、この読み出し上限や
+  bundle の `206` / `416` 契約を変更しない。
 - runtime は一つの artifact reader を明示的に選び、reader failure 時に別 backend へ fallback しない。
 
 ## Active UI endpoint details
@@ -325,7 +363,15 @@ main の作成要求では `turnstileToken` を server-side Siteverify に送り
 
 ### POST `/api/sessions/:sessionId/votes`
 
-ユーザー票を記録し、Bot 投票を開始する。
+ユーザー票と 63 件の Bot 票を保存し、Bot 票の保存完了を待って `200` とユーザー票の receipt を返す。
+Bot 票の保存が失敗した場合は成功応答を返さず、ユーザー票だけが保存済みの場合もある。
+通信失敗などで応答を受け取れない場合も含め、client は同じ opening（`vote` と `rand`）と
+対応する `commitment` を保持して再送する。
+
+同一 opening の再送では不足する Bot 票の保存を完了し、保存済みの元の receipt を返す。
+並行する同一 opening の request も、ユーザー票を追加せず同じ receipt に収束する。
+異なる opening は `400 ALREADY_VOTED` となる。再送も通常の認証・request validation・rate limit
+を通過する必要がある。
 
 **Headers**
 
@@ -617,8 +663,7 @@ path の `sessionId` が authority である。
         "source": "derived",
         "percent": 42,
         "updatedAtMs": 1730000030000
-      },
-      "orchestrator": null
+      }
     }
   },
   "meta": { "requestId": "trusted-request-id" }
@@ -629,7 +674,11 @@ path の `sessionId` が authority である。
 - `runtimeDiagnostics.progress` は running 時だけ返しうる derived estimate。
 - succeeded resource は create response と同じ partitioned `result` を返す。
 - unsupported/corrupt current artifact は standard fail-closed error envelope になる。
-- Step Functions projection は `runtimeDiagnostics.orchestrator` に置き、proof や finalization authority にしない。
+- GET は保存済みの current state だけを返し、実行基盤の照会・状態更新を行わない。
+  保存できなかった failed/timeout を表示用に投影しない。保存状態を検証できなければ fail closed。
+- `runtimeDiagnostics` は `asyncMode`、`queue`、`progress` のみ。診断の欠落は集計や検証の成功を意味しない。
+- AWS の未記録 outcome と dispatch timeout は、閲覧とは独立した定期 writer が照合する。
+  詳細は [集計照合](../architecture/context-map.md#finalization-reconciliation) を参照。
 
 ### GET `/api/sessions/:sessionId/finalizations/:finalizationId/verification?include=journal`
 
@@ -678,7 +727,7 @@ resource も web admission で `reason="invalid_artifact"` の `corrupt` に畳�
       "electionConfigHash": "0x...",
       "logId": "0x...",
       "bulletinRoot": "0x...",
-      "imageId": "0x...",
+      "imageId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "verifiedTally": [13, 12, 14, 11, 14],
       "missingSlots": 0,
       "invalidPresentedSlots": 0,
@@ -722,7 +771,16 @@ resource も web admission で `reason="invalid_artifact"` の `corrupt` に畳�
       }
     },
     "verifierResult": {
-      "status": "success"
+      "status": "success",
+      "report": {
+        "status": "success",
+        "verifier_version": "example",
+        "verified_at": "2024-10-27T03:33:20Z",
+        "duration_ms": 100,
+        "expected_image_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "receipt_image_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dev_mode_receipt": false
+      }
     },
     "verification": {
       "steps": [
@@ -770,6 +828,8 @@ resource も web admission で `reason="invalid_artifact"` の `corrupt` に畳�
 
 - 実際の response は全22 checks と全4 steps を返す。上記配列は構造の説明用抜粋であり、
   このままでは complete inventory の admission を通過しない。
+- 例の ImageID は説明用であり、実際の guest mapping を示さない。STARK stage の成功には
+  `proofAuthority.imageId` と整合する上記の public report が必要で、status だけでは成功にならない。
 - server projection では Cast-as-Intended は client-side authority のため `not_run`。
 - browser は dependency-free な shared local-cast evaluator で local vote opening を評価し、
   server checks に overlay して shared presentation policy を再評価する。
@@ -799,7 +859,7 @@ session/finalization identity は path のみ。body への identity fallback �
 {}
 ```
 
-**Wire response 200**
+**Wire response 202（running。再送も同じ）**
 
 ```json
 {
@@ -816,6 +876,10 @@ session/finalization identity は path のみ。body への identity fallback �
 - `idempotent=true`: 新規実行せず、既存 terminal/running state を返した。
 - `estimatedDurationMs` は UI estimate。
 - finalized/current artifact、bundle locator、expected ImageID が揃わない場合は fail closed。
+
+terminal な `success | failed | dev_mode` は `200`。`202` は処理受付であり Verified を意味しない。
+形式が正しい古い finalization ID は `409 FINALIZATION_NOT_CURRENT`。
+検証 GET の stale ID は `200` の unavailable 表現、artifact は `404`、observation は `409` を維持する。
 
 ### POST `/api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`
 
@@ -996,8 +1060,8 @@ normalized `rootAtFromTreeSize`, `rootAtToTreeSize`, `proofNodes` を使う。
   authenticated session user の `userVoteIndex` と同じ値だけを許可
 - `kind`: required `included | seen`
 
-任意 index の inspection endpoint ではない。32-byte chunk は隣接する最大 255 vote の bit を含みうるため、
-handler は user vote index 以外を `INVALID_BITMAP_PROOF_REQUEST` で拒否する。
+handler は user vote index に対する proof だけを受け付け、他の index は
+`INVALID_BITMAP_PROOF_REQUEST` で拒否する。返す32-byte chunk 自体は、隣接する最大255票の bit も含みうる。
 
 **Wire response 200**
 

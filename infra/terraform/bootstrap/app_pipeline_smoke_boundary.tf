@@ -1,24 +1,32 @@
 data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.app_pipeline_clone_reference_source[0].json,
+    data.aws_iam_policy_document.terraform_authority_decrypt[0].json,
+  ]
 
   # Keep this exact-resource statement SID-free so the rendered managed policy
   # remains below IAM's 6,144-character quota.
+
   statement {
-    effect  = "Allow"
-    actions = ["codebuild:BatchGetProjects"]
-    resources = compact([
-      local.source_path_app_start_build_projects.app_smoke.project_arn,
-      local.app_static_fast_enabled ? local.source_path_static_fast_start_build_projects.app_static_fast_smoke_lite.project_arn : null,
-    ])
+    actions   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+    resources = ["${local.deployment_record_prefixes.app}/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.deployment_record_roots.app.bucket]
   }
 
   statement {
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
-    resources = [local.app_acceptance_publisher_role_arn]
+    actions   = ["codebuild:BatchGetBuilds"]
+    resources = ["arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${local.managed_codebuild_executions.app_terraform_smoke.project}"]
   }
+  statement {
+    actions   = ["codepipeline:ListActionExecutions", "codepipeline:GetPipelineExecution"]
+    resources = ["arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.managed_codebuild_executions.app_terraform_smoke.pipeline}"]
+  }
+
 
   statement {
     effect = "Allow"
@@ -34,46 +42,18 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       "${local.app_retained_artifact_bucket_arn}/*",
       local.app_pipeline_execution_artifact_bucket_arn,
       "${local.app_pipeline_execution_artifact_bucket_arn}/*",
-      local.app_static_fast_enabled ? local.app_static_fast_execution_artifact_bucket_arn : null,
-      local.app_static_fast_enabled ? "${local.app_static_fast_execution_artifact_bucket_arn}/*" : null,
     ])
   }
 
-  # The Smoke identity below this ceiling retains exact record/pointer
-  # families. Static-fast shares the boundary but receives no matching
-  # identity grant.
+  # Smoke can inspect only the exact selected Foundation checkpoint version.
   statement {
     effect  = "Allow"
     actions = ["s3:GetObjectVersion"]
     resources = [
-      "${local.app_release_manifest_bucket_arn}/*",
-      local.app_foundation_acceptance_records_objects_arn,
+      local.foundation_checkpoint_object_arn,
     ]
   }
 
-  statement {
-    effect    = "Allow"
-    actions   = ["kms:Decrypt"]
-    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:CallerAccount"
-      values   = [var.aws_account_id]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["s3.${var.aws_region}.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:aws:s3:arn"
-      values   = [local.terraform_authority_bucket_arn]
-    }
-  }
 
   statement {
     effect = "Allow"
@@ -100,24 +80,6 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
       variable = "aws:ResourceTag/StateScope"
       values   = ["app"]
     }
-  }
-
-  statement {
-    effect = "Allow"
-
-    actions = [
-      "codebuild:BatchGetBuilds",
-      "codebuild:StartBuild",
-      "codepipeline:GetPipelineExecution",
-      "codepipeline:GetPipelineState",
-      "codepipeline:ListActionExecutions",
-      "codepipeline:ListPipelineExecutions",
-      "codepipeline:StartPipelineExecution",
-    ]
-    resources = [
-      local.app_codebuild_project_arn_pattern,
-      local.app_pipeline_arn,
-    ]
   }
 
   statement {
@@ -241,7 +203,7 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
     condition {
       test     = "ForAnyValue:StringLike"
       variable = "kms:EncryptionContext:aws:dynamodb:tableName"
-      values   = concat(local.app_dynamodb_table_names, local.app_dynamodb_recovery_table_name_patterns)
+      values   = local.app_dynamodb_table_names
     }
   }
 
@@ -259,6 +221,12 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
         "${local.app_signature_verifier_lambda_arn}:*",
       ],
     )
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["states:DescribeStateMachine"]
+    resources = [local.app_target_state_machine_arn]
   }
 
   statement {
@@ -298,11 +266,6 @@ data "aws_iam_policy_document" "app_smoke_deploy_permissions_boundary" {
 resource "aws_iam_policy" "app_smoke_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
-  ]
 
   name   = local.app_smoke_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.app_smoke_deploy_permissions_boundary[0].json

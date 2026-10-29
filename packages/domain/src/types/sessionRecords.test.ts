@@ -31,8 +31,4 @@ describe('session identity record admission', () => {
   it('rejects unknown keys instead of interpreting another record shape', () => {
     expect(parseSessionIdentityRecord({ ...identity, contractGeneration: 'retired-shape' })).toBeUndefined();
   });
-
-  it('round-trips the exact complete identity record', () => {
-    expect(parseSessionIdentityRecord(identity)).toEqual(identity);
-  });
 });

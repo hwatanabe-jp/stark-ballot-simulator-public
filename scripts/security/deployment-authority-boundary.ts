@@ -11,12 +11,14 @@ import {
   nodeText,
   parseSource,
   sourceLine,
-  sourceText,
   staticText,
 } from '../source-analysis/source';
-import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import {
+  compareSourceFindings,
+  scanRepositoryFiles,
+  trackedAndUntrackedFiles,
+} from '../source-analysis/repository-files';
 import { pathToFileURL } from 'node:url';
 import {
   renderDeploymentLaneContext,
@@ -67,8 +69,6 @@ interface SemanticImplementation {
 const AUTHORITY_OWNER_PREFIX = 'packages/deployment-authority/src/';
 const CANONICAL_CONTEXT_RENDERER_PATH = 'packages/deployment-authority/src/index.js';
 const CANONICAL_CONTEXT_RENDERER_NAME = 'renderDeploymentLaneContext';
-const FRAMEWORK_CONTEXT_RENDERER_PATH = 'packages/deployment-authority/src/framework.js';
-const FRAMEWORK_CONTEXT_RENDERER_NAME = 'renderFrameworkLaneContext';
 const CANONICAL_TERRAFORM_AUTHORITY_PATH = 'packages/deployment-authority/src/terraform-authority.js';
 const CANONICAL_TERRAFORM_DRIFT_PATH = 'packages/deployment-authority/src/terraform-drift.js';
 // The packages/test-support workspace is runtime source; only local helper directories are fixtures.
@@ -79,7 +79,6 @@ const ACTIVE_SCRIPT_PREFIXES = [
   'scripts/aws/',
   'scripts/terraform/',
   'infra/terraform/bootstrap/app-pipeline-scripts/',
-  'infra/terraform/bootstrap/app-signature-preflight-scripts/',
   'infra/terraform/bootstrap/foundation-pipeline-scripts/',
   'infra/terraform/bootstrap/terraform-drift-scripts/',
 ] as const;
@@ -139,7 +138,6 @@ const DEPLOYMENT_LANES = [
   'bootstrap',
   'foundation',
   'prover',
-  'static-fast',
   'toolchain',
 ] as const satisfies readonly DeploymentLane[];
 const BOUNDARY_SOURCE_SHA = '0'.repeat(40);
@@ -273,10 +271,7 @@ function isContextRenderer(name: string, bodyText: string): boolean {
 }
 
 function isCanonicalContextRenderer(relativePath: string, name: string): boolean {
-  return (
-    (relativePath === CANONICAL_CONTEXT_RENDERER_PATH && name === CANONICAL_CONTEXT_RENDERER_NAME) ||
-    (relativePath === FRAMEWORK_CONTEXT_RENDERER_PATH && name === FRAMEWORK_CONTEXT_RENDERER_NAME)
-  );
+  return relativePath === CANONICAL_CONTEXT_RENDERER_PATH && name === CANONICAL_CONTEXT_RENDERER_NAME;
 }
 
 function isGenericImmutableAuthority(name: string): boolean {
@@ -293,35 +288,52 @@ function propertyNameText(name: ESTree.Node): string | undefined {
   return undefined;
 }
 
+function assignedFunctionImplementation(node: ESTree.Node): FunctionImplementation | undefined {
+  if (isNode(node, 'VariableDeclarator') && isNode(node.id, 'Identifier') && node.init !== null) {
+    const initializer = node.init;
+    if (
+      (isNode(initializer, 'ArrowFunctionExpression') || isNode(initializer, 'FunctionExpression')) &&
+      initializer.body !== null
+    ) {
+      return { body: initializer.body, declaration: node, name: staticText(node.id) };
+    }
+  }
+  return propertyFunctionImplementation(node);
+}
+
+function propertyFunctionImplementation(node: ESTree.Node): FunctionImplementation | undefined {
+  if (isNode(node, 'Property') && !node.shorthand) {
+    const value = node.value;
+    const name = propertyNameText(node.key);
+    if (
+      (isNode(value, 'ArrowFunctionExpression') || isNode(value, 'FunctionExpression')) &&
+      value.body !== null &&
+      name !== undefined
+    ) {
+      return { body: value.body, declaration: node, name };
+    }
+  }
+  return undefined;
+}
+
+function declaredFunctionImplementation(node: ESTree.Node): FunctionImplementation | undefined {
+  if (isNode(node, 'FunctionDeclaration') && node.id !== null && node.body !== null) {
+    return { body: node.body, declaration: node, name: staticText(node.id) };
+  }
+  if (isNode(node, 'MethodDefinition') && node.value.body !== null) {
+    const name = propertyNameText(node.key);
+    if (name !== undefined) {
+      return { body: node.value.body, declaration: node, name };
+    }
+  }
+  return undefined;
+}
+
 function implementationFunctions(sourceFile: ESTree.Program): readonly FunctionImplementation[] {
   const implementations: FunctionImplementation[] = [];
   const visit = (node: ESTree.Node): void => {
-    if (isNode(node, 'FunctionDeclaration') && node.id !== null && node.body !== null) {
-      implementations.push({ body: node.body, declaration: node, name: staticText(node.id) });
-    } else if (isNode(node, 'MethodDefinition') && node.value.body !== null) {
-      const name = propertyNameText(node.key);
-      if (name !== undefined) {
-        implementations.push({ body: node.value.body, declaration: node, name });
-      }
-    } else if (
-      isNode(node, 'VariableDeclarator') &&
-      isNode(node.id, 'Identifier') &&
-      node.init !== null &&
-      (isNode(node.init, 'ArrowFunctionExpression') || isNode(node.init, 'FunctionExpression')) &&
-      node.init.body !== null
-    ) {
-      implementations.push({ body: node.init.body, declaration: node, name: staticText(node.id) });
-    } else if (
-      isNode(node, 'Property') &&
-      !node.shorthand &&
-      (isNode(node.value, 'ArrowFunctionExpression') || isNode(node.value, 'FunctionExpression')) &&
-      node.value.body !== null
-    ) {
-      const name = propertyNameText(node.key);
-      if (name !== undefined) {
-        implementations.push({ body: node.value.body, declaration: node, name });
-      }
-    }
+    const implementation = declaredFunctionImplementation(node) ?? assignedFunctionImplementation(node);
+    if (implementation !== undefined) implementations.push(implementation);
     forEachChild(node, visit);
   };
   visit(sourceFile);
@@ -340,6 +352,26 @@ function semanticImplementationsFromSourceFile(
   }));
 }
 
+function lexicalFunctionEndLine(lines: readonly string[], startLineIndex: number, maximumEndLineIndex: number): number {
+  let braceDepth = 0;
+  let sawOpeningBrace = false;
+  for (let lineIndex = startLineIndex; lineIndex < maximumEndLineIndex; lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    for (const character of line) {
+      if (character === '{') {
+        braceDepth += 1;
+        sawOpeningBrace = true;
+      } else if (character === '}') {
+        braceDepth -= 1;
+      }
+    }
+    if (sawOpeningBrace && braceDepth <= 0) {
+      return lineIndex + 1;
+    }
+  }
+  return maximumEndLineIndex;
+}
+
 function lexicalSemanticImplementations(contents: string): readonly SemanticImplementation[] {
   const lines = contents.split(/\r?\n/u);
   const declarations: Array<{
@@ -356,24 +388,7 @@ function lexicalSemanticImplementations(contents: string): readonly SemanticImpl
   return declarations.map((declaration, index) => {
     const nextDeclarationLine = declarations[index + 1]?.lineIndex ?? lines.length;
     const maximumEndLineIndex = Math.min(nextDeclarationLine, declaration.lineIndex + 80);
-    let endLineIndex = maximumEndLineIndex;
-    let braceDepth = 0;
-    let sawOpeningBrace = false;
-    for (let lineIndex = declaration.lineIndex; lineIndex < maximumEndLineIndex; lineIndex += 1) {
-      const line = lines[lineIndex] ?? '';
-      for (const character of line) {
-        if (character === '{') {
-          braceDepth += 1;
-          sawOpeningBrace = true;
-        } else if (character === '}') {
-          braceDepth -= 1;
-        }
-      }
-      if (sawOpeningBrace && braceDepth <= 0) {
-        endLineIndex = lineIndex + 1;
-        break;
-      }
-    }
+    const endLineIndex = lexicalFunctionEndLine(lines, declaration.lineIndex, maximumEndLineIndex);
     return {
       endLine: endLineIndex,
       line: declaration.lineIndex + 1,
@@ -693,6 +708,35 @@ function semanticImplementationViolations(
   return violations;
 }
 
+function inspectNamedContextField(
+  relativePath: string,
+  line: number,
+  field: string,
+  violations: DeploymentAuthorityBoundaryViolation[],
+): void {
+  const normalizedField = normalizeIdentifier(field);
+  if (
+    SECRET_FIELD_PATTERN.test(normalizedField) &&
+    (ALWAYS_FORBIDDEN_CONTEXT_FIELD_PATTERN.test(normalizedField) ||
+      !SECRET_REFERENCE_SUFFIX_PATTERN.test(normalizedField))
+  ) {
+    violations.push({
+      path: relativePath,
+      line: line,
+      rule: 'context-secret-field',
+      token: field,
+    });
+  }
+  if (UNBOUNDED_CONTEXT_FIELDS.has(normalizedField)) {
+    violations.push({
+      path: relativePath,
+      line: line,
+      rule: 'context-unbounded-extension',
+      token: field,
+    });
+  }
+}
+
 function contextFieldViolations(
   relativePath: string,
   _sourceFile: ESTree.Program,
@@ -707,42 +751,17 @@ function contextFieldViolations(
         rule: 'context-unbounded-extension',
         token: 'object-spread',
       });
-    } else if (
-      ((isNode(node, 'Property') && !node.shorthand) ||
-        (isNode(node, 'Property') && node.shorthand) ||
-        isNode(node, 'MethodDefinition')) &&
-      node.computed
-    ) {
+    } else if ((isNode(node, 'Property') || isNode(node, 'MethodDefinition')) && node.computed) {
       violations.push({
         path: relativePath,
         line: sourceLine(node),
         rule: 'context-unbounded-extension',
         token: 'computed-property',
       });
-    } else if ((isNode(node, 'Property') && !node.shorthand) || (isNode(node, 'Property') && node.shorthand)) {
+    } else if (isNode(node, 'Property')) {
       const field = propertyNameText(node.key);
       if (field !== undefined) {
-        const normalizedField = normalizeIdentifier(field);
-        if (
-          SECRET_FIELD_PATTERN.test(normalizedField) &&
-          (ALWAYS_FORBIDDEN_CONTEXT_FIELD_PATTERN.test(normalizedField) ||
-            !SECRET_REFERENCE_SUFFIX_PATTERN.test(normalizedField))
-        ) {
-          violations.push({
-            path: relativePath,
-            line: sourceLine(node),
-            rule: 'context-secret-field',
-            token: field,
-          });
-        }
-        if (UNBOUNDED_CONTEXT_FIELDS.has(normalizedField)) {
-          violations.push({
-            path: relativePath,
-            line: sourceLine(node),
-            rule: 'context-unbounded-extension',
-            token: field,
-          });
-        }
+        inspectNamedContextField(relativePath, sourceLine(node), field, violations);
       }
     }
     forEachChild(node, visit);
@@ -751,35 +770,40 @@ function contextFieldViolations(
   return violations;
 }
 
+const GOVERNED_AUTHORITY_SUFFIXES = [
+  'pipelinename',
+  'backendkey',
+  'stateidentity',
+  'resourceprefix',
+  'region',
+  'accountid',
+  'accountlabel',
+  'accountalias',
+  'pointerkey',
+  'statescope',
+  'sourceaction',
+  'sourcebranch',
+  'deploymentenvironment',
+  'nameprefix',
+  'runtimeprefix',
+  'evidenceprefix',
+  'recordprefix',
+  'manifestprefix',
+  'repository',
+  'repositoryname',
+];
+
 function isGovernedAuthorityIdentifier(identifier: string): boolean {
   const normalized = normalizeIdentifier(identifier);
   return (
     GOVERNED_CONTEXT_IDENTIFIERS.has(normalized) ||
-    normalized === 'account' ||
-    normalized === 'awsaccount' ||
-    normalized === 'targetaccount' ||
-    normalized.endsWith('pipelinename') ||
-    normalized.endsWith('backendkey') ||
-    normalized.endsWith('stateidentity') ||
-    normalized.endsWith('resourceprefix') ||
-    normalized.endsWith('region') ||
-    normalized.endsWith('accountid') ||
-    normalized.endsWith('accountlabel') ||
-    normalized.endsWith('accountalias') ||
-    normalized.endsWith('pointerkey') ||
-    normalized.endsWith('backendkey') ||
-    normalized.endsWith('statescope') ||
-    normalized.endsWith('sourceaction') ||
-    normalized.endsWith('sourcebranch') ||
-    normalized.endsWith('deploymentenvironment') ||
-    normalized.endsWith('nameprefix') ||
-    normalized.endsWith('runtimeprefix') ||
-    normalized.endsWith('evidenceprefix') ||
-    normalized.endsWith('recordprefix') ||
-    normalized.endsWith('manifestprefix') ||
-    normalized.endsWith('repository') ||
-    normalized.endsWith('repositoryname')
+    ['account', 'awsaccount', 'targetaccount'].includes(normalized) ||
+    GOVERNED_AUTHORITY_SUFFIXES.some((suffix) => normalized.endsWith(suffix))
   );
+}
+
+function isAuthorityEntityTag(identifier: string): boolean {
+  return identifier === 'etag' || identifier === 'ETag' || identifier.endsWith('ETag') || /_etag$/iu.test(identifier);
 }
 
 function isBroadFallbackAuthorityIdentifier(identifier: string): boolean {
@@ -787,46 +811,39 @@ function isBroadFallbackAuthorityIdentifier(identifier: string): boolean {
   return (
     isGovernedAuthorityIdentifier(identifier) ||
     normalized === 'target' ||
-    normalized === 'arn' ||
-    normalized.endsWith('arn') ||
-    identifier === 'etag' ||
-    identifier === 'ETag' ||
-    identifier.endsWith('ETag') ||
-    /_etag$/iu.test(identifier) ||
-    normalized.endsWith('versionid') ||
-    normalized.endsWith('sourcesha') ||
-    normalized.endsWith('checksum')
+    ['arn', 'versionid', 'sourcesha', 'checksum'].some((suffix) => normalized.endsWith(suffix)) ||
+    isAuthorityEntityTag(identifier)
   );
 }
 
-function assignmentOnLine(line: string):
-  | {
-      readonly name: string;
-      readonly right: string;
-    }
-  | undefined {
-  const codeAssignment = line.match(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:[^=;]+)?\s*=\s*(.+)$/u);
-  if (codeAssignment?.[1] !== undefined && codeAssignment[2] !== undefined) {
-    return { name: codeAssignment[1], right: codeAssignment[2] };
-  }
-  const shellAssignment = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u);
-  if (shellAssignment?.[1] !== undefined && shellAssignment[2] !== undefined) {
-    const nextAssignment = shellAssignment[2].match(/\s+[A-Za-z_][A-Za-z0-9_]*=/u);
-    return {
-      name: shellAssignment[1],
-      right:
-        nextAssignment?.index === undefined ? shellAssignment[2] : shellAssignment[2].slice(0, nextAssignment.index),
-    };
-  }
-  const yamlAssignment = line.match(/^\s*([A-Z][A-Z0-9_]*)\s*:\s*(.*)$/u);
-  if (yamlAssignment?.[1] !== undefined && yamlAssignment[2] !== undefined) {
-    return { name: yamlAssignment[1], right: yamlAssignment[2] };
-  }
-  const hclAssignment = line.match(/^\s*([a-z][a-z0-9_]*)\s*=\s*(.*)$/u);
-  if (hclAssignment?.[1] !== undefined && hclAssignment[2] !== undefined) {
-    return { name: hclAssignment[1], right: hclAssignment[2] };
-  }
-  return undefined;
+interface LineAssignment {
+  readonly name: string;
+  readonly right: string;
+}
+
+function matchedLineAssignment(line: string, pattern: RegExp): LineAssignment | undefined {
+  const match = line.match(pattern);
+  if (match?.[1] === undefined || match[2] === undefined) return undefined;
+  return { name: match[1], right: match[2] };
+}
+
+function shellAssignmentOnLine(line: string): LineAssignment | undefined {
+  const assignment = matchedLineAssignment(line, /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u);
+  if (assignment === undefined) return undefined;
+  const nextAssignment = assignment.right.match(/\s+[A-Za-z_][A-Za-z0-9_]*=/u);
+  return {
+    name: assignment.name,
+    right: nextAssignment?.index === undefined ? assignment.right : assignment.right.slice(0, nextAssignment.index),
+  };
+}
+
+function assignmentOnLine(line: string): LineAssignment | undefined {
+  return (
+    matchedLineAssignment(line, /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:[^=;]+)?\s*=\s*(.+)$/u) ??
+    shellAssignmentOnLine(line) ??
+    matchedLineAssignment(line, /^\s*([A-Z][A-Z0-9_]*)\s*:\s*(.*)$/u) ??
+    matchedLineAssignment(line, /^\s*([a-z][a-z0-9_]*)\s*=\s*(.*)$/u)
+  );
 }
 
 function indentationWidth(line: string): number {
@@ -845,6 +862,14 @@ function delimiterDelta(value: string): number {
   return delta;
 }
 
+function hasUnclosedAssignment(value: string, balance: number): boolean {
+  return balance > 0 || /(?:\\|\+)\s*$/u.test(value);
+}
+
+function endsIndentedAssignment(line: string, baseIndent: number): boolean {
+  return line.trim() !== '' && indentationWidth(line) <= baseIndent;
+}
+
 function expandedAssignmentRight(lines: readonly string[], lineIndex: number, right: string): string {
   const trimmed = right.trim();
   if (isSimpleRuntimeValue(right)) {
@@ -857,20 +882,30 @@ function expandedAssignmentRight(lines: readonly string[], lineIndex: number, ri
   if (!indentationContinuation && !balancedContinuation) {
     return right;
   }
-  if (!indentationContinuation && delimiterDelta(right) <= 0 && !/(?:\\|\+)\s*$/u.test(right)) {
+  if (!indentationContinuation && !hasUnclosedAssignment(right, delimiterDelta(right))) {
     return right;
   }
 
+  return collectAssignmentContinuation(lines, lineIndex, right, indentationContinuation, baseIndent);
+}
+
+function collectAssignmentContinuation(
+  lines: readonly string[],
+  lineIndex: number,
+  right: string,
+  indentationContinuation: boolean,
+  baseIndent: number,
+): string {
   const parts = [right];
   let balance = delimiterDelta(right);
   for (let nextIndex = lineIndex + 1; nextIndex < Math.min(lines.length, lineIndex + 40); nextIndex += 1) {
     const nextLine = lines[nextIndex] ?? '';
-    if (indentationContinuation && nextLine.trim() !== '' && indentationWidth(nextLine) <= baseIndent) {
+    if (indentationContinuation && endsIndentedAssignment(nextLine, baseIndent)) {
       break;
     }
     parts.push(nextLine);
     balance += delimiterDelta(nextLine);
-    if (!indentationContinuation && balance <= 0 && !/(?:\\|\+)\s*$/u.test(nextLine)) {
+    if (!indentationContinuation && !hasUnclosedAssignment(nextLine, balance)) {
       break;
     }
   }
@@ -902,16 +937,21 @@ function isPureRuntimeValue(value: string): boolean {
   return isSimpleRuntimeValue(trimmed) || /^(?:['"])?\$\(/u.test(trimmed);
 }
 
+function canonicalCarrierEnvironmentName(trimmed: string): string | undefined {
+  return (
+    trimmed.match(/^requireEnv\(\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\)$/u)?.[1] ??
+    trimmed.match(/^process\.env\.([A-Z][A-Z0-9_]*)$/u)?.[1] ??
+    trimmed.match(/^([A-Z][A-Z0-9_]*)$/u)?.[1]
+  );
+}
+
 function isCanonicalAuthorityCarrier(value: string): boolean {
   const trimmed = value.trim();
   if (isCanonicalAuthorityReference(trimmed)) {
     const identifiers = trimmed.match(/[A-Za-z_$][A-Za-z0-9_$]*/gu) ?? [];
     return CANONICAL_EXTENSION_FIELD_IDENTIFIERS.has(normalizeIdentifier(identifiers.at(-1) ?? ''));
   }
-  const environmentName =
-    trimmed.match(/^requireEnv\(\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\)$/u)?.[1] ??
-    trimmed.match(/^process\.env\.([A-Z][A-Z0-9_]*)$/u)?.[1] ??
-    trimmed.match(/^([A-Z][A-Z0-9_]*)$/u)?.[1];
+  const environmentName = canonicalCarrierEnvironmentName(trimmed);
   if (environmentName === undefined) {
     return false;
   }
@@ -931,7 +971,11 @@ function isCanonicalAuthorityExtension(value: string): boolean {
     const interpolations = [...quoted[2].matchAll(/\$\{([^}]+)\}/gu)];
     return interpolations.length === 1 && isCanonicalAuthorityCarrier(interpolations[0]?.[1] ?? '');
   }
-  const concatenatedParts = trimmed.split(/\s*\+\s*/u);
+  return isCanonicalAuthorityConcatenation(trimmed);
+}
+
+function isCanonicalAuthorityConcatenation(value: string): boolean {
+  const concatenatedParts = value.split(/\s*\+\s*/u);
   if (concatenatedParts.length < 2) {
     return false;
   }
@@ -1042,6 +1086,21 @@ function authorityProperty(expression: ESTree.Node):
   return undefined;
 }
 
+function alternateAuthorityProperty(left: ESTree.Node, right: ESTree.Node): string | undefined {
+  const leftProperty = authorityProperty(left);
+  const rightProperty = authorityProperty(right);
+  if (
+    leftProperty !== undefined &&
+    rightProperty !== undefined &&
+    leftProperty.root === rightProperty.root &&
+    leftProperty.name !== rightProperty.name &&
+    normalizeIdentifier(leftProperty.name) === normalizeIdentifier(rightProperty.name)
+  ) {
+    return `${leftProperty.name}|${rightProperty.name}`;
+  }
+  return undefined;
+}
+
 function codeFallbackViolations(
   relativePath: string,
   sourceFile: ESTree.Program,
@@ -1050,20 +1109,13 @@ function codeFallbackViolations(
   const visit = (node: ESTree.Node): void => {
     if (isBinaryOperation(node) && (node.operator === '??' || node.operator === '||')) {
       const authorityName = assignedAuthorityName(node);
-      const leftProperty = authorityProperty(node.left);
-      const rightProperty = authorityProperty(node.right);
-      if (
-        leftProperty !== undefined &&
-        rightProperty !== undefined &&
-        leftProperty.root === rightProperty.root &&
-        leftProperty.name !== rightProperty.name &&
-        normalizeIdentifier(leftProperty.name) === normalizeIdentifier(rightProperty.name)
-      ) {
+      const alternateProperty = alternateAuthorityProperty(node.left, node.right);
+      if (alternateProperty !== undefined) {
         violations.push({
           path: relativePath,
           line: sourceLine(node),
           rule: 'alternate-authority-reader',
-          token: `${leftProperty.name}|${rightProperty.name}`,
+          token: alternateProperty,
         });
       }
       if (
@@ -1083,10 +1135,6 @@ function codeFallbackViolations(
   };
   visit(sourceFile);
   return violations;
-}
-
-function isProtectedProductionContractLine(line: string): boolean {
-  return /(?:protected_production|protectedProduction)/u.test(line);
 }
 
 function isCommentOrErrorLine(line: string): boolean {
@@ -1173,32 +1221,42 @@ function ignoredLiteralLines(
   return ignored;
 }
 
+/** Enumerate non-owner lines after each scanner's own exclusions and shared authority exceptions. */
+function* governedTargetLines(
+  relativePath: string,
+  contents: string,
+  isIgnored: (line: string, lineNumber: number) => boolean,
+) {
+  if (isAuthorityOwnerPath(relativePath)) return;
+  const lines = contents.split(/\r?\n/u);
+  for (const [lineIndex, line] of lines.entries()) {
+    if (
+      isIgnored(line, lineIndex + 1) ||
+      CLOSED_TARGET_SELECTOR_PATTERN.test(line) ||
+      isLocalLegacyTerraformDefault(relativePath, line)
+    )
+      continue;
+    yield { line, lineIndex, lines };
+  }
+}
+
 function governedTargetLiteralViolations(
   relativePath: string,
   contents: string,
   ignoredLines: ReadonlySet<number>,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
-  if (isAuthorityOwnerPath(relativePath)) {
-    return [];
-  }
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
-  const lines = contents.split(/\r?\n/u);
-  for (const [lineIndex, line] of lines.entries()) {
-    const lineNumber = lineIndex + 1;
-    if (
-      ignoredLines.has(lineNumber) ||
-      isCommentOrErrorLine(line) ||
-      isProtectedProductionContractLine(line) ||
-      CLOSED_TARGET_SELECTOR_PATTERN.test(line) ||
-      isLocalLegacyTerraformDefault(relativePath, line)
-    ) {
-      continue;
-    }
+  const eligible = governedTargetLines(
+    relativePath,
+    contents,
+    (line, lineNumber) => ignoredLines.has(lineNumber) || isCommentOrErrorLine(line),
+  );
+  for (const { line, lineIndex } of eligible) {
     const governedValue = configuredLiteralOnLine(line);
     if (governedValue !== undefined) {
       violations.push({
         path: relativePath,
-        line: lineNumber,
+        line: lineIndex + 1,
         rule: 'governed-target-reconstruction',
         token: governedValue,
       });
@@ -1220,13 +1278,11 @@ function codeGovernedTargetViolations(
   }
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
   const inspect = (name: string | undefined, initializer: ESTree.Node): void => {
-    const initializerLine = sourceText(sourceFile).split(/\r?\n/u)[sourceLine(initializer) - 1] ?? '';
     if (
       name !== undefined &&
       isGovernedAuthorityIdentifier(name) &&
       !hasTopLevelFallback(initializer) &&
       !CLOSED_TARGET_SELECTOR_PATTERN.test(nodeText(initializer)) &&
-      !isProtectedProductionContractLine(initializerLine) &&
       looksLikeGovernedReconstruction(nodeText(initializer))
     ) {
       violations.push({
@@ -1255,11 +1311,7 @@ function lineFallbackViolations(
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
   for (const [lineIndex, line] of contents.split(/\r?\n/u).entries()) {
-    if (
-      isCommentOrErrorLine(line) ||
-      isProtectedProductionContractLine(line) ||
-      isLocalLegacyTerraformDefault(relativePath, line)
-    ) {
+    if (isCommentOrErrorLine(line) || isLocalLegacyTerraformDefault(relativePath, line)) {
       continue;
     }
     for (const match of line.matchAll(SHELL_DEFAULT_PATTERN)) {
@@ -1283,43 +1335,42 @@ function lineFallbackViolations(
   return violations;
 }
 
+function inspectGovernedTargetAssignment(
+  relativePath: string,
+  contents: string,
+  lines: readonly string[],
+  lineIndex: number,
+  line: string,
+  violations: DeploymentAuthorityBoundaryViolation[],
+): void {
+  const assignment = assignmentOnLine(line);
+  const expandedRight =
+    assignment === undefined ? undefined : expandedAssignmentRight(lines, lineIndex, assignment.right);
+  if (
+    assignment !== undefined &&
+    expandedRight !== undefined &&
+    isGovernedAuthorityIdentifier(assignment.name) &&
+    !isCanonicalTargetKeySelector(relativePath, contents, assignment.name, assignment.right) &&
+    looksLikeGovernedReconstruction(expandedRight)
+  ) {
+    violations.push({
+      path: relativePath,
+      line: lineIndex + 1,
+      rule: 'governed-target-reconstruction',
+      token: assignment.name,
+    });
+  }
+}
+
 function governedTargetViolations(
   relativePath: string,
   contents: string,
   fallbackLines: ReadonlySet<number>,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
-  if (isAuthorityOwnerPath(relativePath)) {
-    return [];
-  }
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
-  const lines = contents.split(/\r?\n/u);
-  for (const [lineIndex, line] of lines.entries()) {
-    const lineNumber = lineIndex + 1;
-    if (
-      fallbackLines.has(lineNumber) ||
-      CLOSED_TARGET_SELECTOR_PATTERN.test(line) ||
-      isProtectedProductionContractLine(line) ||
-      isLocalLegacyTerraformDefault(relativePath, line)
-    ) {
-      continue;
-    }
-    const assignment = assignmentOnLine(line);
-    const expandedRight =
-      assignment === undefined ? undefined : expandedAssignmentRight(lines, lineIndex, assignment.right);
-    if (
-      assignment !== undefined &&
-      expandedRight !== undefined &&
-      isGovernedAuthorityIdentifier(assignment.name) &&
-      !isCanonicalTargetKeySelector(relativePath, contents, assignment.name, assignment.right) &&
-      looksLikeGovernedReconstruction(expandedRight)
-    ) {
-      violations.push({
-        path: relativePath,
-        line: lineNumber,
-        rule: 'governed-target-reconstruction',
-        token: assignment.name,
-      });
-    }
+  const eligible = governedTargetLines(relativePath, contents, (_line, lineNumber) => fallbackLines.has(lineNumber));
+  for (const { line, lineIndex, lines } of eligible) {
+    inspectGovernedTargetAssignment(relativePath, contents, lines, lineIndex, line, violations);
   }
   return violations;
 }
@@ -1398,6 +1449,45 @@ function lineWindow(lines: readonly string[], lineIndex: number, before: number,
   return lines.slice(Math.max(0, lineIndex - before), Math.min(lines.length, lineIndex + after + 1)).join('\n');
 }
 
+function inspectConditionalPublication(
+  relativePath: string,
+  lines: readonly string[],
+  lineIndex: number,
+  line: string,
+  violations: DeploymentAuthorityBoundaryViolation[],
+): void {
+  if (/(?:--if-none-match|IfNoneMatch)/iu.test(line)) {
+    const publicationWindow = lineWindow(lines, lineIndex, 8, 80);
+    if (looksLikeFirstWriteClassification(publicationWindow)) {
+      violations.push({
+        path: relativePath,
+        line: lineIndex + 1,
+        rule: 'duplicate-first-write-classification',
+        token: 'conditional-publication',
+      });
+    }
+  }
+  if (/(?:--if-match|IfMatch)/u.test(line)) {
+    const pointerWindow = lineWindow(lines, lineIndex, 40, 40);
+    if (looksLikePointerCompareAndSwap(pointerWindow)) {
+      violations.push({
+        path: relativePath,
+        line: lineIndex + 1,
+        rule: 'duplicate-pointer-cas',
+        token: 'conditional-pointer-update',
+      });
+    }
+  }
+}
+
+function isInlineVersionIdValidation(relativePath: string, line: string, localWindow: string): boolean {
+  return (
+    /(?:S3\s+VersionId|versionId|VersionId|version_id|VERSION_ID|s3_object_version)/u.test(line) &&
+    !isExternallyDocumentedAwsFieldShape(relativePath, line) &&
+    looksLikeS3VersionIdParser(localWindow)
+  );
+}
+
 function inlineSemanticViolations(
   relativePath: string,
   contents: string,
@@ -1416,9 +1506,7 @@ function inlineSemanticViolations(
       const localWindow = lineWindow(lines, lineIndex, 8, 6);
       if (
         lineNumber > lastInlineVersionIdViolationLine + 6 &&
-        /(?:S3\s+VersionId|versionId|VersionId|version_id|VERSION_ID|s3_object_version)/u.test(line) &&
-        !isExternallyDocumentedAwsFieldShape(relativePath, line) &&
-        looksLikeS3VersionIdParser(localWindow)
+        isInlineVersionIdValidation(relativePath, line, localWindow)
       ) {
         violations.push({
           path: relativePath,
@@ -1445,30 +1533,14 @@ function inlineSemanticViolations(
         });
       }
     }
-    if (/(?:--if-none-match|IfNoneMatch)/iu.test(line)) {
-      const publicationWindow = lineWindow(lines, lineIndex, 8, 80);
-      if (looksLikeFirstWriteClassification(publicationWindow)) {
-        violations.push({
-          path: relativePath,
-          line: lineNumber,
-          rule: 'duplicate-first-write-classification',
-          token: 'conditional-publication',
-        });
-      }
-    }
-    if (/(?:--if-match|IfMatch)/u.test(line)) {
-      const pointerWindow = lineWindow(lines, lineIndex, 40, 40);
-      if (looksLikePointerCompareAndSwap(pointerWindow)) {
-        violations.push({
-          path: relativePath,
-          line: lineNumber,
-          rule: 'duplicate-pointer-cas',
-          token: 'conditional-pointer-update',
-        });
-      }
-    }
+    inspectConditionalPublication(relativePath, lines, lineIndex, line, violations);
   }
   return violations;
+}
+
+function lexicalFunctionName(line: string): string | undefined {
+  const declaration = line.match(LEXICAL_FUNCTION_DECLARATION_PATTERN);
+  return declaration?.[1] ?? declaration?.[2];
 }
 
 function lexicalFunctionViolations(
@@ -1477,8 +1549,7 @@ function lexicalFunctionViolations(
 ): readonly DeploymentAuthorityBoundaryViolation[] {
   const violations: DeploymentAuthorityBoundaryViolation[] = [];
   for (const [lineIndex, line] of contents.split(/\r?\n/u).entries()) {
-    const declaration = line.match(LEXICAL_FUNCTION_DECLARATION_PATTERN);
-    const name = declaration?.[1] ?? declaration?.[2];
+    const name = lexicalFunctionName(line);
     if (name === undefined) {
       continue;
     }
@@ -1548,6 +1619,36 @@ function prioritizeAuthorityViolations(
   return [...otherViolations, ...preferredByLine.values()];
 }
 
+function inspectFunctionImplementations(
+  relativePath: string,
+  sourceFile: ESTree.Program,
+  implementations: readonly FunctionImplementation[],
+  violations: DeploymentAuthorityBoundaryViolation[],
+): void {
+  for (const implementation of implementations) {
+    const bodyText = nodeText(implementation.body);
+    if (isContextRenderer(implementation.name, bodyText)) {
+      if (!isCanonicalContextRenderer(relativePath, implementation.name)) {
+        violations.push({
+          path: relativePath,
+          line: sourceLine(implementation.declaration),
+          rule: 'duplicate-context-renderer',
+          token: implementation.name,
+        });
+      }
+      violations.push(...contextFieldViolations(relativePath, sourceFile, implementation));
+    }
+    if (isGenericImmutableAuthority(implementation.name) && !isAuthorityOwnerPath(relativePath)) {
+      violations.push({
+        path: relativePath,
+        line: sourceLine(implementation.declaration),
+        rule: 'duplicate-immutable-authority',
+        token: implementation.name,
+      });
+    }
+  }
+}
+
 export function findDeploymentAuthorityBoundaryViolationsInText(
   relativePath: string,
   contents: string,
@@ -1558,28 +1659,7 @@ export function findDeploymentAuthorityBoundaryViolationsInText(
     const sourceFile = parseSource(relativePath, contents);
     const implementations = implementationFunctions(sourceFile);
     semanticImplementations = semanticImplementationsFromSourceFile(sourceFile, implementations);
-    for (const implementation of implementations) {
-      const bodyText = nodeText(implementation.body);
-      if (isContextRenderer(implementation.name, bodyText)) {
-        if (!isCanonicalContextRenderer(relativePath, implementation.name)) {
-          violations.push({
-            path: relativePath,
-            line: sourceLine(implementation.declaration),
-            rule: 'duplicate-context-renderer',
-            token: implementation.name,
-          });
-        }
-        violations.push(...contextFieldViolations(relativePath, sourceFile, implementation));
-      }
-      if (isGenericImmutableAuthority(implementation.name) && !isAuthorityOwnerPath(relativePath)) {
-        violations.push({
-          path: relativePath,
-          line: sourceLine(implementation.declaration),
-          rule: 'duplicate-immutable-authority',
-          token: implementation.name,
-        });
-      }
-    }
+    inspectFunctionImplementations(relativePath, sourceFile, implementations, violations);
     if (isGovernedTargetConsumerPath(relativePath)) {
       violations.push(...codeFallbackViolations(relativePath, sourceFile));
       violations.push(...codeGovernedTargetViolations(relativePath, sourceFile));
@@ -1647,41 +1727,18 @@ export function isDeploymentAuthorityBoundaryPath(relativePath: string): boolean
   return ACTIVE_SCRIPT_PREFIXES.some((prefix) => relativePath.startsWith(prefix));
 }
 
-function trackedAndUntrackedFiles(repositoryRoot: string): readonly string[] {
-  const result = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error('Unable to enumerate repository files for the deployment authority boundary guard.');
-  }
-  return result.stdout.split('\0').filter(Boolean);
-}
-
 export function findDeploymentAuthorityBoundaryViolations(
   repositoryRoot: string,
 ): readonly DeploymentAuthorityBoundaryViolation[] {
-  const violations: DeploymentAuthorityBoundaryViolation[] = [];
-  for (const relativePath of trackedAndUntrackedFiles(repositoryRoot)) {
-    if (!isDeploymentAuthorityBoundaryPath(relativePath)) {
-      continue;
-    }
-    const absolutePath = path.join(repositoryRoot, relativePath);
-    if (!existsSync(absolutePath)) {
-      continue;
-    }
-    violations.push(
-      ...findDeploymentAuthorityBoundaryViolationsInText(relativePath, readFileSync(absolutePath, 'utf8')),
-    );
-  }
-  return violations.sort(
-    (left, right) =>
-      left.path.localeCompare(right.path) ||
-      left.line - right.line ||
-      left.rule.localeCompare(right.rule) ||
-      (left.token ?? '').localeCompare(right.token ?? ''),
-  );
+  return scanRepositoryFiles(
+    repositoryRoot,
+    trackedAndUntrackedFiles(
+      repositoryRoot,
+      'Unable to enumerate repository files for the deployment authority boundary guard.',
+    ),
+    isDeploymentAuthorityBoundaryPath,
+    findDeploymentAuthorityBoundaryViolationsInText,
+  ).sort(compareSourceFindings);
 }
 
 function main(): void {

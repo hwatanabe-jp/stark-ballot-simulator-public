@@ -4,7 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import * as yazl from 'yazl';
-import { buildImageSignatureVerifierLambda } from './build-image-signature-verifier-lambda.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const outRoot = path.join(repoRoot, '.tmp/target-lambdas');
@@ -24,17 +23,41 @@ const targets = [
  * @typedef {{ verifierServiceBinaryPath?: string }} ZipOptions
  */
 
+/** @param {unknown} replacements @returns {string | undefined} */
+function readAliasReplacement(replacements) {
+  if (!Array.isArray(replacements) || replacements.length === 0) return undefined;
+  return typeof replacements[0] === 'string' ? replacements[0] : undefined;
+}
+
+/** @param {AliasEntry} entry @param {string} importPath @returns {string | undefined} */
+function wildcardAliasReplacement(entry, importPath) {
+  if (!importPath.startsWith(entry.prefix) || !importPath.endsWith(entry.suffix)) return undefined;
+  const wildcardValue = importPath.slice(entry.prefix.length, importPath.length - entry.suffix.length);
+  return entry.replacement.replace('*', wildcardValue);
+}
+
+/** @param {AliasEntry} entry @param {string} importPath @returns {string | undefined} */
+function matchAliasReplacement(entry, importPath) {
+  if (entry.wildcard) return wildcardAliasReplacement(entry, importPath);
+  return importPath === entry.pattern ? entry.replacement : undefined;
+}
+
+/** @param {string} candidate @returns {Promise<boolean>} */
+async function isSourceFile(candidate) {
+  try {
+    return (await stat(candidate)).isFile();
+  } catch {
+    // Try the next extension.
+    return false;
+  }
+}
+
 const tsconfig = JSON.parse(await readFile(tsconfigPath, 'utf8'));
 /** @type {AliasEntry[]} */
 const aliasEntries = Object.entries(tsconfig.compilerOptions?.paths ?? {})
   .flatMap(([pattern, replacements]) => {
-    if (!Array.isArray(replacements) || replacements.length === 0) {
-      return [];
-    }
-    const replacement = replacements[0];
-    if (typeof replacement !== 'string') {
-      return [];
-    }
+    const replacement = readAliasReplacement(replacements);
+    if (replacement === undefined) return [];
     const wildcardIndex = pattern.indexOf('*');
     if (wildcardIndex === -1) {
       return [
@@ -65,13 +88,8 @@ const aliasEntries = Object.entries(tsconfig.compilerOptions?.paths ?? {})
  */
 function resolveAliasPath(importPath) {
   for (const entry of aliasEntries) {
-    if (!entry.wildcard && importPath === entry.pattern) {
-      return path.resolve(path.dirname(tsconfigPath), entry.replacement);
-    }
-    if (entry.wildcard && importPath.startsWith(entry.prefix) && importPath.endsWith(entry.suffix)) {
-      const wildcardValue = importPath.slice(entry.prefix.length, importPath.length - entry.suffix.length);
-      return path.resolve(path.dirname(tsconfigPath), entry.replacement.replace('*', wildcardValue));
-    }
+    const replacement = matchAliasReplacement(entry, importPath);
+    if (replacement !== undefined) return path.resolve(path.dirname(tsconfigPath), replacement);
   }
   return undefined;
 }
@@ -94,13 +112,7 @@ async function resolveSourcePath(importPath) {
     path.join(basePath, 'index.tsx'),
     path.join(basePath, 'index.js'),
   ]) {
-    try {
-      if ((await stat(candidate)).isFile()) {
-        return candidate;
-      }
-    } catch {
-      // Try the next extension.
-    }
+    if (await isSourceFile(candidate)) return candidate;
   }
   return basePath;
 }
@@ -204,17 +216,30 @@ for (const [name, entry] of targets) {
   };
 }
 
-const imageSignatureVerifierBuildRoot = path.join(outRoot, '.image-signature-verifier-build');
-const imageSignatureVerifierManifest = await buildImageSignatureVerifierLambda({
-  platform: 'linux-amd64',
-  outputDirectory: imageSignatureVerifierBuildRoot,
-});
+// Prepare retains the exact ZIP that passed native signature verification.
+// Its bytes are checked here and again against admitted preflight authority by
+// the publisher; a missing package fails instead of rebuilding different bytes.
+const preflightPackage = JSON.parse(
+  await readFile(path.join(repoRoot, 'image-signature-preflight-validation.json'), 'utf8'),
+).verifier.package;
 const imageSignatureVerifierZipPath = path.join(outRoot, 'image_signature_verifier.zip');
 await copyFile(
-  path.join(imageSignatureVerifierBuildRoot, imageSignatureVerifierManifest.fileName),
+  path.join(repoRoot, '.tmp/app-signature-preflight/image-signature-verifier.zip'),
   imageSignatureVerifierZipPath,
 );
-await rm(imageSignatureVerifierBuildRoot, { recursive: true, force: true });
+const imageSignatureVerifierDigest = await sha256(imageSignatureVerifierZipPath);
+if (
+  imageSignatureVerifierDigest !== preflightPackage.sha256 ||
+  Buffer.from(imageSignatureVerifierDigest, 'hex').toString('base64') !== preflightPackage.source_code_hash
+) {
+  throw new Error('Retained signature verifier package differs from its preflighted bytes.');
+}
+const imageSignatureVerifierManifest = {
+  sha256: imageSignatureVerifierDigest,
+  sourceCodeHash: preflightPackage.source_code_hash,
+  assetManifestSha256: preflightPackage.asset_manifest_sha256,
+  trustRootSha256: preflightPackage.trust_root_sha256,
+};
 artifacts['image_signature_verifier'] = {
   entry: 'infra/lambdas/image-signature-verifier/index.mjs',
   fileName: 'image_signature_verifier.zip',

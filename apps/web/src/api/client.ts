@@ -1,3 +1,4 @@
+import type { BrowserSessionIdentity } from '../session/identity';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/api-contract/schemas/primitives';
 import {
   buildApiRouteUrlFromInput,
@@ -16,10 +17,7 @@ export interface ApiClientRequestOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface ApiSessionIdentity {
-  readonly sessionId: string;
-  readonly capabilityToken: string;
-}
+export type ApiSessionIdentity = BrowserSessionIdentity;
 
 export class ApiClientError extends Error {
   public readonly status: number;
@@ -75,7 +73,7 @@ export type JsonRouteResult<TRoute extends RouteLike> =
       : never
     : never;
 
-export async function admitJsonRouteResponse<const TRoute extends RouteLike>(
+async function admitJsonRouteResponse<const TRoute extends RouteLike>(
   route: TRoute,
   response: Response,
   label: string,
@@ -212,15 +210,11 @@ function serializeRequestBody(value: unknown, label: string): string {
   }
 }
 
-function prepareJsonRouteRequest<const TRoute extends OrdinaryJsonRoute>(
-  route: TRoute,
-  input: RouteInput<TRoute>,
+function assertRequestInputLocations(
+  route: OrdinaryJsonRoute,
+  input: Readonly<Record<string, unknown>>,
   label: string,
-): PreparedJsonRouteRequest {
-  if (!isRecord(input)) {
-    throw requestContractError(label, 'input', 'expected an object');
-  }
-
+): void {
   const declaredLocations = new Set<RequestInputLocation>();
   for (const location of REQUEST_INPUT_LOCATIONS) {
     if (route.request[location] !== undefined) {
@@ -233,6 +227,18 @@ function prepareJsonRouteRequest<const TRoute extends OrdinaryJsonRoute>(
   if (unexpectedLocation !== undefined) {
     throw requestContractError(label, 'input', `unexpected location ${unexpectedLocation}`);
   }
+}
+
+function prepareJsonRouteRequest<const TRoute extends OrdinaryJsonRoute>(
+  route: TRoute,
+  input: RouteInput<TRoute>,
+  label: string,
+): PreparedJsonRouteRequest {
+  if (!isRecord(input)) {
+    throw requestContractError(label, 'input', 'expected an object');
+  }
+
+  assertRequestInputLocations(route, input, label);
 
   admitRequestLocation(route, input, 'params', label);
   const admittedHeaders = admitRequestLocation(route, input, 'headers', label);

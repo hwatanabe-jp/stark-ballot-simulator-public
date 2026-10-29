@@ -1,7 +1,16 @@
+import { Writable } from 'node:stream';
+import { createHash } from 'node:crypto';
+import type { APIGatewayProxyResult } from '@hono/aws-lambda';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  honoHandler: vi.fn(async () => await Promise.resolve({ statusCode: 200 })),
+  honoHandler: vi.fn(async (): Promise<APIGatewayProxyResult> => ({
+    statusCode: 200,
+    body: '',
+    isBase64Encoded: false,
+    headers: {},
+  })),
+  responseMetadata: vi.fn((stream: Writable, _metadata: unknown) => stream),
   bootstrapLambdaRuntime: vi.fn(
     async (options: {
       serviceName: string;
@@ -24,7 +33,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('hono/aws-lambda', () => ({
+vi.mock('@hono/aws-lambda', () => ({
   handle: vi.fn(() => mocks.honoHandler),
 }));
 
@@ -66,21 +75,48 @@ const resolverModule = await import('@stark-ballot/aws-adapters/config/awsRuntim
 const apiModule = await import('@stark-ballot/api/server');
 const observabilityModule = await import('@stark-ballot/runtime-config/env/observability');
 const envModule = await import('@stark-ballot/runtime-config/env/validate');
+vi.stubGlobal('awslambda', {
+  streamifyResponse: (handler: unknown) => handler,
+  HttpResponseStream: { from: mocks.responseMetadata },
+});
 const { handler } = await import('./handler');
+
+async function invoke(event: unknown, context: unknown) {
+  const chunks: Buffer[] = [];
+  const stream = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  await (handler as (...args: unknown[]) => Promise<void>)(event, stream, context);
+  return {
+    metadata: mocks.responseMetadata.mock.lastCall?.[1],
+    body: Buffer.concat(chunks),
+    ended: stream.writableFinished,
+  };
+}
+
+async function invokeStatus(event: unknown, context: unknown) {
+  const result = await invoke(event, context);
+  return { statusCode: (result.metadata as { statusCode: number }).statusCode };
+}
 
 function createValidGatewayEvent(requestId = 'trusted-gateway-id'): Record<string, unknown> {
   const sessionId = '550e8400-e29b-41d4-a716-446655440000';
   const progressPath = `/api/sessions/${sessionId}/progress`;
   return {
-    version: '2.0',
-    rawPath: progressPath,
-    rawQueryString: '',
+    resource: '/api/sessions/{sessionId}/progress',
+    path: progressPath,
+    httpMethod: 'GET',
+    body: null,
+    isBase64Encoded: false,
     requestContext: {
-      requestId,
-      http: {
-        method: 'GET',
-        path: progressPath,
-      },
+      requestId: 'client-overridable',
+      extendedRequestId: requestId,
+      stage: 'live',
+      domainName: 'example.execute-api.ap-northeast-1.amazonaws.com',
+      identity: { sourceIp: '203.0.113.1' },
     },
   };
 }
@@ -93,8 +129,8 @@ describe('target public API handler', () => {
     mocks.runtimeProfile.external = { kind: 'aws', region: 'ap-northeast-1' };
   });
 
-  it('bootstraps references and component validation before handling a valid API Gateway v2 invocation', async () => {
-    await (handler as (...args: unknown[]) => Promise<unknown>)(createValidGatewayEvent(), {
+  it('bootstraps references and component validation before handling a valid API Gateway REST invocation', async () => {
+    await invokeStatus(createValidGatewayEvent(), {
       awsRequestId: 'lambda-request-1',
     });
 
@@ -123,9 +159,9 @@ describe('target public API handler', () => {
     mocks.runtimeProfile.target = { kind: 'local', deploymentEnvironment: 'local' };
     mocks.runtimeProfile.external = { kind: 'local', region: 'local' };
 
-    await expect(
-      (handler as (...args: unknown[]) => Promise<unknown>)(createValidGatewayEvent(), { awsRequestId: 'request-1' }),
-    ).rejects.toThrow('target AWS runtime profile');
+    await expect(invokeStatus(createValidGatewayEvent(), { awsRequestId: 'request-1' })).rejects.toThrow(
+      'target AWS runtime profile',
+    );
 
     expect(mocks.honoHandler).not.toHaveBeenCalled();
     expect(apiModule.createHonoApp).not.toHaveBeenCalled();
@@ -134,9 +170,9 @@ describe('target public API handler', () => {
   it('allows the develop-only quiesced AWS recovery profile', async () => {
     mocks.runtimeProfile.name = 'target-aws-async-quiesced';
 
-    await expect(
-      (handler as (...args: unknown[]) => Promise<unknown>)(createValidGatewayEvent(), { awsRequestId: 'request-1' }),
-    ).resolves.toEqual({ statusCode: 200 });
+    await expect(invokeStatus(createValidGatewayEvent(), { awsRequestId: 'request-1' })).resolves.toEqual({
+      statusCode: 200,
+    });
 
     expect(observabilityModule.validateTargetObservabilityEnv).toHaveBeenCalledWith(mocks.runtimeProfile, process.env);
     expect(mocks.honoHandler).toHaveBeenCalledTimes(1);
@@ -148,9 +184,9 @@ describe('target public API handler', () => {
       throw observabilityError;
     });
 
-    await expect(
-      (handler as (...args: unknown[]) => Promise<unknown>)(createValidGatewayEvent(), { awsRequestId: 'request-1' }),
-    ).rejects.toThrow(observabilityError);
+    await expect(invokeStatus(createValidGatewayEvent(), { awsRequestId: 'request-1' })).rejects.toThrow(
+      observabilityError,
+    );
 
     const resolverCall = vi.mocked(resolverModule.ensureAwsRuntimeConfigReferencesLoaded).mock.calls.at(-1);
     expect(resolverCall?.[0]).toBe('public_api');
@@ -158,11 +194,10 @@ describe('target public API handler', () => {
     expect(mocks.honoHandler).not.toHaveBeenCalled();
   });
 
-  it('emits invocation_invalid without the raw event when requestContext.requestId is missing', async () => {
+  it('emits invocation_invalid without the raw event when requestContext.extendedRequestId is missing', async () => {
     const rawSessionId = '550e8400-e29b-41d4-a716-446655440000';
     const malformedEvent = {
-      version: '2.0',
-      rawPath: `/api/sessions/${rawSessionId}/finalizations/current`,
+      path: `/api/sessions/${rawSessionId}/finalizations/current`,
       headers: {
         'x-request-id': rawSessionId,
         'x-session-capability': 'v1.ABCDEFGHIJKLMNOP.QRSTUVWXYZabcdef',
@@ -170,35 +205,90 @@ describe('target public API handler', () => {
       requestContext: {},
     };
 
-    await expect(
-      (handler as (...args: unknown[]) => Promise<unknown>)(malformedEvent, { awsRequestId: 'lambda-request-1' }),
-    ).rejects.toThrow('Invalid API Gateway v2 invocation');
+    await expect(invokeStatus(malformedEvent, { awsRequestId: 'lambda-request-1' })).rejects.toThrow(
+      'Invalid API Gateway REST invocation',
+    );
 
     expect(mocks.bootstrapLambdaRuntime).toHaveBeenCalledTimes(1);
     expect(mocks.honoHandler).not.toHaveBeenCalled();
     expect(mocks.loggerError).toHaveBeenCalledWith('API Gateway invocation is invalid', {
       event: 'invocation_invalid',
-      source_kind: 'api_gateway_v2',
+      source_kind: 'api_gateway_rest',
       reason: 'request_id_missing',
     });
     expect(JSON.stringify(mocks.loggerError.mock.calls)).not.toContain(rawSessionId);
   });
 
-  it('rejects non-v2 gateway shapes before the Hono adapter inspects them', async () => {
+  it('rejects HTTP gateway shapes before the Hono adapter inspects them', async () => {
     const malformedEvent = {
       version: '2.0',
-      requestContext: { requestId: 'trusted-gateway-id' },
+      requestContext: { extendedRequestId: 'trusted-gateway-id' },
     };
 
-    await expect(
-      (handler as (...args: unknown[]) => Promise<unknown>)(malformedEvent, { awsRequestId: 'lambda-request-1' }),
-    ).rejects.toThrow('Invalid API Gateway v2 invocation');
+    await expect(invokeStatus(malformedEvent, { awsRequestId: 'lambda-request-1' })).rejects.toThrow(
+      'Invalid API Gateway REST invocation',
+    );
 
     expect(mocks.honoHandler).not.toHaveBeenCalled();
     expect(mocks.loggerError).toHaveBeenCalledWith('API Gateway invocation is invalid', {
       event: 'invocation_invalid',
-      source_kind: 'api_gateway_v2',
+      source_kind: 'api_gateway_rest',
       reason: 'event_shape_invalid',
     });
+  });
+  it.each([false, true])('streams exact response bytes and multi-value headers (binary=%s)', async (binary) => {
+    const bytes = binary ? Buffer.alloc(4 * 1024 * 1024, 193) : Buffer.from('{"message":"投票😀"}');
+    const metadata = {
+      statusCode: binary ? 206 : 200,
+      multiValueHeaders: {
+        'content-type': [binary ? 'application/zip' : 'application/json'],
+        etag: ['"exact-artifact"'],
+        'x-request-id': ['trusted-gateway-id'],
+        'set-cookie': ['first=1', 'second=2'],
+        ...(binary ? { 'content-range': [`bytes 0-${bytes.length - 1}/${bytes.length + 1}`] } : {}),
+      },
+    };
+    mocks.honoHandler.mockResolvedValueOnce({
+      ...metadata,
+      body: bytes.toString(binary ? 'base64' : 'utf8'),
+      isBase64Encoded: binary,
+    });
+    const result = await invoke(createValidGatewayEvent(), { awsRequestId: 'request-1' });
+    expect(result.metadata).toEqual(metadata);
+    expect(createHash('sha256').update(result.body).digest('hex')).toBe(
+      createHash('sha256').update(bytes).digest('hex'),
+    );
+    expect(result.ended).toBe(true);
+  });
+
+  it.each([204, 304, 416])('ends an empty response with status %s', async (statusCode) => {
+    mocks.honoHandler.mockResolvedValueOnce({
+      statusCode,
+      body: '',
+      isBase64Encoded: false,
+      headers: { etag: '"artifact"' },
+    });
+    const result = await invoke(createValidGatewayEvent(), { awsRequestId: 'request-1' });
+    expect(result.metadata).toEqual({ statusCode, headers: { etag: '"artifact"' } });
+    expect(result.body.length).toBe(0);
+    expect(result.ended).toBe(true);
+  });
+
+  it('does not start a successful response when Hono fails', async () => {
+    mocks.honoHandler.mockRejectedValueOnce(new Error('upstream failed'));
+    await expect(invoke(createValidGatewayEvent(), { awsRequestId: 'request-1' })).rejects.toThrow('upstream failed');
+    expect(mocks.responseMetadata).not.toHaveBeenCalled();
+  });
+
+  it('propagates response stream failures', async () => {
+    mocks.honoHandler.mockResolvedValueOnce({ statusCode: 200, body: 'response', isBase64Encoded: false, headers: {} });
+    const stream = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback(new Error('stream closed'));
+      },
+    });
+    await expect(
+      (handler as (...args: unknown[]) => Promise<void>)(createValidGatewayEvent(), stream, {}),
+    ).rejects.toThrow('stream closed');
   });
 });

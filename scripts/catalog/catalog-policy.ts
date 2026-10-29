@@ -1,3 +1,5 @@
+import { isNonArrayObject as isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { requireRecord, requireString } from '../validation/manifest-admission';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -137,20 +139,6 @@ export function assertGuestSafePortalText(text: string, label: string): void {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new Error(`${label} must be an object`);
-  return value;
-}
-
-function requireString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} must be a nonempty string`);
-  return value;
-}
-
 function entityRef(entity: Entity): string {
   return `${entity.kind.toLowerCase()}:${entity.metadata.namespace ?? 'default'}/${entity.metadata.name}`;
 }
@@ -285,6 +273,17 @@ function catalogGraphProjection(entity: Entity): {
   };
 }
 
+function validateCatalogEntityMetadata(entity: Entity): void {
+  const metadata = requireRecord(entity.metadata, `${entityRef(entity)} metadata`);
+  const tags = metadata['tags'];
+  if (!Array.isArray(tags) || JSON.stringify(tags) !== JSON.stringify(['guest-visible'])) {
+    throw new Error(`${entityRef(entity)} must be explicitly guest-visible`);
+  }
+  if ('relations' in entity || 'status' in entity) {
+    throw new Error(`${entityRef(entity)} may not declare processor-owned relations or status`);
+  }
+}
+
 function validateCatalogGraph(
   entities: readonly Entity[],
   repositoryAnnotation: string,
@@ -300,14 +299,7 @@ function validateCatalogGraph(
   const refSet = new Set(refs);
   const graph: Record<string, unknown> = {};
   for (const entity of entities) {
-    const metadata = requireRecord(entity.metadata, `${entityRef(entity)} metadata`);
-    const tags = metadata['tags'];
-    if (!Array.isArray(tags) || JSON.stringify(tags) !== JSON.stringify(['guest-visible'])) {
-      throw new Error(`${entityRef(entity)} must be explicitly guest-visible`);
-    }
-    if ('relations' in entity || 'status' in entity) {
-      throw new Error(`${entityRef(entity)} may not declare processor-owned relations or status`);
-    }
+    validateCatalogEntityMetadata(entity);
     graph[entityRef(entity)] = catalogGraphProjection(entity);
     for (const relationship of collectRelationshipRefs(entity)) {
       if (!refSet.has(relationship)) throw new Error(`${entityRef(entity)} references missing entity ${relationship}`);
@@ -363,10 +355,7 @@ function collectNavTargets(value: unknown, targets: string[] = []): string[] {
   return targets;
 }
 
-async function validateTechDocs(repoRoot: string): Promise<readonly string[]> {
-  const configText = await readFile(path.join(repoRoot, TECHDOCS_CONFIG_PATH), 'utf8');
-  const config: unknown = parse(configText);
-  const record = requireRecord(config, 'TechDocs configuration');
+function validateTechDocsConfiguration(record: Record<string, unknown>): void {
   const configKeys = Object.keys(record).sort();
   const expectedConfigKeys = ['docs_dir', 'nav', 'plugins', 'site_description', 'site_name', 'strict', 'theme'];
   if (JSON.stringify(configKeys) !== JSON.stringify(expectedConfigKeys)) {
@@ -381,6 +370,13 @@ async function validateTechDocs(repoRoot: string): Promise<readonly string[]> {
   if (!isDeepStrictEqual(record['theme'], { name: 'material', font: false })) {
     throw new Error('TechDocs must use the reviewed Material theme without external fonts');
   }
+}
+
+async function validateTechDocs(repoRoot: string): Promise<readonly string[]> {
+  const configText = await readFile(path.join(repoRoot, TECHDOCS_CONFIG_PATH), 'utf8');
+  const config: unknown = parse(configText);
+  const record = requireRecord(config, 'TechDocs configuration');
+  validateTechDocsConfiguration(record);
   const sourceRoot = path.join(repoRoot, TECHDOCS_SOURCE_PATH);
   const pages = await walkRegularMarkdownFiles(sourceRoot);
   const navTargets = collectNavTargets(record['nav']).sort();

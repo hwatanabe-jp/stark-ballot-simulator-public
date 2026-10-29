@@ -27,28 +27,15 @@ export function normalizeExecutionReceipt(
   executionReceipt: { imageId?: string; payload?: unknown } | undefined,
   fallbackImageId: string,
 ): NormalizedExecutionReceipt {
-  if (!executionReceipt || !executionReceipt.payload || typeof executionReceipt.payload !== 'object') {
-    throw new Error('zkVM execution did not return a modern receipt payload');
-  }
-
-  const payload = executionReceipt.payload as Record<string, unknown>;
+  if (!executionReceipt) throw new Error('zkVM execution did not return a modern receipt payload');
+  const payload = readExecutionPayload(executionReceipt.payload);
   const isFakeReceipt = isFakeReceiptPayload(payload);
 
   const modern = extractModernProof(payload);
   const composite = modern ? undefined : extractCompositeProof(payload);
 
-  let seal = extractSealBase64(payload['seal']) ?? modern?.sealBase64 ?? composite?.sealBase64;
-  let journal = extractJournalBase64(payload['journal']) ?? modern?.journalBase64 ?? composite?.journalBase64;
-
-  if (!seal && isFakeReceipt) {
-    seal = Buffer.from('dev-mode-fake-receipt').toString('base64');
-  }
-
-  if (!journal && isFakeReceipt) {
-    const fallback =
-      typeof payload['journal'] === 'object' && payload['journal'] !== null ? payload['journal'] : { fake: true };
-    journal = Buffer.from(JSON.stringify(fallback)).toString('base64');
-  }
+  const seal = resolveNormalizedSeal(payload, modern, composite, isFakeReceipt);
+  const journal = resolveNormalizedJournal(payload, modern, composite, isFakeReceipt);
 
   if (!seal) {
     throw new Error('Receipt seal is missing or invalid (tried direct, modern, and composite formats)');
@@ -61,12 +48,7 @@ export function normalizeExecutionReceipt(
   const imageId =
     (typeof executionReceipt.imageId === 'string' ? executionReceipt.imageId : undefined) ?? fallbackImageId;
 
-  const metadata =
-    isFakeReceipt && typeof payload['metadata'] === 'object' && payload['metadata'] !== null
-      ? { ...(payload['metadata'] as Record<string, unknown>), isFake: true }
-      : isFakeReceipt
-        ? { isFake: true }
-        : undefined;
+  const metadata = projectReceiptMetadata(payload, isFakeReceipt);
 
   return {
     receipt: {
@@ -77,6 +59,45 @@ export function normalizeExecutionReceipt(
     },
     rawPayload: admitReceiptPayload(payload),
   };
+}
+
+function readExecutionPayload(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') throw new Error('zkVM execution did not return a modern receipt payload');
+  return value as Record<string, unknown>;
+}
+
+function resolveNormalizedSeal(
+  payload: Record<string, unknown>,
+  modern: ReceiptFormat | undefined,
+  composite: ReceiptFormat | undefined,
+  isFakeReceipt: boolean,
+): string | undefined {
+  const seal = extractSealBase64(payload['seal']) ?? modern?.sealBase64 ?? composite?.sealBase64;
+  return !seal && isFakeReceipt ? Buffer.from('dev-mode-fake-receipt').toString('base64') : seal;
+}
+
+function resolveNormalizedJournal(
+  payload: Record<string, unknown>,
+  modern: ReceiptFormat | undefined,
+  composite: ReceiptFormat | undefined,
+  isFakeReceipt: boolean,
+): string | undefined {
+  const journal = extractJournalBase64(payload['journal']) ?? modern?.journalBase64 ?? composite?.journalBase64;
+  return !journal && isFakeReceipt ? fakeJournalBase64(payload) : journal;
+}
+
+function fakeJournalBase64(payload: Record<string, unknown>): string {
+  const fallback =
+    typeof payload['journal'] === 'object' && payload['journal'] !== null ? payload['journal'] : { fake: true };
+  return Buffer.from(JSON.stringify(fallback)).toString('base64');
+}
+
+function projectReceiptMetadata(payload: Record<string, unknown>, isFakeReceipt: boolean) {
+  return isFakeReceipt && typeof payload['metadata'] === 'object' && payload['metadata'] !== null
+    ? { ...(payload['metadata'] as Record<string, unknown>), isFake: true }
+    : isFakeReceipt
+      ? { isFake: true }
+      : undefined;
 }
 
 function isFakeReceiptPayload(payload: Record<string, unknown>): boolean {
@@ -143,6 +164,14 @@ function extractJournalBase64(journalValue: unknown): string | undefined {
   return undefined;
 }
 
+function firstReceiptString(record: Record<string, unknown>, first: string, second: string): string | undefined {
+  return typeof record[first] === 'string'
+    ? record[first]
+    : typeof record[second] === 'string'
+      ? record[second]
+      : undefined;
+}
+
 function extractModernProof(payload: Record<string, unknown>): ReceiptFormat | undefined {
   const modernCandidate = payload['modernReceipt'] ?? payload['modern_receipt'];
   if (!modernCandidate || typeof modernCandidate !== 'object') {
@@ -150,22 +179,12 @@ function extractModernProof(payload: Record<string, unknown>): ReceiptFormat | u
   }
 
   const modern = modernCandidate as Record<string, unknown>;
-  const seal =
-    typeof modern['seal'] === 'string'
-      ? modern['seal']
-      : typeof modern['seal_base64'] === 'string'
-        ? modern['seal_base64']
-        : undefined;
+  const seal = firstReceiptString(modern, 'seal', 'seal_base64');
   if (!seal) {
     return undefined;
   }
 
-  const journal =
-    typeof modern['journal'] === 'string'
-      ? modern['journal']
-      : typeof modern['journal_base64'] === 'string'
-        ? modern['journal_base64']
-        : undefined;
+  const journal = firstReceiptString(modern, 'journal', 'journal_base64');
 
   const receiptKind = typeof modern['kind'] === 'string' ? modern['kind'] : undefined;
 
@@ -195,13 +214,19 @@ function extractCompositeProof(payload: Record<string, unknown>): ReceiptFormat 
 
   const sealBase64 = encodeSealWordsToBase64(sealValues);
 
+  const journalBase64 = extractCompositeJournal(payload);
+
+  return { sealBase64, ...omitUndefinedProperties({ journalBase64 }), receiptKind: 'composite' };
+}
+
+function extractCompositeJournal(payload: Record<string, unknown>): string | undefined {
   let journalBase64: string | undefined;
   const journal = payload['journal'] as Record<string, unknown> | undefined;
   if (journal && typeof journal === 'object' && Array.isArray(journal['bytes'])) {
     journalBase64 = encodeBytesToBase64(journal['bytes']);
   }
 
-  return { sealBase64, ...omitUndefinedProperties({ journalBase64 }), receiptKind: 'composite' };
+  return journalBase64;
 }
 
 function encodeSealWordsToBase64(values: unknown[]): string {

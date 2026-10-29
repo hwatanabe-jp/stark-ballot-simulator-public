@@ -1,4 +1,4 @@
-export interface PollAttemptContext<T> {
+interface PollAttemptContext<T> {
   readonly attempt: number;
   readonly previousResult: T | undefined;
 }
@@ -8,7 +8,7 @@ export interface PollDelayContext<T> {
   readonly result: T | undefined;
 }
 
-export interface PollTimeoutContext<T> {
+interface PollTimeoutContext<T> {
   readonly attempts: number;
   readonly lastResult: T | undefined;
 }

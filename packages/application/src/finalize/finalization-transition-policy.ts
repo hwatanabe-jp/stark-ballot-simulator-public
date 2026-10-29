@@ -197,7 +197,7 @@ function admitScenarioContext(value: FinalizationScenarioContext | undefined): F
   return value === undefined ? undefined : parseFinalizationScenarioContext(value);
 }
 
-function admitCommand(command: FinalizationTransitionCommand):
+type CommandAdmission =
   | {
       admitted: true;
       command: AdmittedFinalizationCommand;
@@ -205,7 +205,11 @@ function admitCommand(command: FinalizationTransitionCommand):
   | {
       admitted: false;
       reason: InvalidFinalizationTransitionReason;
-    } {
+    };
+
+type AdmittedCommandIdentity = Omit<AdmittedFinalizationCommand, 'state'>;
+
+function admitCommand(command: FinalizationTransitionCommand): CommandAdmission {
   const invalidBaseReason = hasValidBase(command);
   if (invalidBaseReason) {
     return { admitted: false, reason: invalidBaseReason };
@@ -219,10 +223,7 @@ function admitCommand(command: FinalizationTransitionCommand):
     return { admitted: false, reason: 'invalid_error' };
   }
   const scenarioContext = admitScenarioContext(command.scenarioContext);
-  if (command.scenarioContext !== undefined && !scenarioContext) {
-    return { admitted: false, reason: 'invalid_scenario_context' };
-  }
-  if (command.kind === 'queue' && !scenarioContext) {
+  if (!hasRequiredScenarioContext(command, scenarioContext)) {
     return { admitted: false, reason: 'invalid_scenario_context' };
   }
   const reason = command.reason ?? resolveDefaultReason(command);
@@ -234,130 +235,182 @@ function admitCommand(command: FinalizationTransitionCommand):
     ...(scenarioContext ? { scenarioContext } : {}),
   };
 
+  return admitCommandState(command, base);
+}
+
+function hasRequiredScenarioContext(
+  command: FinalizationTransitionCommand,
+  context: FinalizationScenarioContext | undefined,
+): boolean {
+  return context !== undefined || (command.scenarioContext === undefined && command.kind !== 'queue');
+}
+
+function admitCommandState(command: FinalizationTransitionCommand, base: AdmittedCommandIdentity): CommandAdmission {
   switch (command.kind) {
     case 'queue':
-      return {
-        admitted: true,
-        command: {
-          ...base,
-          state: {
-            status: 'pending',
-            finalizationId,
-            queuedAtMs: command.queuedAtMs,
-          },
-        },
-      };
+      return admitQueue(command, base);
     case 'start':
-      if (!hasValidStartedAt(command.queuedAtMs, command.startedAtMs)) {
-        return { admitted: false, reason: 'invalid_timestamp' };
-      }
-      return {
-        admitted: true,
-        command: {
-          ...base,
-          state: {
-            status: 'running',
-            finalizationId,
-            queuedAtMs: command.queuedAtMs,
-            startedAtMs: command.startedAtMs,
-          },
-        },
-      };
-    case 'succeed': {
-      if (
-        !hasValidStartedAt(command.queuedAtMs, command.startedAtMs) ||
-        !hasValidTerminalAt(command.startedAtMs, command.completedAtMs)
-      ) {
-        return { admitted: false, reason: 'invalid_timestamp' };
-      }
-      const successfulResult = admitFinalizationResultAuthority(command.finalizationResult);
-      return {
-        admitted: true,
-        command: {
-          ...base,
-          state: {
-            status: 'succeeded',
-            finalizationId,
-            queuedAtMs: command.queuedAtMs,
-            startedAtMs: command.startedAtMs,
-            completedAtMs: command.completedAtMs,
-          },
-          ...(successfulResult?.journal
-            ? { successfulResult }
-            : {
-                invalidSuccessfulResult: true,
-              }),
-        },
-      };
-    }
+      return admitStart(command, base);
+    case 'succeed':
+      return admitSuccess(command, base);
     case 'fail':
-      if (
-        !hasValidOptionalStartedAt(command.queuedAtMs, command.startedAtMs) ||
-        !hasValidTerminalAt(command.startedAtMs ?? command.queuedAtMs, command.failedAtMs)
-      ) {
-        return { admitted: false, reason: 'invalid_timestamp' };
-      }
-      return {
-        admitted: true,
-        command: {
-          ...base,
-          state: {
-            status: 'failed',
-            finalizationId,
-            queuedAtMs: command.queuedAtMs,
-            ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
-            failedAtMs: command.failedAtMs,
-            error: command.error,
-          },
-        },
-      };
+      return admitFailure(command, base);
     case 'time_out':
-      if (
-        !hasValidOptionalStartedAt(command.queuedAtMs, command.startedAtMs) ||
-        !hasValidTerminalAt(command.startedAtMs ?? command.queuedAtMs, command.timeoutAtMs)
-      ) {
-        return { admitted: false, reason: 'invalid_timestamp' };
-      }
-      return {
-        admitted: true,
-        command: {
-          ...base,
-          state: {
-            status: 'timeout',
-            finalizationId,
-            queuedAtMs: command.queuedAtMs,
-            ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
-            timeoutAtMs: command.timeoutAtMs,
-          },
-        },
-      };
+      return admitTimeout(command, base);
     case 'cancel':
-      if (
-        !hasValidOptionalStartedAt(command.queuedAtMs, command.startedAtMs) ||
-        !hasValidTerminalAt(command.startedAtMs ?? command.queuedAtMs, command.failedAtMs) ||
-        typeof command.message !== 'string' ||
-        command.message.trim().length === 0
-      ) {
-        return { admitted: false, reason: 'invalid_error' };
-      }
-      return {
-        admitted: true,
-        command: {
-          ...base,
-          state: {
-            status: 'failed',
-            finalizationId,
-            queuedAtMs: command.queuedAtMs,
-            ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
-            failedAtMs: command.failedAtMs,
-            error: {
-              code: 'USER_CANCELLED',
-              message: command.message,
-            },
-          },
-        },
-      };
+      return admitCancellation(command, base);
   }
+}
+
+function admitQueue(
+  command: Extract<FinalizationTransitionCommand, { kind: 'queue' }>,
+  base: AdmittedCommandIdentity,
+): CommandAdmission {
+  return {
+    admitted: true,
+    command: {
+      ...base,
+      state: {
+        status: 'pending',
+        finalizationId: base.finalizationId,
+        queuedAtMs: command.queuedAtMs,
+      },
+    },
+  };
+}
+
+function admitStart(
+  command: Extract<FinalizationTransitionCommand, { kind: 'start' }>,
+  base: AdmittedCommandIdentity,
+): CommandAdmission {
+  if (!hasValidStartedAt(command.queuedAtMs, command.startedAtMs)) {
+    return { admitted: false, reason: 'invalid_timestamp' };
+  }
+  return {
+    admitted: true,
+    command: {
+      ...base,
+      state: {
+        status: 'running',
+        finalizationId: base.finalizationId,
+        queuedAtMs: command.queuedAtMs,
+        startedAtMs: command.startedAtMs,
+      },
+    },
+  };
+}
+
+function admitSuccess(
+  command: Extract<FinalizationTransitionCommand, { kind: 'succeed' }>,
+  base: AdmittedCommandIdentity,
+): CommandAdmission {
+  if (
+    !hasValidStartedAt(command.queuedAtMs, command.startedAtMs) ||
+    !hasValidTerminalAt(command.startedAtMs, command.completedAtMs)
+  ) {
+    return { admitted: false, reason: 'invalid_timestamp' };
+  }
+  const successfulResult = admitFinalizationResultAuthority(command.finalizationResult);
+  return {
+    admitted: true,
+    command: {
+      ...base,
+      state: {
+        status: 'succeeded',
+        finalizationId: base.finalizationId,
+        queuedAtMs: command.queuedAtMs,
+        startedAtMs: command.startedAtMs,
+        completedAtMs: command.completedAtMs,
+      },
+      ...(successfulResult?.journal
+        ? { successfulResult }
+        : {
+            invalidSuccessfulResult: true,
+          }),
+    },
+  };
+}
+
+function admitFailure(
+  command: Extract<FinalizationTransitionCommand, { kind: 'fail' }>,
+  base: AdmittedCommandIdentity,
+): CommandAdmission {
+  if (
+    !hasValidOptionalStartedAt(command.queuedAtMs, command.startedAtMs) ||
+    !hasValidTerminalAt(command.startedAtMs ?? command.queuedAtMs, command.failedAtMs)
+  ) {
+    return { admitted: false, reason: 'invalid_timestamp' };
+  }
+  return {
+    admitted: true,
+    command: {
+      ...base,
+      state: {
+        status: 'failed',
+        finalizationId: base.finalizationId,
+        queuedAtMs: command.queuedAtMs,
+        ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
+        failedAtMs: command.failedAtMs,
+        error: command.error,
+      },
+    },
+  };
+}
+
+function admitTimeout(
+  command: Extract<FinalizationTransitionCommand, { kind: 'time_out' }>,
+  base: AdmittedCommandIdentity,
+): CommandAdmission {
+  if (
+    !hasValidOptionalStartedAt(command.queuedAtMs, command.startedAtMs) ||
+    !hasValidTerminalAt(command.startedAtMs ?? command.queuedAtMs, command.timeoutAtMs)
+  ) {
+    return { admitted: false, reason: 'invalid_timestamp' };
+  }
+  return {
+    admitted: true,
+    command: {
+      ...base,
+      state: {
+        status: 'timeout',
+        finalizationId: base.finalizationId,
+        queuedAtMs: command.queuedAtMs,
+        ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
+        timeoutAtMs: command.timeoutAtMs,
+      },
+    },
+  };
+}
+
+function admitCancellation(
+  command: Extract<FinalizationTransitionCommand, { kind: 'cancel' }>,
+  base: AdmittedCommandIdentity,
+): CommandAdmission {
+  if (
+    !hasValidOptionalStartedAt(command.queuedAtMs, command.startedAtMs) ||
+    !hasValidTerminalAt(command.startedAtMs ?? command.queuedAtMs, command.failedAtMs) ||
+    typeof command.message !== 'string' ||
+    command.message.trim().length === 0
+  ) {
+    return { admitted: false, reason: 'invalid_error' };
+  }
+  return {
+    admitted: true,
+    command: {
+      ...base,
+      state: {
+        status: 'failed',
+        finalizationId: base.finalizationId,
+        queuedAtMs: command.queuedAtMs,
+        ...(command.startedAtMs === undefined ? {} : { startedAtMs: command.startedAtMs }),
+        failedAtMs: command.failedAtMs,
+        error: {
+          code: 'USER_CANCELLED',
+          message: command.message,
+        },
+      },
+    },
+  };
 }
 
 function isTerminalState(state: FinalizationState): boolean {
@@ -423,6 +476,45 @@ function buildNextRecord(
   };
 }
 
+function evaluatePriorFinalizationState(
+  kind: FinalizationTransitionCommand['kind'],
+  nextState: FinalizationState,
+  state: FinalizationState | null,
+): FinalizationTransitionOutcome | undefined {
+  if (kind === 'cancel') {
+    if (!isCurrentCancellableState(state, nextState.finalizationId)) {
+      return {
+        kind: 'rejected',
+        state,
+        reason: 'FINALIZATION_NOT_CANCELLABLE',
+      };
+    }
+  } else if (state && state.finalizationId === nextState.finalizationId && isTerminalState(state)) {
+    if (state.status === nextState.status) {
+      return {
+        kind: 'idempotent',
+        state,
+        reason: 'IDEMPOTENT_RETRY',
+      };
+    }
+    return {
+      kind: 'rejected',
+      state,
+      reason: resolveTerminalRejectionReason(state),
+    };
+  }
+
+  if (state && state.finalizationId !== nextState.finalizationId) {
+    return {
+      kind: 'rejected',
+      state,
+      reason: 'EXECUTION_MISMATCH',
+    };
+  }
+
+  return undefined;
+}
+
 /**
  * Evaluates one finalization lifecycle command without reading external state
  * or performing persistence, logging, or clock I/O.
@@ -449,40 +541,8 @@ export function evaluateFinalizationTransition(input: {
     return invalidCommand(authority, 'invalid_session_id');
   }
 
-  if (command.kind === 'cancel') {
-    if (
-      !state ||
-      state.finalizationId !== admitted.state.finalizationId ||
-      (state.status !== 'pending' && state.status !== 'running')
-    ) {
-      return {
-        kind: 'rejected',
-        state,
-        reason: 'FINALIZATION_NOT_CANCELLABLE',
-      };
-    }
-  } else if (state && state.finalizationId === admitted.state.finalizationId && isTerminalState(state)) {
-    if (state.status === admitted.state.status) {
-      return {
-        kind: 'idempotent',
-        state,
-        reason: 'IDEMPOTENT_RETRY',
-      };
-    }
-    return {
-      kind: 'rejected',
-      state,
-      reason: resolveTerminalRejectionReason(state),
-    };
-  }
-
-  if (state && state.finalizationId !== admitted.state.finalizationId) {
-    return {
-      kind: 'rejected',
-      state,
-      reason: 'EXECUTION_MISMATCH',
-    };
-  }
+  const priorOutcome = evaluatePriorFinalizationState(command.kind, admitted.state, state);
+  if (priorOutcome) return priorOutcome;
 
   if (admitted.invalidSuccessfulResult) {
     return invalidCommand(authority, 'invalid_finalization_result');
@@ -511,4 +571,10 @@ export function evaluateFinalizationTransition(input: {
     reason: admitted.reason,
     mutations: { nextRecord },
   };
+}
+
+function isCurrentCancellableState(state: FinalizationState | null, finalizationId: FinalizationId): boolean {
+  return (
+    !!state && state.finalizationId === finalizationId && (state.status === 'pending' || state.status === 'running')
+  );
 }

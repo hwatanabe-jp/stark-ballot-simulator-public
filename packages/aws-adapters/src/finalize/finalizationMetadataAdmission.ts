@@ -1,3 +1,4 @@
+import { isNonArrayObject as isRecord, isNonNegativeSafeInteger } from '@stark-ballot/validation/unknown-value-guards';
 import type { AwsVerificationDeliveryMetadataInput } from './finalizationDeliveryMetadataStore';
 import type { AwsFinalizationBundleMetadata, AwsFinalizationRuntimeMetadata } from './finalizationRuntimeStore';
 
@@ -5,16 +6,8 @@ const BUNDLE_METADATA_KEYS = new Set(['s3BundleKey', 's3UploadedAtMs']);
 const DELIVERY_METADATA_KEYS = new Set(['s3BundleKey', 's3ReportKey', 's3UploadedAtMs', 'verificationWorkQueuedAtMs']);
 const RUNTIME_METADATA_KEYS = new Set(['stepFunctionsArn', 'bundleMetadata']);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function optionalNonEmptyString(value: Record<string, unknown>, key: string): string | undefined | null {
@@ -93,4 +86,46 @@ export function parseAwsFinalizationRuntimeMetadata(value: unknown): AwsFinaliza
     ...(stepFunctionsArn === undefined ? {} : { stepFunctionsArn }),
     ...(bundleMetadata === undefined ? {} : { bundleMetadata }),
   };
+}
+
+/** Apply an admitted runtime patch without replacing unrelated bundle fields. */
+export function mergeFinalizationRuntimeMetadata(
+  current: AwsFinalizationRuntimeMetadata | undefined,
+  patch: AwsFinalizationRuntimeMetadata,
+): AwsFinalizationRuntimeMetadata {
+  return {
+    ...(current ?? {}),
+    ...patch,
+    ...(current?.bundleMetadata || patch.bundleMetadata
+      ? { bundleMetadata: { ...(current?.bundleMetadata ?? {}), ...(patch.bundleMetadata ?? {}) } }
+      : {}),
+  };
+}
+
+/** Runtime publication owns only bundle delivery fields, never report or queue metadata. */
+export function projectRuntimeBundleDelivery(
+  metadata: AwsFinalizationRuntimeMetadata | undefined,
+): AwsVerificationDeliveryMetadataInput | undefined {
+  if (!metadata?.bundleMetadata) return undefined;
+  const bundle = metadata.bundleMetadata;
+  return {
+    ...(bundle.s3BundleKey ? { s3BundleKey: bundle.s3BundleKey } : {}),
+    ...(bundle.s3UploadedAtMs === undefined ? {} : { s3UploadedAtMs: bundle.s3UploadedAtMs }),
+  };
+}
+
+/** An omitted runtime update preserves stored metadata; malformed updates fail closed. */
+export function admitOptionalAwsRuntimeMetadata(value: unknown): AwsFinalizationRuntimeMetadata | undefined {
+  if (value === undefined) return undefined;
+  const metadata = parseAwsFinalizationRuntimeMetadata(value);
+  if (!metadata) throw new Error('Invalid AWS finalization runtime metadata');
+  return metadata;
+}
+
+export function mergeRuntimeBundleDelivery(
+  current: AwsVerificationDeliveryMetadataInput | undefined,
+  runtime: AwsFinalizationRuntimeMetadata | undefined,
+): AwsVerificationDeliveryMetadataInput | undefined {
+  const patch = projectRuntimeBundleDelivery(runtime);
+  return patch ? { ...(current ?? {}), ...patch } : undefined;
 }

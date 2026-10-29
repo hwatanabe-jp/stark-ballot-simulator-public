@@ -51,7 +51,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Build Lean workspace
-        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1.6.0
+        uses: leanprover/lean-action@24581d74d674803a25a81b10b059c5c0cdd344c6 # v1.6.2
         with:
           lake-package-directory: formal
           auto-config: false

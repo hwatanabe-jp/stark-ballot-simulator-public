@@ -280,6 +280,20 @@ export class NeverSchema extends Schema<never> {
   }
 }
 
+function collectRuleIssues<TValue, TRule extends Readonly<{ message: string }>>(
+  value: TValue,
+  rules: readonly TRule[],
+  matches: (value: TValue, rule: TRule) => boolean,
+  path: (string | number)[],
+): SchemaIssue[] {
+  return rules.filter((rule) => !matches(value, rule)).map((rule) => ({ path, message: rule.message }));
+}
+
+function appendParsedItem<TValue>(result: ParseResult<TValue>, parsed: TValue[], issues: SchemaIssue[]): void {
+  if (result.success) parsed.push(result.data);
+  else issues.push(...result.issues);
+}
+
 export class StringSchema extends Schema<string> {
   private readonly rules: readonly StringRule[];
   private readonly requiredError?: string;
@@ -336,9 +350,7 @@ export class StringSchema extends Schema<string> {
     if (typeof input !== 'string') {
       return fail('Expected string', path);
     }
-    const issues = this.rules
-      .filter((rule) => !matchesStringRule(input, rule))
-      .map((rule) => ({ path, message: rule.message }));
+    const issues = collectRuleIssues(input, this.rules, matchesStringRule, path);
     return issues.length === 0 ? ok(input) : failIssues(issues);
   }
 
@@ -418,9 +430,7 @@ export class NumberSchema extends Schema<number> {
     if (typeof input !== 'number' || !Number.isFinite(input)) {
       return fail('Expected number', path);
     }
-    const issues = this.rules
-      .filter((rule) => !matchesNumberRule(input, rule))
-      .map((rule) => ({ path, message: rule.message }));
+    const issues = collectRuleIssues(input, this.rules, matchesNumberRule, path);
     return issues.length === 0 ? ok(input) : failIssues(issues);
   }
 
@@ -531,37 +541,37 @@ export class EnumSchema<TValues extends readonly string[]> extends Schema<TValue
   }
 }
 
-export class OptionalSchema<TInner extends AnySchema = AnySchema> extends Schema<Infer<TInner> | undefined> {
+abstract class NullishSchema<TInner extends AnySchema, TAbsent extends null | undefined> extends Schema<
+  Infer<TInner> | TAbsent
+> {
   private readonly _def: Readonly<{ innerType: TInner }>;
-
-  public constructor(innerType: TInner) {
+  private readonly absent: TAbsent;
+  private readonly kind: 'OptionalSchema' | 'NullableSchema';
+  protected constructor(innerType: TInner, absent: TAbsent, kind: 'OptionalSchema' | 'NullableSchema') {
     super();
+    this.absent = absent;
+    this.kind = kind;
     this._def = Object.freeze({ innerType });
   }
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | undefined> {
-    return input === undefined ? ok(undefined) : parseWithSchema(this._def.innerType, input, path);
+  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | TAbsent> {
+    return input === this.absent ? ok(this.absent) : parseWithSchema(this._def.innerType, input, path);
   }
 
   public override getStructuralDescriptor(): SchemaDescriptor {
-    return Object.freeze({ kind: 'OptionalSchema', inner: this._def.innerType });
+    return Object.freeze({ kind: this.kind, inner: this._def.innerType });
   }
 }
 
-export class NullableSchema<TInner extends AnySchema = AnySchema> extends Schema<Infer<TInner> | null> {
-  private readonly _def: Readonly<{ innerType: TInner }>;
-
+export class OptionalSchema<TInner extends AnySchema = AnySchema> extends NullishSchema<TInner, undefined> {
   public constructor(innerType: TInner) {
-    super();
-    this._def = Object.freeze({ innerType });
+    super(innerType, undefined, 'OptionalSchema');
   }
+}
 
-  public parseInternal(input: unknown, path: (string | number)[]): ParseResult<Infer<TInner> | null> {
-    return input === null ? ok(null) : parseWithSchema(this._def.innerType, input, path);
-  }
-
-  public override getStructuralDescriptor(): SchemaDescriptor {
-    return Object.freeze({ kind: 'NullableSchema', inner: this._def.innerType });
+export class NullableSchema<TInner extends AnySchema = AnySchema> extends NullishSchema<TInner, null> {
+  public constructor(innerType: TInner) {
+    super(innerType, null, 'NullableSchema');
   }
 }
 
@@ -647,17 +657,11 @@ export class ArraySchema<TItem extends AnySchema = AnySchema> extends Schema<Inf
       return fail('Expected array', path);
     }
 
-    const issues = this.rules
-      .filter((rule) => !matchesArrayRule(input, rule))
-      .map((rule) => ({ path, message: rule.message }));
+    const issues = collectRuleIssues(input, this.rules, matchesArrayRule, path);
     const parsed: Infer<TItem>[] = [];
     input.forEach((item, index) => {
       const result = parseWithSchema(this._def.type, item, [...path, index]);
-      if (result.success) {
-        parsed.push(result.data);
-      } else {
-        issues.push(...result.issues);
-      }
+      appendParsedItem(result, parsed, issues);
     });
 
     return issues.length === 0 ? ok(parsed) : failIssues(issues);
@@ -714,11 +718,7 @@ export class TupleSchema<TItems extends readonly AnySchema[] = readonly AnySchem
     const issues: SchemaIssue[] = [];
     this._def.items.forEach((itemSchema, index) => {
       const result = parseWithSchema(itemSchema, input[index], [...path, index]);
-      if (result.success) {
-        parsed.push(result.data);
-      } else {
-        issues.push(...result.issues);
-      }
+      appendParsedItem(result, parsed, issues);
     });
 
     return issues.length === 0 ? ok(parsed as TupleOutput<TItems>) : failIssues(issues);
@@ -781,6 +781,18 @@ export class ObjectSchema<
     const output: Record<string, unknown> = {};
     const issues: SchemaIssue[] = [];
 
+    this.parseKnownProperties(input, path, output, issues);
+    this.parseUnknownProperties(input, path, output, issues);
+
+    return issues.length === 0 ? ok(output as ObjectOutput<TShape, TUnknownKeys, TCatchall>) : failIssues(issues);
+  }
+
+  private parseKnownProperties(
+    input: Record<string, unknown>,
+    path: (string | number)[],
+    output: Record<string, unknown>,
+    issues: SchemaIssue[],
+  ): void {
     for (const [key, schema] of Object.entries(this.shape)) {
       const result = parseWithSchema(schema, input[key], [...path, key]);
       if (result.success) {
@@ -791,7 +803,14 @@ export class ObjectSchema<
         issues.push(...result.issues);
       }
     }
+  }
 
+  private parseUnknownProperties(
+    input: Record<string, unknown>,
+    path: (string | number)[],
+    output: Record<string, unknown>,
+    issues: SchemaIssue[],
+  ): void {
     for (const key of Object.keys(input)) {
       if (Object.hasOwn(this.shape, key)) {
         continue;
@@ -811,8 +830,6 @@ export class ObjectSchema<
         output[key] = input[key];
       }
     }
-
-    return issues.length === 0 ? ok(output as ObjectOutput<TShape, TUnknownKeys, TCatchall>) : failIssues(issues);
   }
 
   public override getStructuralDescriptor(): SchemaDescriptor {

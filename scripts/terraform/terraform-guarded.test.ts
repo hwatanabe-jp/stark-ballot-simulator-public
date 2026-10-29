@@ -16,10 +16,6 @@ const REVIEWED_STATE_BUCKET = REVIEWED_TARGET.sharedNames.terraformStateBucket;
 const REVIEWED_STATE_KMS_ALIAS = REVIEWED_TARGET.sharedNames.terraformStateKmsAlias;
 const APP_SIGNATURE_PREFLIGHT_PLAN_ROLE = `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-sig-preflight-plan-stark-dev-develop-app/codebuild-test`;
 const APP_SIGNATURE_PREFLIGHT_APPLY_ROLE = `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-sig-preflight-apply-stark-dev-develop-app/codebuild-test`;
-const APP_SIGNATURE_PREFLIGHT_TARGET_ARGS = [
-  '-target=terraform_data.image_signature_verifier_reconciliation_authority',
-  '-target=aws_lambda_alias.image_signature_verifier_preflight',
-] as const;
 
 function withTempDir(run: (dir: string) => void): void {
   const dir = mkdtempSync(path.join(tmpdir(), 'terraform-guarded-'));
@@ -70,8 +66,9 @@ function testEnv(dir: string, extra: Record<string, string | undefined> = {}): N
     PATH: `${path.join(dir, 'bin')}:${env['PATH'] ?? ''}`,
     TERRAFORM_AWS_ACCOUNT_ID: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
     MOCK_AWS_ACCOUNT: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-    MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/terraform-admin/aws-vault-test`,
-    MOCK_TERRAFORM_WORKSPACE: 'develop',
+    MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
+    MOCK_TERRAFORM_WORKSPACE: 'default',
+    TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
     MOCK_TERRAFORM_LOG: path.join(dir, 'terraform.log'),
     ...extra,
   };
@@ -98,19 +95,13 @@ exit 99
     `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "\${MOCK_TERRAFORM_LOG}"
-if { [ "$1" = "-chdir=infra/terraform/legacy" ] || [ "$1" = "-chdir=infra/terraform/bootstrap" ] || [ "$1" = "-chdir=infra/terraform/app" ]; } && [ "$2" = "workspace" ] && [ "$3" = "show" ]; then
+if { [ "$1" = "-chdir=infra/terraform/bootstrap" ] || [ "$1" = "-chdir=infra/terraform/app" ]; } && [ "$2" = "workspace" ] && [ "$3" = "show" ]; then
   printf '%s\\n' "\${MOCK_TERRAFORM_WORKSPACE}"
   exit 0
 fi
 exit 0
 `,
   );
-}
-
-function writeTfvars(dir: string, environment: 'develop' | 'main'): string {
-  const file = path.join(dir, `${environment}.local.tfvars`);
-  writeFileSync(file, `aws_region = "ap-northeast-1"\nenvironment = "${environment}"\n`);
-  return file;
 }
 
 function writeBootstrapTfvars(
@@ -197,6 +188,82 @@ function writeAppBackendConfig(
 
 type AppBackendConfigOptions = NonNullable<Parameters<typeof writeAppBackendConfig>[1]>;
 
+describe.each(['app', 'foundation'] as const)('%s managed init boundary', (root) => {
+  function initialize(dir: string, role: 'plan' | 'apply', args: string[], wrongBackend = false) {
+    installMocks(dir);
+    const directory = path.join(dir, 'infra/terraform', root);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, 'backend.pipeline.hcl'),
+      [
+        `bucket = "${REVIEWED_STATE_BUCKET}"`,
+        `key = "${wrongBackend ? 'foreign/terraform.tfstate' : REVIEWED_TARGET.lanes[root].backendKey}"`,
+        'region = "ap-northeast-1"',
+        `kms_key_id = "${REVIEWED_STATE_KMS_ALIAS}"`,
+        'encrypt = true',
+        'use_lockfile = true',
+      ].join('\n') + '\n',
+    );
+    const roleName = REVIEWED_TARGET.lanes[root].names[role === 'apply' ? 'terraformApplyRole' : 'terraformPlanRole'];
+    return spawnSync('bash', [SCRIPT_PATH, `stark-dev/develop/${root}`, 'init', ...args], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: testEnv(dir, {
+        TERRAFORM_WORKING_DIR: `infra/terraform/${root}`,
+        TERRAFORM_APP_BACKEND_BUCKET: REVIEWED_STATE_BUCKET,
+        TERRAFORM_APP_BACKEND_REGION: 'ap-northeast-1',
+        TERRAFORM_APP_BACKEND_KMS_KEY_ID: REVIEWED_STATE_KMS_ALIAS,
+        MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/${roleName}/codebuild-test`,
+      }),
+    });
+  }
+
+  it.each(['plan', 'apply'] as const)('forwards exactly the %s init command to Terraform', (role) => {
+    withTempDir((dir) => {
+      const args = [...(role === 'apply' ? ['-lockfile=readonly'] : []), '-backend-config=backend.pipeline.hcl'];
+      const result = initialize(dir, role, args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(path.join(dir, 'terraform.log'), 'utf8').trim()).toBe(
+        `-chdir=infra/terraform/${root} init ${args.join(' ')}`,
+      );
+    });
+  });
+
+  it.each(['plan', 'apply'] as const)('rejects a foreign backend for the %s role before Terraform', (role) => {
+    withTempDir((dir) => {
+      const result = initialize(
+        dir,
+        role,
+        [...(role === 'apply' ? ['-lockfile=readonly'] : []), '-backend-config=backend.pipeline.hcl'],
+        true,
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/backend key mismatch/);
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+    });
+  });
+
+  it.each(['plan', 'apply'] as const)('rejects lock and initialization overrides for the %s role', (role) => {
+    const backend = '-backend-config=backend.pipeline.hcl';
+    const accepted = [...(role === 'apply' ? ['-lockfile=readonly'] : []), backend];
+    const denied = [
+      role === 'apply' ? [backend] : ['-lockfile=readonly', backend],
+      ['-lockfile=readwrite', backend],
+      ['-lockfile=readonly', '-lockfile=readonly', backend],
+      ['-lockfile=readonly', '-backend-config=backend.local.hcl'],
+      ...['-upgrade', '-reconfigure', '-migrate-state', '-force-copy', '-unknown'].map((flag) => [...accepted, flag]),
+    ];
+    for (const args of denied) {
+      withTempDir((dir) => {
+        const result = initialize(dir, role, args);
+        expect(result.status, args.join(' ')).toBe(2);
+        expect(result.stderr).toContain(`${root} ${role}-role init requires exactly:`);
+        expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+      });
+    }
+  });
+});
+
 describe('terraform-guarded.sh', () => {
   it('consumes reviewed target root and role values instead of reconstructing them in shell', () => {
     const source = readFileSync(SCRIPT_PATH, 'utf8');
@@ -258,484 +325,32 @@ describe('terraform-guarded.sh', () => {
     });
   });
 
-  it('runs Terraform only after caller, workspace, and tfvars environment checks pass', () => {
+  it.each(['develop', 'main'])('rejects the retired workspace-only identity %s before AWS access', (identity) => {
     withTempDir((dir) => {
-      installMocks(dir);
-      const tfvars = writeTfvars(dir, 'develop');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
-        env: testEnv(dir),
-      });
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/legacy workspace show');
-      expect(log).toContain(`-chdir=infra/terraform/legacy plan -var-file=${tfvars}`);
+      const result = spawnSync('bash', [SCRIPT_PATH, identity, 'plan'], { encoding: 'utf8', env: testEnv(dir) });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('workspace-only identities are not supported');
+      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
   });
 
-  it('passes Terraform the same canonical tfvars path that the guard validated', () => {
+  it.each(
+    ['stark-dev/develop', 'stark-prod/main'].flatMap((targetKey) =>
+      ['init', 'validate', 'plan', 'apply', 'destroy'].map((command) => [targetKey, command] as const),
+    ),
+  )('rejects unreviewed local Bootstrap %s %s before Terraform', (targetKey, command) => {
     withTempDir((dir) => {
       installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/legacy'), { recursive: true });
-      writeFileSync(path.join(dir, 'develop.local.tfvars'), 'aws_region = "ap-northeast-1"\nenvironment = "main"\n');
-      const checkedTfvars = path.join(dir, 'infra/terraform/legacy/develop.local.tfvars');
-      writeFileSync(checkedTfvars, 'aws_region = "ap-northeast-1"\nenvironment = "develop"\n');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', '-var-file=develop.local.tfvars'], {
+      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
+      const result = spawnSync('bash', [SCRIPT_PATH, `${targetKey}/bootstrap`, command], {
         cwd: dir,
         encoding: 'utf8',
-        env: testEnv(dir),
-      });
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain(`-chdir=infra/terraform/legacy plan -var-file=${checkedTfvars}`);
-      expect(log).not.toContain('-chdir=infra/terraform/legacy plan -var-file=develop.local.tfvars');
-    });
-  });
-
-  it('rejects a default IAM user before running Terraform', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      const tfvars = writeTfvars(dir, 'develop');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
         env: testEnv(dir, {
-          MOCK_AWS_ARN: `arn:aws:iam::${REVIEWED_DEVELOP_ACCOUNT_ID}:user/user01`,
+          TERRAFORM_AWS_ACCOUNT_ID: resolveAllowedDeploymentTarget(targetKey).accountId,
         }),
       });
-
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain(
-        `Terraform must run as arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/terraform-admin/*`,
-      );
-      expect(result.stderr).not.toContain('user01');
-      expect(result.stderr).toContain('Current caller ARN did not match the required role.');
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
-  it('rejects a terraform-admin role in the wrong AWS account', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      const tfvars = writeTfvars(dir, 'develop');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          MOCK_AWS_ACCOUNT: '999999999999',
-          MOCK_AWS_ARN: 'arn:aws:sts::999999999999:assumed-role/terraform-admin/aws-vault-test',
-        }),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('AWS account mismatch');
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
-  it('rejects a workspace that does not match the requested environment', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      const tfvars = writeTfvars(dir, 'develop');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          MOCK_TERRAFORM_WORKSPACE: 'main',
-        }),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Terraform workspace mismatch');
-      expect(result.stderr).toContain('Expected workspace: develop');
-      expect(result.stderr).toContain('Current workspace: main');
-    });
-  });
-
-  it('rejects a tfvars file whose environment does not match the requested environment', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      const tfvars = path.join(dir, 'develop.local.tfvars');
-      writeFileSync(tfvars, 'aws_region = "ap-northeast-1"\nenvironment = "main"\n');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
-        env: testEnv(dir),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('tfvars environment mismatch');
-      expect(result.stderr).toContain('Expected environment: develop');
-      expect(result.stderr).toContain('tfvars environment: main');
-    });
-  });
-
-  it('requires a var-file for plan, apply, and destroy', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'develop', 'plan'], {
-        encoding: 'utf8',
-        env: testEnv(dir),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('plan requires -var-file=<env>.local.tfvars');
-    });
-  });
-
-  it('allows applying a saved target Terraform plan without a var-file', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      writeFileSync(path.join(dir, 'reviewed.tfplan'), 'mock saved plan');
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'apply', path.join(dir, 'reviewed.tfplan')],
-        {
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain(`-chdir=infra/terraform/bootstrap apply ${path.join(dir, 'reviewed.tfplan')}`);
-    });
-  });
-
-  it('rejects a Bootstrap caller whose Identity Center role suffix is not exact', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      writeFileSync(path.join(dir, 'reviewed.tfplan'), 'mock saved plan');
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'apply', path.join(dir, 'reviewed.tfplan')],
-        {
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/user00`,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Terraform target account guard rejected the current caller');
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
-  it('rejects multiple var-files because later files can override environment', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      const developTfvars = writeTfvars(dir, 'develop');
-      const mainTfvars = writeTfvars(dir, 'main');
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'develop', 'plan', `-var-file=${developTfvars}`, `-var-file=${mainTfvars}`],
-        {
-          encoding: 'utf8',
-          env: testEnv(dir),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('plan accepts exactly one -var-file');
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/legacy workspace show');
-      expect(log).not.toContain(`-chdir=infra/terraform/legacy plan -var-file=${developTfvars}`);
-    });
-  });
-
-  it('rejects CLI environment overrides', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      const tfvars = writeTfvars(dir, 'develop');
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'develop', 'plan', `-var-file=${tfvars}`, '-var', 'environment=main'],
-        {
-          encoding: 'utf8',
-          env: testEnv(dir),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Do not pass environment through -var');
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/legacy workspace show');
-      expect(log).not.toContain(`-chdir=infra/terraform/legacy plan -var-file=${tfvars}`);
-    });
-  });
-
-  it('rejects target account terraform init against the legacy Terraform root', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/legacy'), { recursive: true });
-      const backendConfig = path.join(dir, 'infra/terraform/legacy/backend.local.hcl');
-      writeFileSync(
-        backendConfig,
-        [
-          'bucket       = "example-terraform-state"',
-          'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-          'region       = "ap-northeast-1"',
-          'use_lockfile = true',
-          'encrypt      = true',
-        ].join('\n'),
-      );
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'init', '-backend-config=backend.local.hcl'],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Terraform working directory mismatch for target account mode.');
-      expect(result.stderr).toContain('Expected TERRAFORM_WORKING_DIR: infra/terraform/bootstrap');
-      expect(result.stderr).toContain('Current TERRAFORM_WORKING_DIR: infra/terraform/legacy');
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
-  it('runs target account terraform init after caller, root, and backend identity checks pass', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      writeFileSync(
-        path.join(dir, 'infra/terraform/bootstrap/backend.local.hcl'),
-        [
-          `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-          'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-          'region       = "ap-northeast-1"',
-          `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-          'use_lockfile = true',
-          'encrypt      = true',
-        ].join('\n'),
-      );
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'init', '-backend-config=backend.local.hcl'],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-          }),
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).not.toContain('-chdir=infra/terraform/legacy workspace show');
-      expect(log).toContain('-chdir=infra/terraform/bootstrap init -backend-config=backend.local.hcl');
-    });
-  });
-
-  it('rejects target account terraform init when backend key does not match the state identity', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      writeFileSync(
-        path.join(dir, 'infra/terraform/bootstrap/backend.local.hcl'),
-        [
-          `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-          'key          = "terraform.tfstate"',
-          'region       = "ap-northeast-1"',
-          `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-          'use_lockfile = true',
-          'encrypt      = true',
-        ].join('\n'),
-      );
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'init', '-backend-config=backend.local.hcl'],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Terraform backend key mismatch');
-      expect(result.stderr).toContain(
-        'Expected key: stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate',
-      );
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
-  it.each([
-    {
-      label: 'missing bucket',
-      lines: [
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = true',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend config must include bucket.',
-    },
-    {
-      label: 'wrong bucket',
-      lines: [
-        'bucket       = "wrong-terraform-state"',
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = true',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend bucket mismatch.',
-    },
-    {
-      label: 'missing KMS',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        'use_lockfile = true',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend config must include kms_key_id.',
-    },
-    {
-      label: 'wrong KMS',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        'kms_key_id   = "alias/wrong-terraform-state"',
-        'use_lockfile = true',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend kms_key_id mismatch.',
-    },
-    {
-      label: 'missing region',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = true',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend config must include region.',
-    },
-    {
-      label: 'wrong region',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "us-east-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = true',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend region mismatch.',
-    },
-    {
-      label: 'missing lockfile control',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend config must include use_lockfile.',
-    },
-    {
-      label: 'disabled lockfile control',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = false',
-        'encrypt      = true',
-      ],
-      expected: 'Terraform target backend use_lockfile mismatch.',
-    },
-    {
-      label: 'missing encryption control',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = true',
-      ],
-      expected: 'Terraform target backend config must include encrypt.',
-    },
-    {
-      label: 'disabled encryption',
-      lines: [
-        `bucket       = "${REVIEWED_STATE_BUCKET}"`,
-        'key          = "stark-ballot-simulator/stark-dev/develop/bootstrap/terraform.tfstate"',
-        'region       = "ap-northeast-1"',
-        `kms_key_id   = "${REVIEWED_STATE_KMS_ALIAS}"`,
-        'use_lockfile = true',
-        'encrypt      = false',
-      ],
-      expected: 'Terraform target backend encrypt mismatch.',
-    },
-  ])('rejects target account init with $label', ({ expected, lines }) => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      writeFileSync(path.join(dir, 'infra/terraform/bootstrap/backend.local.hcl'), lines.join('\n'));
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'init', '-backend-config=backend.local.hcl'],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(expected);
+      expect(result.stderr).toContain('scripts/aws/bootstrap-local.ts');
       expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
   });
@@ -777,126 +392,10 @@ describe('terraform-guarded.sh', () => {
     });
   });
 
-  it('requires the default workspace for target account plan/apply commands', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      const tfvars = writeBootstrapTfvars(dir, 'develop');
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-          TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-          MOCK_TERRAFORM_WORKSPACE: 'develop',
-        }),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('Terraform workspace mismatch');
-      expect(result.stderr).toContain('Expected workspace: default');
-      expect(result.stderr).toContain('Current workspace: develop');
-    });
-  });
-
-  it('allows target account plan to pass the development pipeline toggle through -var', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      const tfvars = writeBootstrapTfvars(dir, 'develop');
-
-      const result = spawnSync(
-        'bash',
-        [
-          SCRIPT_PATH,
-          'stark-dev/develop/bootstrap',
-          'plan',
-          `-var-file=${tfvars}`,
-          '-var=enable_development_pipeline=true',
-        ],
-        {
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain(
-        `-chdir=infra/terraform/bootstrap plan -var-file=${tfvars} -var=enable_development_pipeline=true`,
-      );
-    });
-  });
-
-  it.each([
-    [['-var=account_alias=stark-prod'], 'account_alias'],
-    [['-var', 'source_branch=main'], 'source_branch'],
-  ])('rejects target account CLI override for protected %s', (overrideArgs, protectedKey) => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      const tfvars = writeBootstrapTfvars(dir, 'develop');
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'plan', `-var-file=${tfvars}`, ...overrideArgs],
-        {
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-            MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(`Do not pass ${protectedKey} through -var in target account mode`);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/bootstrap workspace show');
-      expect(log).not.toContain(`-chdir=infra/terraform/bootstrap plan -var-file=${tfvars}`);
-    });
-  });
-
-  it.each([
-    ['account_alias', 'stark-prod'],
-    ['state_backend_key', 'stark-ballot-simulator/stark-dev/develop/app/terraform.tfstate'],
-    ['source_branch', 'main'],
-  ])('rejects target account tfvars mismatch for %s', (key, value) => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/bootstrap'), { recursive: true });
-      const tfvars = writeBootstrapTfvars(dir, 'develop', { [key]: value });
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/bootstrap', 'plan', `-var-file=${tfvars}`], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-          TERRAFORM_WORKING_DIR: 'infra/terraform/bootstrap',
-          MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/user00`,
-          MOCK_TERRAFORM_WORKSPACE: 'default',
-        }),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(`target account tfvars ${key} mismatch`);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/bootstrap workspace show');
-      expect(log).not.toContain(`-chdir=infra/terraform/bootstrap plan -var-file=${tfvars}`);
-    });
-  });
-
   it('rejects app target scope when the app Terraform root is not selected', () => {
     withTempDir((dir) => {
       installMocks(dir);
-      const tfvars = writeTfvars(dir, 'develop');
+      const tfvars = writeBootstrapTfvars(dir, 'develop');
 
       const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'plan', `-var-file=${tfvars}`], {
         encoding: 'utf8',
@@ -971,6 +470,36 @@ describe('terraform-guarded.sh', () => {
     });
   });
 
+  it.each([APP_SIGNATURE_PREFLIGHT_PLAN_ROLE, APP_SIGNATURE_PREFLIGHT_APPLY_ROLE])(
+    'rejects retired verifier role %s before invoking Terraform',
+    (roleArn) => {
+      withTempDir((dir) => {
+        installMocks(dir);
+        writeAppBackendConfig(dir);
+        writeAppTfvars(dir);
+        for (const args of [
+          ['init', '-backend-config=backend.pipeline.hcl'],
+          ['validate'],
+          ['plan', '-out=tfplan', '-var-file=pipeline.auto.tfvars'],
+          ['apply', '-auto-approve', 'tfplan'],
+        ]) {
+          const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', ...args], {
+            cwd: dir,
+            encoding: 'utf8',
+            env: testEnv(dir, {
+              ...appBackendEnv(),
+              TERRAFORM_WORKING_DIR: 'infra/terraform/app',
+              MOCK_AWS_ARN: roleArn,
+              MOCK_TERRAFORM_WORKSPACE: 'default',
+            }),
+          });
+          expect(result.status).toBe(2);
+          expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
+        }
+      });
+    },
+  );
+
   it('allows app plan role to initialize the app backend after caller, root, and backend identity checks pass', () => {
     withTempDir((dir) => {
       installMocks(dir);
@@ -1005,7 +534,7 @@ describe('terraform-guarded.sh', () => {
 
       const result = spawnSync(
         'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/app', 'init', '-backend-config=backend.pipeline.hcl'],
+        [SCRIPT_PATH, 'stark-dev/develop/app', 'init', '-lockfile=readonly', '-backend-config=backend.pipeline.hcl'],
         {
           cwd: dir,
           encoding: 'utf8',
@@ -1021,58 +550,7 @@ describe('terraform-guarded.sh', () => {
 
       expect(result.status).toBe(0);
       const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/app init -backend-config=backend.pipeline.hcl');
-    });
-  });
-
-  it.each([
-    ['plan', APP_SIGNATURE_PREFLIGHT_PLAN_ROLE],
-    ['apply', APP_SIGNATURE_PREFLIGHT_APPLY_ROLE],
-  ])('allows current signature-preflight %s role to run guarded backend init', (_roleType, roleArn) => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      writeAppBackendConfig(dir);
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/app', 'init', '-backend-config=backend.pipeline.hcl'],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            ...appBackendEnv(),
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN: roleArn,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/app init -backend-config=backend.pipeline.hcl');
-    });
-  });
-
-  it('allows the current signature-preflight plan role to validate app Terraform', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'validate'], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-          TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
-          MOCK_TERRAFORM_WORKSPACE: 'default',
-        }),
-      });
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/app validate');
+      expect(log).toContain('-chdir=infra/terraform/app init -lockfile=readonly -backend-config=backend.pipeline.hcl');
     });
   });
 
@@ -1104,7 +582,7 @@ describe('terraform-guarded.sh', () => {
 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain(
-        'app init requires exactly one backend config argument: -backend-config=backend.pipeline.hcl.',
+        'app apply-role init requires exactly: -lockfile=readonly -backend-config=backend.pipeline.hcl.',
       );
       expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
@@ -1132,9 +610,7 @@ describe('terraform-guarded.sh', () => {
       );
 
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain(
-        'app init requires exactly one backend config argument: -backend-config=backend.pipeline.hcl.',
-      );
+      expect(result.stderr).toContain('app plan-role init requires exactly: -backend-config=backend.pipeline.hcl.');
       expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
   });
@@ -1225,41 +701,6 @@ describe('terraform-guarded.sh', () => {
     });
   });
 
-  it.each([
-    {
-      label: 'signature-preflight apply role planning',
-      roleArn: APP_SIGNATURE_PREFLIGHT_APPLY_ROLE,
-      args: ['plan', '-out=tfplan', '-var-file=pipeline.auto.tfvars'],
-      expected: 'Terraform app guard requires the app plan CodeBuild role for plan.',
-    },
-    {
-      label: 'signature-preflight plan role applying',
-      roleArn: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
-      args: ['apply', '-auto-approve', 'tfplan'],
-      expected: 'Terraform app guard requires the app apply CodeBuild role for apply.',
-    },
-  ])('rejects $label before invoking Terraform', ({ args, expected, roleArn }) => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
-      writeAppTfvars(dir);
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', ...args], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-          TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN: roleArn,
-          MOCK_TERRAFORM_WORKSPACE: 'default',
-        }),
-      });
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(expected);
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
   it('allows app plan role to run only the exact reviewed pipeline plan shape', () => {
     withTempDir((dir) => {
       installMocks(dir);
@@ -1284,124 +725,6 @@ describe('terraform-guarded.sh', () => {
       expect(result.status).toBe(0);
       const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
       expect(log).toContain(`-chdir=infra/terraform/app plan -out=tfplan -var-file=${tfvars}`);
-    });
-  });
-
-  it('allows the current signature-preflight plan role to run only the exact verifier-only plan', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
-      const tfvars = writeAppTfvars(dir);
-
-      const result = spawnSync(
-        'bash',
-        [
-          SCRIPT_PATH,
-          'stark-dev/develop/app',
-          'plan',
-          '-out=tfplan',
-          '-var-file=pipeline.auto.tfvars',
-          ...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS,
-        ],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain(
-        `-chdir=infra/terraform/app plan -out=tfplan -var-file=${tfvars} ${APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.join(' ')}`,
-      );
-    });
-  });
-
-  it('rejects a signature-preflight plan mode outside the exact verifier-only plan', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
-      writeAppTfvars(dir);
-
-      const result = spawnSync(
-        'bash',
-        [
-          SCRIPT_PATH,
-          'stark-dev/develop/app',
-          'plan',
-          '-refresh-only',
-          '-out=tfplan',
-          '-var-file=pipeline.auto.tfvars',
-          '-target=terraform_data.image_signature_verifier_permissions_boundary_authority',
-          '-target=aws_cloudwatch_log_group.image_signature_verifier',
-          '-target=aws_iam_role.image_signature_verifier',
-          '-target=aws_iam_role_policy.image_signature_verifier',
-          '-target=aws_lambda_function.image_signature_verifier',
-          '-target=aws_lambda_alias.image_signature_verifier_preflight',
-        ],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(
-        'signature preflight plan accepts only the exact verifier-only saved-plan target set.',
-      );
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
-    });
-  });
-
-  it.each([
-    ['missing target', APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.slice(0, -1)],
-    ['extra target', [...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS, '-target=aws_s3_bucket.example']],
-    [
-      'different target order',
-      [
-        APP_SIGNATURE_PREFLIGHT_TARGET_ARGS[1],
-        APP_SIGNATURE_PREFLIGHT_TARGET_ARGS[0],
-        ...APP_SIGNATURE_PREFLIGHT_TARGET_ARGS.slice(2),
-      ],
-    ],
-  ])('rejects a signature-preflight plan with an inexact verifier target set: %s', (_label, targetArgs) => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
-      writeAppTfvars(dir);
-
-      const result = spawnSync(
-        'bash',
-        [SCRIPT_PATH, 'stark-dev/develop/app', 'plan', '-out=tfplan', '-var-file=pipeline.auto.tfvars', ...targetArgs],
-        {
-          cwd: dir,
-          encoding: 'utf8',
-          env: testEnv(dir, {
-            TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-            TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-            MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_PLAN_ROLE,
-            MOCK_TERRAFORM_WORKSPACE: 'default',
-          }),
-        },
-      );
-
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(
-        'signature preflight plan accepts only the exact verifier-only saved-plan target set.',
-      );
-      expect(() => readFileSync(path.join(dir, 'terraform.log'), 'utf8')).toThrow();
     });
   });
 
@@ -1577,27 +900,6 @@ describe('terraform-guarded.sh', () => {
           TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
           TERRAFORM_WORKING_DIR: 'infra/terraform/app',
           MOCK_AWS_ARN: `arn:aws:sts::${REVIEWED_DEVELOP_ACCOUNT_ID}:assumed-role/stark-ballot-sim-tf-apply-stark-dev-develop-app/codebuild-test`,
-          MOCK_TERRAFORM_WORKSPACE: 'default',
-        }),
-      });
-
-      expect(result.status).toBe(0);
-      const log = readFileSync(path.join(dir, 'terraform.log'), 'utf8');
-      expect(log).toContain('-chdir=infra/terraform/app apply -auto-approve tfplan');
-    });
-  });
-
-  it('allows the current signature-preflight apply role to apply only the reviewed pipeline tfplan', () => {
-    withTempDir((dir) => {
-      installMocks(dir);
-      mkdirSync(path.join(dir, 'infra/terraform/app'), { recursive: true });
-
-      const result = spawnSync('bash', [SCRIPT_PATH, 'stark-dev/develop/app', 'apply', '-auto-approve', 'tfplan'], {
-        encoding: 'utf8',
-        env: testEnv(dir, {
-          TERRAFORM_AWS_ACCOUNT_ID_STARK_DEV: `${REVIEWED_DEVELOP_ACCOUNT_ID}`,
-          TERRAFORM_WORKING_DIR: 'infra/terraform/app',
-          MOCK_AWS_ARN: APP_SIGNATURE_PREFLIGHT_APPLY_ROLE,
           MOCK_TERRAFORM_WORKSPACE: 'default',
         }),
       });

@@ -1,9 +1,10 @@
 resource "aws_codepipeline" "development_prover_release" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  name          = local.prover_release_pipeline_name
-  pipeline_type = "V2"
-  role_arn      = aws_iam_role.foundation_pipeline[0].arn
+  name           = local.prover_release_pipeline_name
+  pipeline_type  = "V2"
+  execution_mode = "QUEUED"
+  role_arn       = aws_iam_role.foundation_pipeline[0].arn
 
   artifact_store {
     location = aws_s3_bucket.foundation_pipeline_artifacts[0].bucket
@@ -13,6 +14,12 @@ resource "aws_codepipeline" "development_prover_release" {
       id   = aws_kms_key.foundation_pipeline_artifacts[0].arn
       type = "KMS"
     }
+  }
+
+  variable {
+    name          = "PromotionMode"
+    default_value = "current"
+    description   = "Explicit initial mode requires absent promotion; current mode requires an existing version."
   }
 
   variable {
@@ -39,9 +46,9 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   variable {
-    name          = "PinnedToolchainRecordKey"
-    default_value = "__NO_PINNED_TOOLCHAIN_RECORD_KEY__"
-    description   = "Pinned immutable Toolchain release ledger record key when ToolchainSelection is pinned."
+    name          = "PinnedToolchainVersionId"
+    default_value = "__NO_PINNED_TOOLCHAIN_VERSION_ID__"
+    description   = "Exact Toolchain promotion VersionId when ToolchainSelection is pinned."
   }
 
   stage {
@@ -67,58 +74,33 @@ resource "aws_codepipeline" "development_prover_release" {
   }
 
   stage {
-    name = "ResolveFoundationConsumerAuthority"
+    name = "PrepareImage"
 
     action {
-      name             = "ResolveFoundationConsumerAuthority"
+      name             = "PrepareImage"
       category         = "Build"
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
       input_artifacts  = ["SourceOutput"]
-      output_artifacts = ["FoundationConsumerAuthorityOutput"]
-
-      configuration = {
-        EnvironmentVariables = jsonencode([
-          {
-            name  = "REQUESTED_SOURCE_SHA"
-            value = "#{variables.RequestedSourceSha}"
-            type  = "PLAINTEXT"
-          },
-          {
-            name  = "PIPELINE_SOURCE_SHA"
-            value = "#{ProverReleaseSource.CommitId}"
-            type  = "PLAINTEXT"
-          },
-        ])
-        PrimarySource = "SourceOutput"
-        ProjectName   = aws_codebuild_project.foundation_image_signing_authority_resolver[0].name
-      }
-    }
-  }
-
-  stage {
-    name = "ResolveToolchainAuthority"
-
-    action {
-      name             = "ResolveToolchainAuthority"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["SourceOutput", "FoundationConsumerAuthorityOutput"]
       output_artifacts = ["ToolchainAuthorityOutput"]
 
       configuration = {
         EnvironmentVariables = jsonencode([
+          {
+            name  = "RELEASE_PIPELINE_EXECUTION_ID"
+            type  = "PLAINTEXT"
+            value = "#{codepipeline.PipelineExecutionId}"
+          },
+          { name = "IMAGE_PROMOTION_MODE", value = "#{variables.PromotionMode}", type = "PLAINTEXT" },
           {
             name  = "TOOLCHAIN_SELECTION"
             value = "#{variables.ToolchainSelection}"
             type  = "PLAINTEXT"
           },
           {
-            name  = "PINNED_TOOLCHAIN_RECORD_KEY"
-            value = "#{variables.PinnedToolchainRecordKey}"
+            name  = "PINNED_TOOLCHAIN_VERSION_ID"
+            value = "#{variables.PinnedToolchainVersionId}"
             type  = "PLAINTEXT"
           },
           {
@@ -149,7 +131,7 @@ resource "aws_codepipeline" "development_prover_release" {
       version  = "1"
 
       configuration = {
-        CustomData = "Approve the Prover candidate action for the selected mode after reviewing the exact Source, FoundationConsumerAuthorityOutput approval projection, and ToolchainAuthorityOutput. build creates and validates a new Prover image; existing selects one exact Prover candidate ledger record and never rebuilds, pushes, scans, or signs an image. Prover promotion remains separately gated."
+        CustomData = "Approve the Prover candidate action for the selected mode after reviewing the exact Source, ToolchainAuthorityOutput Foundation checkpoint and Toolchain promotion. build creates and validates a new Prover image; existing selects one exact Prover candidate ledger record and never rebuilds, pushes, scans, or signs an image. Prover promotion remains separately gated."
       }
     }
   }
@@ -163,11 +145,12 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "FoundationConsumerAuthorityOutput", "ToolchainAuthorityOutput"]
+      input_artifacts  = ["SourceOutput", "ToolchainAuthorityOutput"]
       output_artifacts = ["CandidateOutput"]
 
       configuration = {
         EnvironmentVariables = jsonencode([
+          { name = "IMAGE_PROMOTION_MODE", value = "#{variables.PromotionMode}", type = "PLAINTEXT" },
           {
             name  = "REQUESTED_SOURCE_SHA"
             value = "#{variables.RequestedSourceSha}"
@@ -230,16 +213,12 @@ resource "aws_codepipeline" "development_prover_release" {
       owner            = "AWS"
       provider         = "CodeBuild"
       version          = "1"
-      input_artifacts  = ["SourceOutput", "FoundationConsumerAuthorityOutput", "CandidateOutput"]
+      input_artifacts  = ["SourceOutput", "CandidateOutput", "ToolchainAuthorityOutput"]
       output_artifacts = ["AcceptedPointerOutput"]
 
       configuration = {
         EnvironmentVariables = jsonencode([
-          {
-            name  = "PROVER_ACCEPTED_POINTER_KEY"
-            value = local.deployment_shared_names.proverAcceptedPointerKey
-            type  = "PLAINTEXT"
-          },
+          { name = "IMAGE_PROMOTION_MODE", value = "#{variables.PromotionMode}", type = "PLAINTEXT" },
           {
             name  = "REQUESTED_SOURCE_SHA"
             value = "#{variables.RequestedSourceSha}"

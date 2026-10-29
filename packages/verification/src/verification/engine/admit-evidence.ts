@@ -4,7 +4,7 @@ import {
   VERIFICATION_FAILURE_CATEGORY_VALUES,
   VERIFICATION_STATUS_VALUES,
 } from '@stark-ballot/verification/shared/types';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import type {
   AdmittedEvidence,
   AdmittedVerificationEvidence,
@@ -20,10 +20,16 @@ const TERMINAL_VERIFICATION_STATUSES = new Set<VerificationStatus>(TERMINAL_VERI
 const FAILURE_CATEGORIES = new Set<VerificationFailureCategory>(VERIFICATION_FAILURE_CATEGORY_VALUES);
 
 export function admitVerifierOutcome(input: unknown): VerificationOutcomeInput | undefined {
-  if (!isRecord(input)) {
-    return undefined;
-  }
+  if (!isNonNullObject(input)) return undefined;
+  const evidence = admitVerifierStatusEvidence(input);
+  if (!evidence) return undefined;
+  const failureCategory = admitFailureCategory(input['failureCategory']);
+  if (input['failureCategory'] !== undefined && failureCategory === undefined) return undefined;
+  if (evidence.status !== 'failed' && failureCategory !== undefined && failureCategory !== 'none') return undefined;
+  return buildVerifierOutcome(evidence.status, evidence.report, failureCategory);
+}
 
+function admitVerifierStatusEvidence(input: Record<string, unknown>) {
   const verificationStatus = admitVerificationStatus(input['verificationStatus']);
   if (input['verificationStatus'] !== undefined && verificationStatus === undefined) {
     return undefined;
@@ -43,6 +49,14 @@ export function admitVerifierOutcome(input: unknown): VerificationOutcomeInput |
     return undefined;
   }
 
+  return resolveCoherentVerifierStatus(verificationStatus, reportStatus, report);
+}
+
+function resolveCoherentVerifierStatus(
+  verificationStatus: VerificationStatus | undefined,
+  reportStatus: VerificationStatus | undefined,
+  report: VerificationReportEvidence | undefined,
+) {
   const statusBearingReportStatus = report?.status;
   const statuses = [verificationStatus, reportStatus, statusBearingReportStatus].filter(
     (status): status is VerificationStatus => status !== undefined,
@@ -57,60 +71,50 @@ export function admitVerifierOutcome(input: unknown): VerificationOutcomeInput |
     return undefined;
   }
 
-  const failureCategory = admitFailureCategory(input['failureCategory']);
-  if (input['failureCategory'] !== undefined && failureCategory === undefined) {
-    return undefined;
-  }
+  return { status, report };
+}
 
+function buildVerifierOutcome(
+  status: VerificationStatus,
+  report: VerificationReportEvidence | undefined,
+  failureCategory: VerificationFailureCategory | undefined,
+): VerificationOutcomeInput | undefined {
   switch (status) {
     case 'not_run':
     case 'running':
-      return failureCategory === undefined || failureCategory === 'none'
-        ? { status, failureCategory: 'none' }
-        : undefined;
+      return { status, failureCategory: 'none' };
     case 'success': {
-      if (
-        (report?.status !== undefined && report.status !== 'success') ||
-        (failureCategory !== undefined && failureCategory !== 'none')
-      ) {
-        return undefined;
-      }
-      const successReport = report ? asSuccessOrComparisonReport(report) : undefined;
       return {
         status,
-        ...(successReport ? { report: successReport } : {}),
+        ...(report ? { report: asSuccessOrComparisonReport(report) } : {}),
         failureCategory: 'none',
       };
     }
     case 'dev_mode': {
-      if (
-        (report?.status !== undefined && report.status !== 'dev_mode') ||
-        (failureCategory !== undefined && failureCategory !== 'none')
-      ) {
-        return undefined;
-      }
-      const devModeReport = report ? asDevModeOrComparisonReport(report) : undefined;
       return {
         status,
-        ...(devModeReport ? { report: devModeReport } : {}),
+        ...(report ? { report: asDevModeOrComparisonReport(report) } : {}),
         failureCategory: 'none',
       };
     }
-    case 'failed': {
-      if ((report?.status !== undefined && report.status !== 'failed') || failureCategory === 'none') {
-        return undefined;
-      }
-      const failedReport = report ? asFailedOrComparisonReport(report) : undefined;
-      return {
-        status,
-        ...(failedReport ? { report: failedReport } : {}),
-        failureCategory: failureCategory ?? 'unknown',
-      };
-    }
+    case 'failed':
+      return buildFailedVerifierOutcome(report, failureCategory);
   }
 }
 
-export function normalizeVerifierOutcome(input: VerificationOutcomeInput): AdmittedVerifierOutcome {
+function buildFailedVerifierOutcome(
+  report: VerificationReportEvidence | undefined,
+  failureCategory: VerificationFailureCategory | undefined,
+): VerificationOutcomeInput | undefined {
+  if (failureCategory === 'none') return undefined;
+  return {
+    status: 'failed',
+    ...(report ? { report: asFailedOrComparisonReport(report) } : {}),
+    failureCategory: failureCategory ?? 'unknown',
+  };
+}
+
+function normalizeVerifierOutcome(input: VerificationOutcomeInput): AdmittedVerifierOutcome {
   switch (input.status) {
     case 'not_run':
     case 'running':
@@ -208,7 +212,7 @@ function admitFailureCategory(value: unknown): VerificationFailureCategory | und
 }
 
 function admitReportEvidence(input: unknown): VerificationReportEvidence | undefined {
-  if (!isRecord(input)) {
+  if (!isNonNullObject(input)) {
     return undefined;
   }
 
@@ -221,50 +225,64 @@ function admitReportEvidence(input: unknown): VerificationReportEvidence | undef
     return undefined;
   }
 
+  return admitStatusBearingReport(input, expectedImageId, receiptImageId);
+}
+
+function admitComparisonReport(
+  expectedImageId: string | undefined,
+  receiptImageId: string | null | undefined,
+  devModeReceipt: unknown,
+): VerificationComparisonReportEvidence | undefined {
+  if (
+    typeof expectedImageId !== 'string' ||
+    (typeof receiptImageId !== 'string' && receiptImageId !== null) ||
+    devModeReceipt !== undefined
+  ) {
+    return undefined;
+  }
+  return {
+    expected_image_id: expectedImageId,
+    receipt_image_id: receiptImageId,
+  } satisfies VerificationComparisonReportEvidence;
+}
+
+function projectAdmittedReportImageIds(expectedImageId: string | undefined, receiptImageId: string | null | undefined) {
+  return {
+    ...(expectedImageId === undefined ? {} : { expected_image_id: expectedImageId }),
+    ...(receiptImageId === undefined ? {} : { receipt_image_id: receiptImageId }),
+  };
+}
+
+function admitStatusBearingReport(
+  input: Record<string, unknown>,
+  expectedImageId: string | undefined,
+  receiptImageId: string | null | undefined,
+): VerificationReportEvidence | undefined {
   const status = input['status'];
   const devModeReceipt = input['dev_mode_receipt'];
   if (status === undefined) {
-    if (
-      typeof expectedImageId !== 'string' ||
-      (typeof receiptImageId !== 'string' && receiptImageId !== null) ||
-      devModeReceipt !== undefined
-    ) {
-      return undefined;
-    }
-    return {
-      expected_image_id: expectedImageId,
-      receipt_image_id: receiptImageId,
-    } satisfies VerificationComparisonReportEvidence;
+    return admitComparisonReport(expectedImageId, receiptImageId, devModeReceipt);
   }
 
-  if (status === 'success' && devModeReceipt === false) {
-    if (receiptImageId === null) {
-      return undefined;
-    }
-    return {
-      status,
-      ...(typeof expectedImageId === 'string' ? { expected_image_id: expectedImageId } : {}),
-      ...(typeof receiptImageId === 'string' ? { receipt_image_id: receiptImageId } : {}),
-      dev_mode_receipt: false,
-    };
-  }
-  if (status === 'dev_mode' && devModeReceipt === true) {
-    return {
-      status,
-      ...(typeof expectedImageId === 'string' ? { expected_image_id: expectedImageId } : {}),
-      ...(typeof receiptImageId === 'string' || receiptImageId === null ? { receipt_image_id: receiptImageId } : {}),
-      dev_mode_receipt: true,
-    };
-  }
-  if (status === 'failed' && typeof devModeReceipt === 'boolean') {
-    return {
-      status,
-      ...(typeof expectedImageId === 'string' ? { expected_image_id: expectedImageId } : {}),
-      ...(typeof receiptImageId === 'string' || receiptImageId === null ? { receipt_image_id: receiptImageId } : {}),
-      dev_mode_receipt: devModeReceipt,
-    };
-  }
+  const imageIds = projectAdmittedReportImageIds(expectedImageId, receiptImageId);
+  if (status === 'success' && devModeReceipt === false) return admitSuccessReport(expectedImageId, receiptImageId);
+  if (status === 'dev_mode' && devModeReceipt === true) return { status, ...imageIds, dev_mode_receipt: true };
+  if (status === 'failed' && typeof devModeReceipt === 'boolean')
+    return { status, ...imageIds, dev_mode_receipt: devModeReceipt };
   return undefined;
+}
+
+function admitSuccessReport(
+  expectedImageId: string | undefined,
+  receiptImageId: string | null | undefined,
+): VerificationReportEvidence | undefined {
+  if (receiptImageId === null) return undefined;
+  return {
+    status: 'success',
+    ...(expectedImageId === undefined ? {} : { expected_image_id: expectedImageId }),
+    ...(receiptImageId === undefined ? {} : { receipt_image_id: receiptImageId }),
+    dev_mode_receipt: false,
+  };
 }
 
 function asSuccessOrComparisonReport(

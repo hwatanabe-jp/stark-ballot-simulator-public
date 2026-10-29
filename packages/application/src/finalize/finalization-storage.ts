@@ -1,3 +1,9 @@
+import { hasOnlyAllowedKeys, isNonNegativeInteger } from '@stark-ballot/validation/unknown-value-guards';
+import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
+import {
+  isNonNegativeSafeInteger,
+  hasExactOwnKeys as hasExactKeys,
+} from '@stark-ballot/validation/unknown-value-guards';
 import { VOTE_CHOICES, type VoteChoice } from '@stark-ballot/domain/shared/constants';
 import type { ScenarioTamperMode } from '@stark-ballot/domain/types/scenario';
 import {
@@ -37,10 +43,10 @@ import {
   getBooleanArrayProperty,
   getNumberArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringArrayProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { isSupportedZkVMJournal } from '@stark-ballot/zkvm-contract/zkvm/journal-guards';
 import { toPublicZkvmJournal } from '@stark-ballot/zkvm-contract/zkvm/public-journal';
@@ -177,22 +183,6 @@ export type PersistedFinalizationResultAuthority = Omit<FinalizationResultAuthor
   PersistedFinalizationPublicAuditState &
   PersistedFinalizationBitmapState;
 
-function hasOwn(value: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function hasOnlyAllowedKeys(value: Record<string, unknown>, allowedKeys: ReadonlySet<string>): boolean {
-  return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
 function isIntegerArray(value: number[]): boolean {
   return value.every((entry) => Number.isInteger(entry));
 }
@@ -204,7 +194,7 @@ function parseVerificationStatus(value: unknown): VerificationStatus | undefined
 }
 
 function parseCountRecord(value: unknown): Record<VoteChoice, number> | undefined {
-  if (!isRecord(value) || Object.keys(value).length !== VOTE_CHOICES.length) {
+  if (!isNonNullObject(value) || Object.keys(value).length !== VOTE_CHOICES.length) {
     return undefined;
   }
 
@@ -221,7 +211,7 @@ function parseCountRecord(value: unknown): Record<VoteChoice, number> | undefine
 }
 
 function parseFinalizationTally(value: unknown): FinalizationTally | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, FINALIZATION_TALLY_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, FINALIZATION_TALLY_KEYS)) {
     return undefined;
   }
 
@@ -243,7 +233,7 @@ function parseReceiptJournal(value: unknown): ReceiptJournal | undefined {
   if (typeof value === 'string') {
     return value;
   }
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_JOURNAL_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, RECEIPT_JOURNAL_KEYS)) {
     return undefined;
   }
 
@@ -256,7 +246,7 @@ function parseReceiptJournal(value: unknown): ReceiptJournal | undefined {
 }
 
 function parseReceiptWithImageId(value: unknown): ReceiptWithImageId | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, RECEIPT_KEYS)) {
     return undefined;
   }
 
@@ -267,7 +257,7 @@ function parseReceiptWithImageId(value: unknown): ReceiptWithImageId | undefined
   }
 
   const imageId = getStringProperty(value, 'imageId');
-  const metadata = getRecordProperty(value, 'metadata');
+  const metadata = getObjectProperty(value, 'metadata');
 
   return {
     seal,
@@ -278,7 +268,7 @@ function parseReceiptWithImageId(value: unknown): ReceiptWithImageId | undefined
 }
 
 function parseReceiptPublication(value: unknown): FinalizationReceiptPublication | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RECEIPT_PUBLICATION_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, RECEIPT_PUBLICATION_KEYS)) {
     return undefined;
   }
 
@@ -288,7 +278,7 @@ function parseReceiptPublication(value: unknown): FinalizationReceiptPublication
   if (typeof receiptHash !== 'string' || !isNonNegativeInteger(boardIndex)) {
     return undefined;
   }
-  if (hasOwn(value, 'timestamp') && !isNonNegativeInteger(timestamp)) {
+  if (Object.hasOwn(value, 'timestamp') && !isNonNegativeInteger(timestamp)) {
     return undefined;
   }
 
@@ -299,11 +289,8 @@ function parseReceiptPublication(value: unknown): FinalizationReceiptPublication
   };
 }
 
-export function parseFinalizationBitmapData(value: unknown): FinalizationBitmapData | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, BITMAP_DATA_KEYS)) {
-    return undefined;
-  }
-
+function parseFinalizationBitmapData(value: unknown): FinalizationBitmapData | undefined {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, BITMAP_DATA_KEYS)) return undefined;
   const includedBitmap = getBooleanArrayProperty(value, 'includedBitmap');
   const includedBitmapRoot = getStringProperty(value, 'includedBitmapRoot');
   const treeSize = getNumberProperty(value, 'treeSize');
@@ -314,31 +301,25 @@ export function parseFinalizationBitmapData(value: unknown): FinalizationBitmapD
     !BITMAP_ROOT_PATTERN.test(includedBitmapRoot) ||
     !isNonNegativeSafeInteger(treeSize) ||
     !isNonNegativeSafeInteger(finalizedAtMs)
-  ) {
+  )
     return undefined;
-  }
+  const seen = parseStoredSeenBitmap(value);
+  if (!seen) return undefined;
+  return { includedBitmap: [...includedBitmap], includedBitmapRoot, ...seen, treeSize, finalizedAtMs };
+}
 
+function parseStoredSeenBitmap(
+  value: Record<string, unknown>,
+): Pick<FinalizationBitmapData, 'seenBitmap' | 'seenBitmapRoot'> | undefined {
   const seenBitmap = getBooleanArrayProperty(value, 'seenBitmap');
   const seenBitmapRoot = getStringProperty(value, 'seenBitmapRoot');
-  const hasSeenBitmap = hasOwn(value, 'seenBitmap');
-  const hasSeenBitmapRoot = hasOwn(value, 'seenBitmapRoot');
-  if (hasSeenBitmap !== hasSeenBitmapRoot) {
+  const hasSeenBitmap = Object.hasOwn(value, 'seenBitmap');
+  const hasSeenBitmapRoot = Object.hasOwn(value, 'seenBitmapRoot');
+  if (hasSeenBitmap !== hasSeenBitmapRoot) return undefined;
+  if (hasSeenBitmap && !seenBitmap) return undefined;
+  if (hasSeenBitmapRoot && (typeof seenBitmapRoot !== 'string' || !BITMAP_ROOT_PATTERN.test(seenBitmapRoot)))
     return undefined;
-  }
-  if (hasSeenBitmap && !seenBitmap) {
-    return undefined;
-  }
-  if (hasSeenBitmapRoot && (typeof seenBitmapRoot !== 'string' || !BITMAP_ROOT_PATTERN.test(seenBitmapRoot))) {
-    return undefined;
-  }
-
-  return {
-    includedBitmap: [...includedBitmap],
-    includedBitmapRoot,
-    ...(seenBitmap && seenBitmapRoot ? { seenBitmap: [...seenBitmap], seenBitmapRoot } : {}),
-    treeSize,
-    finalizedAtMs,
-  };
+  return seenBitmap && seenBitmapRoot ? { seenBitmap: [...seenBitmap], seenBitmapRoot } : {};
 }
 
 export function encodeFinalizationBitmapData(data: FinalizationBitmapData): FinalizationBitmapData {
@@ -364,242 +345,175 @@ function parseVerificationReport(value: unknown): VerificationReport | undefined
   }
 }
 
-export function parseVerificationResult(value: unknown): VerificationResult | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, VERIFICATION_RESULT_KEYS)) {
-    return undefined;
-  }
-
-  const status = parseVerificationStatus(value['status']);
-  if (!status) {
-    return undefined;
-  }
-
-  const report = value['report'];
-  const parsedReport = report !== undefined ? parseVerificationReport(report) : undefined;
-  if (report !== undefined && !parsedReport) {
-    return undefined;
-  }
-
-  const failureCategory = getStringProperty(value, 'failureCategory');
+function readVerificationFailureCategory(
+  value: Record<string, unknown>,
+): VerificationFailureCategory | undefined | null {
+  const category = getStringProperty(value, 'failureCategory');
   if (
-    hasOwn(value, 'failureCategory') &&
-    (typeof failureCategory !== 'string' ||
-      !VERIFICATION_FAILURE_CATEGORIES.has(failureCategory as VerificationFailureCategory))
+    Object.hasOwn(value, 'failureCategory') &&
+    (typeof category !== 'string' || !VERIFICATION_FAILURE_CATEGORIES.has(category as VerificationFailureCategory))
   ) {
-    return undefined;
+    return null;
   }
+  return category as VerificationFailureCategory | undefined;
+}
 
-  const admittedFailureCategory = failureCategory as VerificationFailureCategory | undefined;
-  switch (status) {
-    case 'not_run':
-    case 'running':
-      if (parsedReport !== undefined || (admittedFailureCategory !== undefined && admittedFailureCategory !== 'none')) {
-        return undefined;
-      }
-      return {
-        status,
-        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
-      };
+function buildFailedVerificationResult(
+  report: VerificationReport | undefined,
+  category: VerificationFailureCategory | undefined,
+): VerificationResult | undefined {
+  if ((report !== undefined && report.status !== 'failed') || category === 'none') return undefined;
+  return {
+    status: 'failed',
+    ...(report?.status === 'failed' ? { report } : {}),
+    ...(category ? { failureCategory: category } : {}),
+  };
+}
+
+function buildVerificationOutcome(
+  status: VerificationStatus,
+  report: VerificationReport | undefined,
+  category: VerificationFailureCategory | undefined,
+): VerificationResult | undefined {
+  if (status === 'failed') return buildFailedVerificationResult(report, category);
+  if (category !== undefined && category !== 'none') return undefined;
+  const metadata: { failureCategory?: 'none' } = category ? { failureCategory: category } : {};
+  if (report === undefined) return { status, ...metadata };
+  if (report.status !== status) return undefined;
+  // Branch on the admitted report to preserve the status/report relationship in the type system.
+  switch (report.status) {
     case 'success':
-      if (
-        (parsedReport !== undefined && parsedReport.status !== 'success') ||
-        (admittedFailureCategory !== undefined && admittedFailureCategory !== 'none')
-      ) {
-        return undefined;
-      }
-      return {
-        status,
-        ...(parsedReport?.status === 'success' ? { report: parsedReport } : {}),
-        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
-      };
+      return { status: 'success', report, ...metadata };
     case 'dev_mode':
-      if (
-        (parsedReport !== undefined && parsedReport.status !== 'dev_mode') ||
-        (admittedFailureCategory !== undefined && admittedFailureCategory !== 'none')
-      ) {
-        return undefined;
-      }
-      return {
-        status,
-        ...(parsedReport?.status === 'dev_mode' ? { report: parsedReport } : {}),
-        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
-      };
-    case 'failed':
-      if ((parsedReport !== undefined && parsedReport.status !== 'failed') || admittedFailureCategory === 'none') {
-        return undefined;
-      }
-      return {
-        status,
-        ...(parsedReport?.status === 'failed' ? { report: parsedReport } : {}),
-        ...(admittedFailureCategory ? { failureCategory: admittedFailureCategory } : {}),
-      };
+      return { status: 'dev_mode', report, ...metadata };
   }
 }
 
+export function parseVerificationResult(value: unknown): VerificationResult | undefined {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, VERIFICATION_RESULT_KEYS)) return undefined;
+  const status = parseVerificationStatus(value['status']);
+  if (!status) return undefined;
+  const rawReport = value['report'];
+  const report = rawReport !== undefined ? parseVerificationReport(rawReport) : undefined;
+  if (rawReport !== undefined && !report) return undefined;
+  const category = readVerificationFailureCategory(value);
+  return category === null ? undefined : buildVerificationOutcome(status, report, category);
+}
+
 function parseTamperSummary(value: unknown): FinalizationTamperSummary | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, TAMPER_SUMMARY_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, TAMPER_SUMMARY_KEYS)) {
     return undefined;
   }
 
   const ignoredVotes = getNumberProperty(value, 'ignoredVotes');
   const recountedVotes = getNumberProperty(value, 'recountedVotes');
   const userRecountedTo = value['userRecountedTo'];
-  const affectedBotIds = getNumberArrayProperty(value, 'affectedBotIds');
+  const affectedBotIds = parseAffectedBotIds(value);
   if (
     !isNonNegativeInteger(ignoredVotes) ||
     !isNonNegativeInteger(recountedVotes) ||
-    (userRecountedTo !== null && !VOTE_CHOICES.includes(userRecountedTo as VoteChoice))
+    !isNullableVoteChoice(userRecountedTo)
   ) {
     return undefined;
   }
-  if (hasOwn(value, 'affectedBotIds') && (!affectedBotIds || !isIntegerArray(affectedBotIds))) {
+  if (affectedBotIds === null) {
     return undefined;
   }
 
   return {
     ignoredVotes,
     recountedVotes,
-    userRecountedTo: userRecountedTo as VoteChoice | null,
+    userRecountedTo,
     ...(affectedBotIds ? { affectedBotIds: [...affectedBotIds] } : {}),
   };
 }
 
-export function parseFinalizationResultAuthority(value: unknown): FinalizationResultAuthority | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  if (!hasOnlyAllowedKeys(value, FINALIZATION_RESULT_AUTHORITY_KEYS)) {
-    return undefined;
-  }
+type StoredArtifacts = FinalizationResultAuthority['artifacts'];
 
+function parseStoredReceiptArtifacts(
+  value: Record<string, unknown>,
+): Pick<StoredArtifacts, 'receipt' | 'receiptPublication'> | undefined {
+  const hasReceipt = Object.hasOwn(value, 'receipt');
+  const receipt = hasReceipt ? parseReceiptWithImageId(value['receipt']) : undefined;
+  if (hasReceipt && !receipt) return undefined;
+  const hasPublication = Object.hasOwn(value, 'receiptPublication');
+  const publication = hasPublication ? parseReceiptPublication(value['receiptPublication']) : undefined;
+  if (hasPublication && !publication) return undefined;
+  return {
+    receipt: receipt ? { availability: 'available', receipt } : { availability: 'unavailable' },
+    receiptPublication: publication ? { availability: 'available', publication } : { availability: 'unavailable' },
+  };
+}
+
+function parseStoredElectionManifest(value: unknown): ElectionManifest | undefined {
+  return isNonNullObject(value) && hasOnlyAllowedKeys(value, ELECTION_MANIFEST_KEYS) && isElectionManifest(value)
+    ? value
+    : undefined;
+}
+
+function parseStoredCloseStatement(value: unknown): CloseStatement | undefined {
+  return isNonNullObject(value) && hasOnlyAllowedKeys(value, CLOSE_STATEMENT_KEYS) && isCloseStatement(value)
+    ? value
+    : undefined;
+}
+
+function parseStoredPublicAuditArtifacts(value: Record<string, unknown>): StoredArtifacts['publicAudit'] | undefined {
+  const presence = ['publicInputArtifact', 'electionManifest', 'closeStatement'].map((key) =>
+    Object.hasOwn(value, key),
+  );
+  if (presence.every((present) => !present)) return { availability: 'unavailable' };
+  if (!presence.every(Boolean)) return undefined;
+  const publicInputArtifact = parseStoredPublicInputArtifact(value['publicInputArtifact']);
+  const electionManifest = parseStoredElectionManifest(value['electionManifest']);
+  const closeStatement = parseStoredCloseStatement(value['closeStatement']);
+  if (!publicInputArtifact || !electionManifest || !closeStatement) return undefined;
+  return { availability: 'available', publicInputArtifact, electionManifest, closeStatement };
+}
+
+function parseStoredBitmapArtifact(value: Record<string, unknown>): StoredArtifacts['bitmap'] | undefined {
+  const hasSource = Object.hasOwn(value, 'bitmapProofSource');
+  const hasData = Object.hasOwn(value, 'bitmapData');
+  if (!hasSource && !hasData) return { availability: 'unavailable' };
+  if (hasSource !== hasData) return undefined;
+  const proofSource = value['bitmapProofSource'];
+  if (!BITMAP_PROOF_SOURCES.has(proofSource as BitmapProofSource)) return undefined;
+  const data = finalizationBitmapDataCodec.decode(value['bitmapData']);
+  return data ? { availability: 'available', proofSource: proofSource as BitmapProofSource, data } : undefined;
+}
+
+function parseStoredScenarioPresentation(
+  value: Record<string, unknown>,
+): Pick<FinalizationResultAuthority, 'tamperDetected' | 'scenarios' | 'tamperSummary'> | undefined {
+  const tamperDetected = value['tamperDetected'];
+  if (Object.hasOwn(value, 'tamperDetected') && typeof tamperDetected !== 'boolean') return undefined;
+  const scenarios = getStringArrayProperty(value, 'scenarios');
+  if (value['scenarios'] !== undefined && !scenarios) return undefined;
+  const rawSummary = value['tamperSummary'];
+  const tamperSummary = rawSummary !== undefined ? parseTamperSummary(rawSummary) : undefined;
+  if (rawSummary !== undefined && !tamperSummary) return undefined;
+  return projectStoredScenarioPresentation(tamperDetected, scenarios, tamperSummary);
+}
+
+export function parseFinalizationResultAuthority(value: unknown): FinalizationResultAuthority | undefined {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, FINALIZATION_RESULT_AUTHORITY_KEYS)) return undefined;
   const tally = parseFinalizationTally(value['tally']);
   const imageId = getStringProperty(value, 'imageId');
   const journalValue = value['journal'];
   if (
     !tally ||
     typeof imageId !== 'string' ||
-    !isRecord(journalValue) ||
+    !isNonNullObject(journalValue) ||
     !hasOnlyAllowedKeys(journalValue, JOURNAL_KEYS) ||
     !isSupportedZkVMJournal(journalValue)
-  ) {
+  )
     return undefined;
-  }
   const journal = toPublicZkvmJournal(journalValue);
-
-  if (hasOwn(value, 'tamperDetected') && typeof value['tamperDetected'] !== 'boolean') {
-    return undefined;
-  }
-
-  const scenarios = getStringArrayProperty(value, 'scenarios');
-  if (value['scenarios'] !== undefined && !scenarios) {
-    return undefined;
-  }
-
-  const hasReceipt = hasOwn(value, 'receipt');
-  const parsedReceipt = hasReceipt ? parseReceiptWithImageId(value['receipt']) : undefined;
-  if (hasReceipt && !parsedReceipt) {
-    return undefined;
-  }
-
-  const hasReceiptPublication = hasOwn(value, 'receiptPublication');
-  const parsedReceiptPublication = hasReceiptPublication
-    ? parseReceiptPublication(value['receiptPublication'])
-    : undefined;
-  if (hasReceiptPublication && !parsedReceiptPublication) {
-    return undefined;
-  }
-
-  const hasPublicInputArtifact = hasOwn(value, 'publicInputArtifact');
-  const hasElectionManifest = hasOwn(value, 'electionManifest');
-  const hasCloseStatement = hasOwn(value, 'closeStatement');
-  const parsedPublicInputArtifact = hasPublicInputArtifact
-    ? parseStoredPublicInputArtifact(value['publicInputArtifact'])
-    : undefined;
-  if (hasPublicInputArtifact && !parsedPublicInputArtifact) {
-    return undefined;
-  }
-
-  let electionManifest: ElectionManifest | undefined;
-  if (hasElectionManifest) {
-    const candidate = value['electionManifest'];
-    if (
-      !isRecord(candidate) ||
-      !hasOnlyAllowedKeys(candidate, ELECTION_MANIFEST_KEYS) ||
-      !isElectionManifest(candidate)
-    ) {
-      return undefined;
-    }
-    electionManifest = candidate;
-  }
-  let closeStatement: CloseStatement | undefined;
-  if (hasCloseStatement) {
-    const candidate = value['closeStatement'];
-    if (!isRecord(candidate) || !hasOnlyAllowedKeys(candidate, CLOSE_STATEMENT_KEYS) || !isCloseStatement(candidate)) {
-      return undefined;
-    }
-    closeStatement = candidate;
-  }
-
-  const hasAnyPublicAuditArtifact = hasPublicInputArtifact || hasElectionManifest || hasCloseStatement;
-  const hasCompletePublicAuditArtifacts =
-    parsedPublicInputArtifact !== undefined && electionManifest !== undefined && closeStatement !== undefined;
-  if (hasAnyPublicAuditArtifact !== hasCompletePublicAuditArtifacts) {
-    return undefined;
-  }
-  const publicAuditArtifacts =
-    parsedPublicInputArtifact && electionManifest && closeStatement
-      ? {
-          availability: 'available' as const,
-          publicInputArtifact: parsedPublicInputArtifact,
-          electionManifest,
-          closeStatement,
-        }
-      : { availability: 'unavailable' as const };
-
-  const hasBitmapProofSource = hasOwn(value, 'bitmapProofSource');
-  const bitmapProofSource = hasBitmapProofSource ? value['bitmapProofSource'] : undefined;
-  if (hasBitmapProofSource && !BITMAP_PROOF_SOURCES.has(bitmapProofSource as BitmapProofSource)) {
-    return undefined;
-  }
-
-  const hasBitmapData = hasOwn(value, 'bitmapData');
-  const parsedBitmapData = hasBitmapData ? finalizationBitmapDataCodec.decode(value['bitmapData']) : undefined;
-  if (hasBitmapData && !parsedBitmapData) {
-    return undefined;
-  }
-  if (hasBitmapProofSource !== hasBitmapData) {
-    return undefined;
-  }
-
-  const tamperSummary = value['tamperSummary'];
-  const parsedTamperSummary = tamperSummary !== undefined ? parseTamperSummary(tamperSummary) : undefined;
-  if (tamperSummary !== undefined && !parsedTamperSummary) {
-    return undefined;
-  }
-
-  return {
-    tally,
-    imageId,
-    ...(typeof value['tamperDetected'] === 'boolean' ? { tamperDetected: value['tamperDetected'] } : {}),
-    ...(scenarios ? { scenarios: [...scenarios] } : {}),
-    journal,
-    artifacts: {
-      receipt: parsedReceipt ? { availability: 'available', receipt: parsedReceipt } : { availability: 'unavailable' },
-      receiptPublication: parsedReceiptPublication
-        ? { availability: 'available', publication: parsedReceiptPublication }
-        : { availability: 'unavailable' },
-      publicAudit: publicAuditArtifacts,
-      bitmap:
-        bitmapProofSource !== undefined && parsedBitmapData
-          ? {
-              availability: 'available',
-              proofSource: bitmapProofSource as BitmapProofSource,
-              data: parsedBitmapData,
-            }
-          : { availability: 'unavailable' },
-    },
-    ...(parsedTamperSummary ? { tamperSummary: parsedTamperSummary } : {}),
-  };
+  const presentation = parseStoredScenarioPresentation(value);
+  const receipts = parseStoredReceiptArtifacts(value);
+  const publicAudit = parseStoredPublicAuditArtifacts(value);
+  const bitmap = parseStoredBitmapArtifact(value);
+  if (!presentation || !receipts || !publicAudit || !bitmap) return undefined;
+  return { tally, imageId, journal, ...presentation, artifacts: { ...receipts, publicAudit, bitmap } };
 }
 
 export function encodeFinalizationResultAuthority(
@@ -628,13 +542,8 @@ export function encodeFinalizationResultAuthority(
   };
 }
 
-function hasExactKeys(value: Record<string, unknown>, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.size && keys.every((key) => expected.has(key));
-}
-
 function hasExactAvailabilityKeys(value: unknown, availableKeys: readonly string[]): value is Record<string, unknown> {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return false;
   }
   const availability = value['availability'];
@@ -646,11 +555,11 @@ function hasExactAvailabilityKeys(value: unknown, availableKeys: readonly string
  * persisted codec. This is used at process/runtime command boundaries.
  */
 export function admitFinalizationResultAuthority(value: unknown): FinalizationResultAuthority | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, ADMITTED_FINALIZATION_RESULT_AUTHORITY_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, ADMITTED_FINALIZATION_RESULT_AUTHORITY_KEYS)) {
     return undefined;
   }
   const artifacts = value['artifacts'];
-  if (!isRecord(artifacts) || !hasExactKeys(artifacts, FINALIZATION_ARTIFACT_AVAILABILITY_KEYS)) {
+  if (!isNonNullObject(artifacts) || !hasExactKeys(artifacts, FINALIZATION_ARTIFACT_AVAILABILITY_KEYS)) {
     return undefined;
   }
   const publicAudit = artifacts['publicAudit'];
@@ -670,9 +579,9 @@ export function admitFinalizationResultAuthority(value: unknown): FinalizationRe
     tally: value['tally'],
     imageId: value['imageId'],
     journal: value['journal'],
-    ...(hasOwn(value, 'tamperDetected') ? { tamperDetected: value['tamperDetected'] } : {}),
-    ...(hasOwn(value, 'scenarios') ? { scenarios: value['scenarios'] } : {}),
-    ...(hasOwn(value, 'tamperSummary') ? { tamperSummary: value['tamperSummary'] } : {}),
+    ...(Object.hasOwn(value, 'tamperDetected') ? { tamperDetected: value['tamperDetected'] } : {}),
+    ...(Object.hasOwn(value, 'scenarios') ? { scenarios: value['scenarios'] } : {}),
+    ...(Object.hasOwn(value, 'tamperSummary') ? { tamperSummary: value['tamperSummary'] } : {}),
     ...(receipt['availability'] === 'available' ? { receipt: receipt['receipt'] } : {}),
     ...(receiptPublication['availability'] === 'available'
       ? { receiptPublication: receiptPublication['publication'] }
@@ -691,29 +600,29 @@ export function admitFinalizationResultAuthority(value: unknown): FinalizationRe
 }
 
 function parseFinalizationError(value: unknown): Extract<FinalizationState, { status: 'failed' }>['error'] | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, FINALIZATION_ERROR_KEYS)) {
-    return undefined;
-  }
-
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, FINALIZATION_ERROR_KEYS)) return undefined;
   const code = getStringProperty(value, 'code');
   const message = getStringProperty(value, 'message');
-  const category = getStringProperty(value, 'category');
-  if (typeof code !== 'string' || typeof message !== 'string') {
-    return undefined;
-  }
-  if (
-    hasOwn(value, 'category') &&
-    (typeof category !== 'string' || !FINALIZATION_FAILURE_CATEGORIES.has(category as FinalizationFailureCategory))
-  ) {
-    return undefined;
-  }
-
+  const category = parseFinalizationErrorCategory(value);
+  if (typeof code !== 'string' || typeof message !== 'string' || category === null) return undefined;
   return {
     code,
     message,
-    ...(category ? { category: category as FinalizationFailureCategory } : {}),
-    ...(hasOwn(value, 'details') ? { details: value['details'] } : {}),
+    ...(category ? { category } : {}),
+    ...(Object.hasOwn(value, 'details') ? { details: value['details'] } : {}),
   };
+}
+
+function parseFinalizationErrorCategory(
+  value: Record<string, unknown>,
+): FinalizationFailureCategory | undefined | null {
+  const category = getStringProperty(value, 'category');
+  if (
+    Object.hasOwn(value, 'category') &&
+    (typeof category !== 'string' || !FINALIZATION_FAILURE_CATEGORIES.has(category as FinalizationFailureCategory))
+  )
+    return null;
+  return category as FinalizationFailureCategory | undefined;
 }
 
 const FINALIZATION_STATE_KEYS_BY_STATUS: Record<FinalizationState['status'], ReadonlySet<string>> = {
@@ -724,100 +633,73 @@ const FINALIZATION_STATE_KEYS_BY_STATUS: Record<FinalizationState['status'], Rea
   timeout: new Set(['status', 'finalizationId', 'queuedAtMs', 'startedAtMs', 'timeoutAtMs']),
 };
 
+type StoredFinalizationTiming = Pick<FinalizationState, 'finalizationId' | 'queuedAtMs'> & { startedAtMs?: number };
+
+function parseFailedFinalization(
+  value: Record<string, unknown>,
+  timing: StoredFinalizationTiming,
+): FinalizationState | undefined {
+  const failedAtMs = getNumberProperty(value, 'failedAtMs');
+  const error = parseFinalizationError(value['error']);
+  if (!isNonNegativeInteger(failedAtMs) || !error) return undefined;
+  return { status: 'failed', ...timing, failedAtMs, error };
+}
+
+function parseCompletedFinalization(
+  value: Record<string, unknown>,
+  timing: StoredFinalizationTiming,
+): FinalizationState | undefined {
+  const completedAtMs = getNumberProperty(value, 'completedAtMs');
+  if (!isNonNegativeInteger(timing.startedAtMs) || !isNonNegativeInteger(completedAtMs)) return undefined;
+  return { status: 'succeeded', ...timing, startedAtMs: timing.startedAtMs, completedAtMs };
+}
+
+function parseFinalizationProgress(
+  status: FinalizationState['status'],
+  value: Record<string, unknown>,
+  timing: StoredFinalizationTiming,
+): FinalizationState | undefined {
+  switch (status) {
+    case 'pending':
+      return { status, finalizationId: timing.finalizationId, queuedAtMs: timing.queuedAtMs };
+    case 'running':
+      return isNonNegativeInteger(timing.startedAtMs)
+        ? { status, ...timing, startedAtMs: timing.startedAtMs }
+        : undefined;
+    case 'succeeded':
+      return parseCompletedFinalization(value, timing);
+    case 'failed':
+      return parseFailedFinalization(value, timing);
+    case 'timeout': {
+      const timeoutAtMs = getNumberProperty(value, 'timeoutAtMs');
+      return isNonNegativeInteger(timeoutAtMs) ? { status, ...timing, timeoutAtMs } : undefined;
+    }
+  }
+}
+
+function isFinalizationStatus(value: string): value is FinalizationState['status'] {
+  return Object.hasOwn(FINALIZATION_STATE_KEYS_BY_STATUS, value);
+}
+
 export function parseFinalizationState(value: unknown): FinalizationState | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
+  if (!isNonNullObject(value)) return undefined;
   const status = getStringProperty(value, 'status');
-  const allowedKeys = status ? FINALIZATION_STATE_KEYS_BY_STATUS[status as FinalizationState['status']] : undefined;
-  if (!allowedKeys || !hasOnlyAllowedKeys(value, allowedKeys)) {
-    return undefined;
-  }
-
+  if (!status || !isFinalizationStatus(status)) return undefined;
+  if (!hasOnlyAllowedKeys(value, FINALIZATION_STATE_KEYS_BY_STATUS[status])) return undefined;
   const finalizationId = parseFinalizationId(value['finalizationId']);
   const queuedAtMs = getNumberProperty(value, 'queuedAtMs');
-  if (!status || !finalizationId || !isNonNegativeInteger(queuedAtMs)) {
-    return undefined;
-  }
-
-  if (status === 'pending') {
-    return {
-      status: 'pending',
-      finalizationId,
-      queuedAtMs,
-    };
-  }
-
+  if (!finalizationId || !isNonNegativeInteger(queuedAtMs)) return undefined;
   const startedAtMs = getNumberProperty(value, 'startedAtMs');
-  if (hasOwn(value, 'startedAtMs') && !isNonNegativeInteger(startedAtMs)) {
-    return undefined;
-  }
-
-  if (status === 'running') {
-    if (!isNonNegativeInteger(startedAtMs)) {
-      return undefined;
-    }
-    return {
-      status: 'running',
-      finalizationId,
-      queuedAtMs,
-      startedAtMs,
-    };
-  }
-
-  if (status === 'succeeded') {
-    const completedAtMs = getNumberProperty(value, 'completedAtMs');
-    if (!isNonNegativeInteger(startedAtMs) || !isNonNegativeInteger(completedAtMs)) {
-      return undefined;
-    }
-
-    return {
-      status: 'succeeded',
-      finalizationId,
-      queuedAtMs,
-      startedAtMs,
-      completedAtMs,
-    };
-  }
-
-  if (status === 'failed') {
-    const failedAtMs = getNumberProperty(value, 'failedAtMs');
-    const error = parseFinalizationError(value['error']);
-    if (!isNonNegativeInteger(failedAtMs) || !error) {
-      return undefined;
-    }
-
-    return {
-      status: 'failed',
-      finalizationId,
-      queuedAtMs,
-      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
-      failedAtMs,
-      error,
-    };
-  }
-
-  if (status === 'timeout') {
-    const timeoutAtMs = getNumberProperty(value, 'timeoutAtMs');
-    if (!isNonNegativeInteger(timeoutAtMs)) {
-      return undefined;
-    }
-
-    return {
-      status: 'timeout',
-      finalizationId,
-      queuedAtMs,
-      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
-      timeoutAtMs,
-    };
-  }
-
-  return undefined;
+  if (Object.hasOwn(value, 'startedAtMs') && !isNonNegativeInteger(startedAtMs)) return undefined;
+  return parseFinalizationProgress(status, value, {
+    finalizationId,
+    queuedAtMs,
+    ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+  });
 }
 
 export function parseFinalizationScenarioContext(value: unknown): FinalizationScenarioContext | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, FINALIZATION_SCENARIO_CONTEXT_KEYS)) {
+  if (!isNonNullObject(value) || !hasOnlyAllowedKeys(value, FINALIZATION_SCENARIO_CONTEXT_KEYS)) {
     return undefined;
   }
 
@@ -825,7 +707,7 @@ export function parseFinalizationScenarioContext(value: unknown): FinalizationSc
   const tamperMode = getStringProperty(value, 'tamperMode');
   const claimedCounts = parseCountRecord(value['claimedCounts']);
   const claimedTotalVotes = getNumberProperty(value, 'claimedTotalVotes');
-  const summary = getRecordProperty(value, 'summary');
+  const summary = getObjectProperty(value, 'summary');
   if (
     !scenarios ||
     !tamperMode ||
@@ -841,15 +723,15 @@ export function parseFinalizationScenarioContext(value: unknown): FinalizationSc
   const ignoredCount = getNumberProperty(summary, 'ignoredCount');
   const recountedCount = getNumberProperty(summary, 'recountedCount');
   const userRecountChoice = summary['userRecountChoice'];
-  const affectedBotIds = getNumberArrayProperty(summary, 'affectedBotIds');
+  const affectedBotIds = parseAffectedBotIds(summary);
   if (
     !isNonNegativeInteger(ignoredCount) ||
     !isNonNegativeInteger(recountedCount) ||
-    (userRecountChoice !== null && !VOTE_CHOICES.includes(userRecountChoice as VoteChoice))
+    !isNullableVoteChoice(userRecountChoice)
   ) {
     return undefined;
   }
-  if (hasOwn(summary, 'affectedBotIds') && (!affectedBotIds || !isIntegerArray(affectedBotIds))) {
+  if (affectedBotIds === null) {
     return undefined;
   }
 
@@ -861,8 +743,30 @@ export function parseFinalizationScenarioContext(value: unknown): FinalizationSc
     summary: {
       ignoredCount,
       recountedCount,
-      userRecountChoice: userRecountChoice as VoteChoice | null,
+      userRecountChoice,
       ...(affectedBotIds ? { affectedBotIds: [...affectedBotIds] } : {}),
     },
   };
+}
+
+function isNullableVoteChoice(value: unknown): value is VoteChoice | null {
+  return value === null || VOTE_CHOICES.some((choice) => choice === value);
+}
+
+function parseAffectedBotIds(value: Record<string, unknown>): number[] | undefined | null {
+  const affectedBotIds = getNumberArrayProperty(value, 'affectedBotIds');
+  if (Object.hasOwn(value, 'affectedBotIds') && (!affectedBotIds || !isIntegerArray(affectedBotIds))) return null;
+  return affectedBotIds;
+}
+
+function projectStoredScenarioPresentation(
+  tamperDetected: unknown,
+  scenarios: string[] | undefined,
+  tamperSummary: FinalizationTamperSummary | undefined,
+): Pick<FinalizationResultAuthority, 'tamperDetected' | 'scenarios' | 'tamperSummary'> {
+  return omitUndefinedProperties({
+    tamperDetected: typeof tamperDetected === 'boolean' ? tamperDetected : undefined,
+    scenarios: scenarios ? [...scenarios] : undefined,
+    tamperSummary,
+  });
 }

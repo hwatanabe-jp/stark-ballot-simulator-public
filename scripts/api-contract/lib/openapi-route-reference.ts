@@ -19,7 +19,7 @@ const VOTE_ID_PATH = {
   pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$',
 } as const;
 
-export const OPENAPI_ROUTE_REFERENCE = {
+const OPENAPI_ROUTE_REFERENCE = {
   'progress.get': {
     summary: 'Read session progress',
     description: 'Returns the capability-scoped progress projection for one session.',

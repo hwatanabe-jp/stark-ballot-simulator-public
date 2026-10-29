@@ -2,8 +2,6 @@ locals {
   expected_state_backend_key = local.app_lane_authority.backendKey
   name_prefix                = local.deployment_shared_names.runtimeNamePrefix
 
-
-
   dynamodb_tables = {
     sessions = {
       name     = "${local.name_prefix}-sessions"
@@ -23,39 +21,19 @@ locals {
       name     = "${local.name_prefix}-rate-limit-counters"
       hash_key = "key"
     }
-    prover_semaphore = {
-      name     = "${local.name_prefix}-prover-semaphore"
-      hash_key = "LockName"
-    }
   }
 
-  dynamodb_recovery_quiesced = contains([
-    "primary_quiesced",
-    "replacement_quiesced",
-  ], var.dynamodb_recovery_phase)
-  dynamodb_recovery_serves_replacement = contains([
-    "replacement_quiesced",
-    "replacement_active",
-  ], var.dynamodb_recovery_phase)
+  # A maintenance change is reviewed as source and a fresh ordinary saved plan.
+  # This closes new sessions and queue/sweeper admission; operators must still
+  # block existing-session writes and prove all in-flight writers have drained.
+  application_quiesced = false
 
-  recovery_sessions_table_arn  = var.dynamodb_recovery_activation == null ? aws_dynamodb_table.sessions.arn : var.dynamodb_recovery_activation.sessions.table_arn
-  recovery_votes_table_arn     = var.dynamodb_recovery_activation == null ? aws_dynamodb_table.votes.arn : var.dynamodb_recovery_activation.votes.table_arn
-  recovery_sessions_table_name = var.dynamodb_recovery_activation == null ? local.dynamodb_tables.sessions.name : var.dynamodb_recovery_activation.sessions.table_name
-  recovery_votes_table_name    = var.dynamodb_recovery_activation == null ? local.dynamodb_tables.votes.name : var.dynamodb_recovery_activation.votes.table_name
-
-  active_sessions_table_arn  = local.dynamodb_recovery_serves_replacement ? local.recovery_sessions_table_arn : aws_dynamodb_table.sessions.arn
-  active_votes_table_arn     = local.dynamodb_recovery_serves_replacement ? local.recovery_votes_table_arn : aws_dynamodb_table.votes.arn
-  active_sessions_table_name = local.dynamodb_recovery_serves_replacement ? local.recovery_sessions_table_name : local.dynamodb_tables.sessions.name
-  active_votes_table_name    = local.dynamodb_recovery_serves_replacement ? local.recovery_votes_table_name : local.dynamodb_tables.votes.name
-
-  runtime_sessions_table_arns = distinct([
-    aws_dynamodb_table.sessions.arn,
-    local.recovery_sessions_table_arn,
-  ])
-  runtime_votes_table_arns = distinct([
-    aws_dynamodb_table.votes.arn,
-    local.recovery_votes_table_arn,
-  ])
+  active_sessions_table_arn   = aws_dynamodb_table.sessions.arn
+  active_votes_table_arn      = aws_dynamodb_table.votes.arn
+  active_sessions_table_name  = aws_dynamodb_table.sessions.name
+  active_votes_table_name     = aws_dynamodb_table.votes.name
+  runtime_sessions_table_arns = [local.active_sessions_table_arn]
+  runtime_votes_table_arns    = [local.active_votes_table_arn]
 
   runtime_reference_names = {
     SESSION_CAPABILITY_SECRET_REF      = "${local.deployment_shared_names.runtimeSecretReferencePrefix}/session-capability-secret"
@@ -91,11 +69,8 @@ locals {
   dynamodb_table_names = distinct([
     local.dynamodb_tables.sessions.name,
     local.dynamodb_tables.votes.name,
-    local.recovery_sessions_table_name,
-    local.recovery_votes_table_name,
     local.dynamodb_tables.rate_limit_events.name,
     local.dynamodb_tables.rate_limit_counters.name,
-    local.dynamodb_tables.prover_semaphore.name,
   ])
 
   target_application_lambda_names = {
@@ -128,7 +103,7 @@ locals {
   verification_work_queue_name           = "${local.name_prefix}-verification-work"
   verification_work_dlq_name             = "${local.name_prefix}-verification-work-dlq"
   api_name                               = "${local.name_prefix}-api"
-  api_origin_domain_name                 = replace(aws_apigatewayv2_api.target.api_endpoint, "https://", "")
+  api_origin_domain_name                 = "${aws_api_gateway_rest_api.target.id}.execute-api.${var.aws_region}.amazonaws.com"
   api_throttle_burst_limit               = 50
   api_throttle_rate_limit                = 25
   target_public_origin                   = trimsuffix(var.verifier_public_base_url, "/")
@@ -143,14 +118,11 @@ locals {
     length(trimspace(data.aws_secretsmanager_secret_version.api_origin_verify_header[0].secret_string)) > 0
   )
   target_develop_operator_gate_enabled = local.operator_gate_keyset_configured && local.api_origin_verify_header_configured
-  target_public_session_create_enabled = !local.dynamodb_recovery_quiesced && (var.deployment_environment == "main" || local.target_develop_operator_gate_enabled)
+  target_public_session_create_enabled = !local.application_quiesced && (var.deployment_environment == "main" || local.target_develop_operator_gate_enabled)
   session_create_turnstile_required    = !local.target_develop_operator_gate_enabled
   target_state_machine_name            = "${local.name_prefix}-finalization"
   target_state_machine_arn             = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:stateMachine:${local.target_state_machine_name}"
   target_execution_arn                 = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:execution:${local.target_state_machine_name}:*"
-  prover_semaphore_table_name          = local.dynamodb_tables.prover_semaphore.name
-  prover_semaphore_lock_name           = "prover-fargate"
-  prover_semaphore_stale_seconds       = var.prover_task_timeout_seconds + 900
   callback_delivery_retry = [
     {
       ErrorEquals     = ["TransientBundleRestoreError", "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"]

@@ -1,8 +1,8 @@
 # 検証の実行フロー
 
-「検証へ進む」を押すと、ブラウザとサーバーがそれぞれの持つ証拠を使って確認を始めます。ブラウザには投票時の B と乱数が残り、サーバーには掲示板の証拠、集計入力、STARK レシートが保存されています。
+「検証へ進む」を押すと、ブラウザとサーバーがそれぞれの持つ証拠を使って確認を始めます。ブラウザは投票時に保存した選択肢と乱数を使い、サーバーは保存済みの掲示板の証拠、集計入力、STARK レシートを使います。
 
-## 誰が何を検証するか
+## 検証処理の分担
 
 | 実行場所          | 確認すること                                                                       | ブラウザが受け取るもの                                 |
 | ----------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
@@ -12,9 +12,9 @@
 
 API の検証応答には全 22 チェックが並びますが、Cast の 4 チェックは `not_run` です。サーバーだけでは投票者の手元の意図を検証できないためです。ブラウザはこの 4 件をローカルで再計算した結果に置き換え、共通の[表示判定規則](gating-logic.md)を適用します。
 
-この画面の Recorded / Counted と STARK の結果は、サーバーが行った検証の報告を利用します。ブラウザがすべての暗号検証を独立に実行するわけではありません。サーバーの報告から独立してレシートや公開入力を調べる場合は、[手元での検証](../reproducibility/index.md)を行います。その場合も、ZIP だけでは手元の投票意図や自票の証拠まで揃いません。
+この画面の Recorded / Counted と STARK の結果には、サーバーが行った検証の報告を使います。Cast のチェックはブラウザ内で再計算します。サーバーの報告から独立してレシートや公開入力を調べる場合は、[手元での検証](../reproducibility/index.md)を行います。ZIP に含まれる証拠がその検証範囲で、手元の投票意図や自票の証拠は別途必要です。
 
-## 画面で進む処理
+## 検証画面の処理
 
 結果画面は、集計結果をその `finalizationId` とともに保存します。「検証へ進む」を押すと開始時刻を記録し、必要なら STARK 検証を先に起動して、完了を待たずに検証画面へ移ります。
 
@@ -25,13 +25,17 @@ sequenceDiagram
   participant R as Rust 検証サービス
   B->>A: この集計の STARK 検証を開始
   Note over B: 結果画面から検証画面へ移る
-  A->>R: レシートと期待 Image ID を渡す
-  R-->>A: 検証結果を保存
-  loop STARK の完了を待つ
-    B->>A: 同じ集計の検証状態を取得
-    A-->>B: 状態とチェック結果
+  par STARK 検証
+    A->>R: レシートと期待 Image ID を渡す
+    R-->>A: 検証結果を保存
+  and 状態の取得
+    loop STARK の完了を待つ
+      B->>A: 同じ集計の検証状態を取得
+      A-->>B: 状態とチェック結果
+      B->>B: 取得データと手元の票から Cast を評価
+    end
   end
-  B->>B: Cast を手元で再計算し、各段階を表示
+  B->>B: 四段階の結果をまとめて表示
   B->>B: 共通の規則で最終表示を決定
 ```
 
@@ -39,11 +43,11 @@ sequenceDiagram
 
 検証画面は、開始時刻と集計結果が保存された継続状態から処理を引き継ぎます。必要ならそこで STARK 検証を起動します。継続状態がなく、STARK も `not_run` のまま検証画面へ直接アクセスした場合は、自動開始しません。
 
-STARK が終了してから段階表示を始めるので、画面上の順番と実際の処理順は一致しません。ポーリングのタイムアウトや通信失敗は成功として処理せず、検証実行の失敗として表示します。
+Cast は、取得した検証データから画面用の結果を組み立てる際に評価します。四段階の結果は、必要な STARK 検証の待機を終えてからまとめて表示します。ポーリングのタイムアウトや通信失敗は成功として処理せず、検証実行の失敗として表示します。
 
-## 証拠がない場合と、壊れている場合
+## 証拠不足と不正な証拠
 
-投票時の証拠を取得できない場合、何も矛盾が見つからなかったとしても、記録を確認できたとは言えません。逆に、取得した証拠のインデックスやコミットメントが保存済みの票と食い違う場合は、単なる不足ではありません。
+投票時の証拠を取得できない場合は、証拠不足として扱います。取得できた場合は、インデックスやコミットメントを保存済みの票と照合し、食い違いがあれば不一致として扱います。
 
 検証リソースの内部では、この違いを次のように扱います。
 
@@ -55,7 +59,7 @@ STARK が終了してから段階表示を始めるので、画面上の順番�
 
 読み取り準備が返すリソース全体の `unavailable` / `corrupt` と、正常な応答内の `voterEvidence.availability` は別の状態です。現在の GET は、前者をエラー応答の検査へ通すため `500` になります。正確な wire 形式は [API エンドポイント](../api/endpoints.md)に示します。
 
-取得した JSON は、チェック評価の前に形式と相互整合性を検査します。期待と違うジャーナルや部分的な証跡を、空値や成功値へ補正しません。一方、教育用シナリオの「表示集計だけが違う」という状態は、その差を失敗の証拠として保持します。証拠の内容を変えて辻褄を合わせることはありません。
+取得した JSON は、チェック評価の前に形式と相互整合性を検査します。期待と異なるジャーナルや不完全な証跡を、空値や成功値へ補正しません。一方、教育用シナリオの「表示集計だけが違う」という状態は、その差を失敗の証拠として保持します。検証を通すために証拠の内容を変更することはありません。
 
 ## 判定後に記録する観測
 
@@ -63,4 +67,4 @@ STARK が終了してから段階表示を始めるので、画面上の順番�
 
 この送信は運用上の集計に使います。失敗しても、すでに確定した検証結果は変わりません。同じ集計についての再送と競合の扱いは、[観測 API](../api/endpoints.md#post-apisessionssessionidfinalizationsfinalizationidverificationobservations)に定めています。
 
-<!-- source: apps/web/src/api/verification.ts, apps/web/src/routes/result/page.tsx, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/local-cast-evidence.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/hooks/useVerificationSequence.ts, apps/web/src/routes/verify/hooks/useVerificationObservation.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationRun.ts, apps/api/src/server/api/handlers/verificationObservation.ts, packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, packages/application/src/verification/prepare-verification-read.ts, packages/verification/src/verification/build-verification-steps.ts, packages/verification/src/verification/engine/derive-stages.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts -->
+<!-- source: apps/web/src/api/verification.ts, apps/web/src/routes/result/page.tsx, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/lib/local-cast-evidence.ts, apps/web/src/routes/verify/lib/verification-data.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/hooks/useVerificationSequence.ts, apps/web/src/routes/verify/hooks/useVerificationObservation.ts, apps/api/src/server/api/handlers/verify.ts, apps/api/src/server/api/handlers/verificationRun.ts, apps/api/src/server/api/handlers/verificationObservation.ts, packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/verification.ts, packages/application/src/verification/prepare-verification-read.ts, packages/verification/src/verification/build-verification-steps.ts, packages/verification/src/verification/engine/derive-stages.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts -->

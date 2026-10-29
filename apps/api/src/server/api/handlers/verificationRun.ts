@@ -34,9 +34,19 @@ function verificationRunResponse(
   body: Omit<VerificationRunResponse, 'meta'>,
 ): RouteBoundResponse<typeof runVerificationRoute> {
   return respondWithRoute(runVerificationRoute, {
-    status: 200,
+    status: body.data.verificationStatus === 'running' ? 202 : 200,
     content: 'json',
     body,
+  });
+}
+
+function verificationStatusResponse(
+  verificationStatus: VerificationStatus,
+  finalizationId: FinalizationId,
+  idempotent: boolean,
+): RouteBoundResponse<typeof runVerificationRoute> {
+  return verificationRunResponse({
+    data: { verificationStatus, finalizationId, estimatedDurationMs: ESTIMATED_VERIFICATION_DURATION_MS, idempotent },
   });
 }
 
@@ -63,6 +73,27 @@ type VerificationBundleReference =
       reportPath: string;
     };
 
+function resolveS3BundleReference(
+  sessionId: SessionId,
+  finalizationId: FinalizationId,
+  bundleKey: string | undefined,
+): VerificationBundleReference | null {
+  if (!bundleKey) {
+    return null;
+  }
+  const identity = resolveBundleKeyIdentity(bundleKey);
+  if (identity?.sessionId !== sessionId || identity.finalizationId !== finalizationId) {
+    return null;
+  }
+  return {
+    mode: 's3_bundle',
+    finalizationId,
+    bundleKey,
+    bundlePath: bundleKey,
+    reportPath: buildReportKey(bundleKey),
+  };
+}
+
 function resolveBundleReferences(
   sessionId: SessionId,
   finalizationResult: FinalizationResultRecord,
@@ -75,22 +106,7 @@ function resolveBundleReferences(
   }
 
   const bundleKey = deliveryMetadata?.s3BundleKey;
-  if (runtimeProfile.artifacts.kind === 's3') {
-    if (!bundleKey) {
-      return null;
-    }
-    const identity = resolveBundleKeyIdentity(bundleKey);
-    if (identity?.sessionId !== sessionId || identity.finalizationId !== finalizationId) {
-      return null;
-    }
-    return {
-      mode: 's3_bundle',
-      finalizationId,
-      bundleKey,
-      bundlePath: bundleKey,
-      reportPath: buildReportKey(bundleKey),
-    };
-  }
+  if (runtimeProfile.artifacts.kind === 's3') return resolveS3BundleReference(sessionId, finalizationId, bundleKey);
   if (bundleKey) {
     return null;
   }
@@ -159,59 +175,79 @@ type VerificationRunContext = SessionFinalizationAdmittedContext & {
   finalizeRateLimit: FinalizeRateLimitContext;
 };
 
-export async function runVerificationHandler({
-  context,
-}: ApiHandlerArguments<typeof runVerificationRoute, VerificationRunContext>): Promise<
-  RouteBoundResponse<typeof runVerificationRoute>
-> {
-  const {
-    session,
+/** The queue acknowledgement is authoritative; a failed marker write remains retryable. */
+async function enqueueVerificationWork(
+  context: VerificationRunContext,
+  bundle: Extract<VerificationBundleReference, { mode: 's3_bundle' }>,
+  expectedImageId: string,
+  deliveryMetadata: AwsVerificationDeliveryMetadataInput | undefined,
+): Promise<void> {
+  const { sessionId, store, runtimeProfile } = context;
+  const finalizationId = bundle.finalizationId;
+  const queuedAtMs = Date.now();
+  await publishVerificationWorkMessage(runtimeProfile, {
     sessionId,
-    finalizationId: requestedFinalizationId,
-    store,
-    finalizeRateLimit: rateLimitContext,
-    runtimeProfile,
-  } = context;
-  const { clientIp: resolvedClientIp, rateLimiter, shouldRecord } = rateLimitContext;
+    finalizationId,
+    queuedAtMs,
+    bundleKey: bundle.bundleKey,
+    expectedImageId,
+  });
+  try {
+    await store.recordAwsVerificationDeliveryMetadata(sessionId, finalizationId, {
+      ...deliveryMetadata,
+      verificationWorkQueuedAtMs: queuedAtMs,
+    });
+  } catch (error) {
+    logger.warn(
+      '[VerificationRun] Verification work was queued but queued marker persistence failed',
+      { session_id_hash: hashSessionIdForLogging(sessionId), finalizationId },
+      error,
+    );
+  }
+}
+
+type VerificationAdmission<T> = { value: T } | { response: RouteBoundResponse<typeof runVerificationRoute> };
+
+interface VerificationExecution {
+  context: VerificationRunContext;
+  bundleReference: VerificationBundleReference;
+  expectedImageId: string;
+  deliveryMetadata: AwsVerificationDeliveryMetadataInput | undefined;
+  targetAwsExternal: boolean;
+}
+
+function admitVerificationFinalization(
+  context: VerificationRunContext,
+): VerificationAdmission<FinalizationResultRecord> {
+  const { session, finalizationId: requestedFinalizationId } = context;
   const finalizationRecord = session.finalization;
   if (finalizationRecord?.state.status !== 'succeeded' || !finalizationRecord.finalizationResult) {
-    return respondWithRouteError(runVerificationRoute, { code: ErrorCode.SESSION_NOT_FINALIZED, status: 400 });
+    return {
+      response: respondWithRouteError(runVerificationRoute, { code: ErrorCode.SESSION_NOT_FINALIZED, status: 400 }),
+    };
   }
   const finalizationResult = finalizationRecord.finalizationResult;
   const finalizationId = finalizationResult.finalizationId;
   if (requestedFinalizationId !== finalizationId) {
-    return respondWithRouteError(runVerificationRoute, {
-      code: ErrorCode.INVALID_REQUEST,
-      status: 400,
-      details: { details: 'Requested finalization does not match the current finalization' },
-    });
+    return {
+      response: respondWithRouteError(runVerificationRoute, {
+        code: ErrorCode.FINALIZATION_NOT_CURRENT,
+        status: 409,
+        details: { details: 'Requested finalization does not match the current finalization' },
+      }),
+    };
   }
-  const [verificationRecord, deliveryMetadata] = await Promise.all([
-    store.getVerificationResultRecord(sessionId, finalizationId),
-    store.getAwsVerificationDeliveryMetadata(sessionId, finalizationId),
-  ]);
-  const currentVerificationResult = verificationRecord?.verificationResult;
-  const currentStatus = currentVerificationResult?.status;
-  if (currentStatus !== undefined && shouldSkipVerification(currentStatus)) {
-    return verificationRunResponse({
-      data: {
-        verificationStatus: currentStatus,
-        finalizationId,
-        estimatedDurationMs: ESTIMATED_VERIFICATION_DURATION_MS,
-        idempotent: true,
-      },
-    });
-  }
+  return { value: finalizationResult };
+}
 
+async function resolveVerificationImageId(
+  finalizationResult: FinalizationResultAuthority,
+  runtimeProfile: ResolvedRuntimeProfile,
+): Promise<VerificationAdmission<string>> {
   const targetAwsExternal = runtimeProfile.external.kind === 'aws' ? runtimeProfile.external : null;
-  const bundleReference = resolveBundleReferences(sessionId, finalizationResult, deliveryMetadata, runtimeProfile);
-  if (!bundleReference) {
-    return internalError('Authoritative verification bundle locator missing');
-  }
-
   const methodVersion = resolveVerificationMethodVersion(finalizationResult);
   if (methodVersion === undefined) {
-    return internalError('Unsupported or missing journal method version');
+    return { response: internalError('Unsupported or missing journal method version') };
   }
   let expectedImageId: string;
   try {
@@ -225,73 +261,49 @@ export async function runVerificationHandler({
       loadImageIdMapping: loadPublicImageIdMapping,
     });
   } catch (error) {
-    return internalError(error instanceof Error ? error.message : 'Failed to resolve expected ImageID');
+    return { response: internalError(error instanceof Error ? error.message : 'Failed to resolve expected ImageID') };
   }
 
-  const { finalizationId: bundleFinalizationId, bundlePath, reportPath } = bundleReference;
+  return { value: expectedImageId };
+}
 
-  if (currentStatus === 'running') {
-    if (targetAwsExternal && bundleReference.mode === 's3_bundle' && !hasQueuedVerificationWork(deliveryMetadata)) {
-      const queuedAtMs = Date.now();
-      try {
-        await publishVerificationWorkMessage(runtimeProfile, {
-          sessionId,
+async function resumeVerification(
+  execution: VerificationExecution,
+): Promise<RouteBoundResponse<typeof runVerificationRoute>> {
+  const { context, bundleReference, expectedImageId, deliveryMetadata, targetAwsExternal } = execution;
+  const { sessionId } = context;
+  const { finalizationId: bundleFinalizationId } = bundleReference;
+  const finalizationId = bundleFinalizationId;
+  if (targetAwsExternal && bundleReference.mode === 's3_bundle' && !hasQueuedVerificationWork(deliveryMetadata)) {
+    try {
+      await enqueueVerificationWork(context, bundleReference, expectedImageId, deliveryMetadata);
+    } catch (error) {
+      logger.error(
+        '[VerificationRun] Failed to resume pending verification queue work',
+        {
+          session_id_hash: hashSessionIdForLogging(sessionId),
           finalizationId: bundleFinalizationId,
-          queuedAtMs,
-          bundleKey: bundleReference.bundleKey,
-          expectedImageId,
-        });
-      } catch (error) {
-        logger.error(
-          '[VerificationRun] Failed to resume pending verification queue work',
-          {
-            session_id_hash: hashSessionIdForLogging(sessionId),
-            finalizationId: bundleFinalizationId,
-          },
-          error,
-        );
-        return internalError('Verifier queue enqueue failed');
-      }
-      try {
-        await store.recordAwsVerificationDeliveryMetadata(sessionId, bundleFinalizationId, {
-          ...deliveryMetadata,
-          verificationWorkQueuedAtMs: queuedAtMs,
-        });
-      } catch (error) {
-        logger.warn(
-          '[VerificationRun] Verification work was queued but queued marker persistence failed',
-          {
-            session_id_hash: hashSessionIdForLogging(sessionId),
-            finalizationId: bundleFinalizationId,
-          },
-          error,
-        );
-      }
+        },
+        error,
+      );
+      return internalError('Verifier queue enqueue failed');
     }
-    return verificationRunResponse({
-      data: {
-        verificationStatus: 'running',
-        finalizationId,
-        estimatedDurationMs: ESTIMATED_VERIFICATION_DURATION_MS,
-        idempotent: true,
-      },
-    });
   }
+  return verificationStatusResponse('running', finalizationId, true);
+}
 
+async function markVerificationRunning(
+  context: VerificationRunContext,
+  bundleFinalizationId: FinalizationId,
+): Promise<RouteBoundResponse<typeof runVerificationRoute> | undefined> {
+  const { sessionId, store } = context;
   try {
     await store.markVerificationRunning(sessionId, bundleFinalizationId);
   } catch (error) {
     if (isDynamoConditionalWriteConflict(error)) {
       const concurrentRecord = await store.getVerificationResultRecord(sessionId, bundleFinalizationId);
       if (concurrentRecord?.verificationResult.status === 'running') {
-        return verificationRunResponse({
-          data: {
-            verificationStatus: 'running',
-            finalizationId: bundleFinalizationId,
-            estimatedDurationMs: ESTIMATED_VERIFICATION_DURATION_MS,
-            idempotent: true,
-          },
-        });
+        return verificationStatusResponse('running', bundleFinalizationId, true);
       }
     }
     logger.error(
@@ -305,60 +317,45 @@ export async function runVerificationHandler({
     return internalError('Verifier state update failed');
   }
 
-  if (targetAwsExternal && bundleReference.mode === 's3_bundle') {
-    const queuedAtMs = Date.now();
-    try {
-      await publishVerificationWorkMessage(runtimeProfile, {
-        sessionId,
-        finalizationId: bundleFinalizationId,
-        queuedAtMs,
-        bundleKey: bundleReference.bundleKey,
-        expectedImageId,
-      });
-    } catch (error) {
-      await store.rollbackVerificationResult(sessionId, bundleFinalizationId);
-      logger.error(
-        '[VerificationRun] Failed to enqueue verification work',
-        {
-          session_id_hash: hashSessionIdForLogging(sessionId),
-          finalizationId: bundleFinalizationId,
-        },
-        error,
-      );
-      return internalError('Verifier queue enqueue failed');
-    }
-    try {
-      await store.recordAwsVerificationDeliveryMetadata(sessionId, bundleFinalizationId, {
-        ...deliveryMetadata,
-        verificationWorkQueuedAtMs: queuedAtMs,
-      });
-    } catch (error) {
-      logger.warn(
-        '[VerificationRun] Verification work was queued but queued marker persistence failed',
-        {
-          session_id_hash: hashSessionIdForLogging(sessionId),
-          finalizationId: bundleFinalizationId,
-        },
-        error,
-      );
-    }
+  return undefined;
+}
 
-    await recordFinalizeRateLimit(rateLimiter, resolvedClientIp, shouldRecord);
-    return verificationRunResponse({
-      data: {
-        verificationStatus: 'running',
-        finalizationId: bundleFinalizationId,
-        estimatedDurationMs: ESTIMATED_VERIFICATION_DURATION_MS,
-        idempotent: false,
-      },
-    });
-  }
-
-  if (bundleReference.mode !== 'local_bundle') {
+async function queueNewVerification(
+  context: VerificationRunContext,
+  bundleReference: Extract<VerificationBundleReference, { mode: 's3_bundle' }>,
+  expectedImageId: string,
+  deliveryMetadata: AwsVerificationDeliveryMetadataInput | undefined,
+): Promise<RouteBoundResponse<typeof runVerificationRoute>> {
+  const { sessionId, store, finalizeRateLimit } = context;
+  const { clientIp: resolvedClientIp, rateLimiter, shouldRecord } = finalizeRateLimit;
+  const { finalizationId: bundleFinalizationId } = bundleReference;
+  try {
+    await enqueueVerificationWork(context, bundleReference, expectedImageId, deliveryMetadata);
+  } catch (error) {
     await store.rollbackVerificationResult(sessionId, bundleFinalizationId);
-    return internalError('Runtime profile does not admit synchronous S3 verification');
+    logger.error(
+      '[VerificationRun] Failed to enqueue verification work',
+      {
+        session_id_hash: hashSessionIdForLogging(sessionId),
+        finalizationId: bundleFinalizationId,
+      },
+      error,
+    );
+    return internalError('Verifier queue enqueue failed');
   }
 
+  await recordFinalizeRateLimit(rateLimiter, resolvedClientIp, shouldRecord);
+  return verificationStatusResponse('running', bundleFinalizationId, false);
+}
+
+async function runLocalVerification(
+  context: VerificationRunContext,
+  bundleReference: Extract<VerificationBundleReference, { mode: 'local_bundle' }>,
+  expectedImageId: string,
+): Promise<RouteBoundResponse<typeof runVerificationRoute>> {
+  const { sessionId, store, finalizeRateLimit } = context;
+  const { clientIp: resolvedClientIp, rateLimiter, shouldRecord } = finalizeRateLimit;
+  const { finalizationId: bundleFinalizationId, bundlePath, reportPath } = bundleReference;
   let completedVerificationResult: VerificationResult;
   try {
     const invocation = await invokeVerifierService({
@@ -393,12 +390,52 @@ export async function runVerificationHandler({
 
   await recordFinalizeRateLimit(rateLimiter, resolvedClientIp, shouldRecord);
 
-  return verificationRunResponse({
-    data: {
-      verificationStatus: completedVerificationResult.status,
-      finalizationId: bundleFinalizationId,
-      estimatedDurationMs: ESTIMATED_VERIFICATION_DURATION_MS,
-      idempotent: false,
-    },
-  });
+  return verificationStatusResponse(completedVerificationResult.status, bundleFinalizationId, false);
+}
+
+async function startVerification(
+  execution: VerificationExecution,
+): Promise<RouteBoundResponse<typeof runVerificationRoute>> {
+  const { context, bundleReference, expectedImageId, deliveryMetadata, targetAwsExternal } = execution;
+  const rejected = await markVerificationRunning(context, bundleReference.finalizationId);
+  if (rejected) return rejected;
+  if (targetAwsExternal && bundleReference.mode === 's3_bundle')
+    return queueNewVerification(context, bundleReference, expectedImageId, deliveryMetadata);
+  if (bundleReference.mode !== 'local_bundle') {
+    await context.store.rollbackVerificationResult(context.sessionId, bundleReference.finalizationId);
+    return internalError('Runtime profile does not admit synchronous S3 verification');
+  }
+  return runLocalVerification(context, bundleReference, expectedImageId);
+}
+
+export async function runVerificationHandler({
+  context,
+}: ApiHandlerArguments<typeof runVerificationRoute, VerificationRunContext>): Promise<
+  RouteBoundResponse<typeof runVerificationRoute>
+> {
+  const admitted = admitVerificationFinalization(context);
+  if ('response' in admitted) return admitted.response;
+  const finalizationResult = admitted.value;
+  const finalizationId = finalizationResult.finalizationId;
+  const { sessionId, store, runtimeProfile } = context;
+  const [verificationRecord, deliveryMetadata] = await Promise.all([
+    store.getVerificationResultRecord(sessionId, finalizationId),
+    store.getAwsVerificationDeliveryMetadata(sessionId, finalizationId),
+  ]);
+  const currentStatus = verificationRecord?.verificationResult?.status;
+  if (currentStatus !== undefined && shouldSkipVerification(currentStatus)) {
+    return verificationStatusResponse(currentStatus, finalizationId, true);
+  }
+  const bundleReference = resolveBundleReferences(sessionId, finalizationResult, deliveryMetadata, runtimeProfile);
+  if (!bundleReference) return internalError('Authoritative verification bundle locator missing');
+  const image = await resolveVerificationImageId(finalizationResult, runtimeProfile);
+  if ('response' in image) return image.response;
+  const execution = {
+    context,
+    bundleReference,
+    expectedImageId: image.value,
+    deliveryMetadata,
+    targetAwsExternal: runtimeProfile.external.kind === 'aws',
+  };
+  return currentStatus === 'running' ? resumeVerification(execution) : startVerification(execution);
 }

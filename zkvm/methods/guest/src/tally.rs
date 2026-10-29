@@ -818,11 +818,11 @@ mod tests {
             }
 
             let mut next_level = Vec::with_capacity(level.len().div_ceil(2));
-            let mut iter = level.chunks_exact(2);
-            for pair in &mut iter {
+            let (pairs, remainder) = level.as_chunks::<2>();
+            for pair in pairs {
                 next_level.push(hash_internal(&pair[0], &pair[1]));
             }
-            if let Some(rem) = iter.remainder().first() {
+            if let Some(rem) = remainder.first() {
                 next_level.push(*rem);
             }
 

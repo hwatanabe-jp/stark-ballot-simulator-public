@@ -57,6 +57,24 @@ describe('Foundation Bootstrap impact classification', () => {
     });
   });
 
+  it.each([['create'], ['update'], ['delete'], ['replace']])(
+    'includes shared request-shape policy %s in Foundation impact',
+    (actionClass) => {
+      const requestShapeAddress = 'aws_iam_policy.terraform_drift_coordinator_guardrail["requestShape"]';
+      const authorityEnvironmentAddress =
+        'aws_iam_policy.terraform_drift_coordinator_guardrail["authorityEnvironment"]';
+      expect(
+        classifyFoundationBootstrapImpact({
+          changedAddresses: [requestShapeAddress, authorityEnvironmentAddress].map((address) => ({
+            ...changedAddress(address),
+            actionClasses: [actionClass],
+          })),
+          outputChanges: { count: 0, names: [], omittedNameCount: 0 },
+        }).changedAddresses,
+      ).toEqual([requestShapeAddress]);
+    },
+  );
+
   it('leaves App lane and coordinator cleanup outside the stable contract', () => {
     expect(
       classify(

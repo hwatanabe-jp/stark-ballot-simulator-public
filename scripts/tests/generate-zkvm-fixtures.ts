@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
+import { buildCommitmentTree } from './lib/commitment-tree';
 import { serializeZkvmAggregatorInput } from '@stark-ballot/zkvm-contract/zkvm/host-io';
 import type { ZkVMInput, VoteWithProof } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { asUnixTimestampMillis, computeCommitment, computeSTHDigest } from '@stark-ballot/zkvm-contract/zkvm/types';
@@ -51,10 +51,7 @@ function buildVotes(): {
   const commitments: HexString[] = RANDOM_VALUES.map(
     (rand, i) => computeCommitment(ELECTION_ID, strictDefined(CHOICES[i]), rand) as HexString,
   );
-  const tree = new RFC6962MerkleTree();
-  for (const commitment of commitments) {
-    tree.append(commitment);
-  }
+  const tree = buildCommitmentTree(commitments);
 
   const votes: VoteWithProof[] = commitments.map((commitment, index) => ({
     commitment,

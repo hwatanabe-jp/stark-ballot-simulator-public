@@ -3,7 +3,6 @@ locals {
     local.bootstrap_lane_authority.names.pipeline,
     local.foundation_lane_authority.names.pipeline,
     local.app_lane_authority.names.pipeline,
-    local.static_fast_lane_authority != null ? local.static_fast_lane_authority.names.pipeline : null,
     local.toolchain_lane_authority.names.pipeline,
     local.prover_lane_authority.names.pipeline,
   ])
@@ -33,26 +32,24 @@ locals {
       }
       input_template = "{\"ts\":<ts>,\"event_type\":\"alarm_state_changed\",\"env\":\"${var.deployment_environment}\",\"resource_name\":<resource_name>,\"state\":<state>}"
     }
-    ecs_task_stopped = {
-      description = "Normalize target prover ECS task stops into the operations ledger."
-      rule_suffix = "ops-ecs-stopped"
+    prover_job_finished = {
+      description = "Normalize terminal target Batch prover jobs into the operations ledger."
+      rule_suffix = "ops-prover-finished"
       event_pattern = {
-        source        = ["aws.ecs"]
-        "detail-type" = ["ECS Task State Change"]
+        source        = ["aws.batch"]
+        "detail-type" = ["Batch Job State Change"]
         detail = {
-          clusterArn = [aws_ecs_cluster.prover.arn]
-          lastStatus = ["STOPPED"]
-          group      = [{ prefix = "dep_" }]
-          taskDefinitionArn = [{
-            prefix = "arn:aws:ecs:${var.aws_region}:${var.aws_account_id}:task-definition/${aws_ecs_task_definition.prover.family}:"
-          }]
+          jobQueue = [aws_batch_job_queue.prover.arn]
+          status   = ["SUCCEEDED", "FAILED"]
+          tags     = { deployment_id = [{ prefix = "dep_" }] }
         }
       }
       input_paths = {
-        deployment_id = "$.detail.group"
+        deployment_id = "$.detail.tags.deployment_id"
+        state         = "$.detail.status"
         ts            = "$.time"
       }
-      input_template = "{\"ts\":<ts>,\"event_type\":\"ecs_task_stopped\",\"env\":\"${var.deployment_environment}\",\"deployment_id\":<deployment_id>,\"resource_name\":\"prover-task\",\"state\":\"STOPPED\"}"
+      input_template = "{\"ts\":<ts>,\"event_type\":\"prover_job_finished\",\"env\":\"${var.deployment_environment}\",\"deployment_id\":<deployment_id>,\"resource_name\":\"prover-job\",\"state\":<state>}"
     }
     pipeline_execution_changed = {
       description = "Normalize target app CodePipeline execution changes into the operations ledger."

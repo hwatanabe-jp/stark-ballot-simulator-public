@@ -70,7 +70,7 @@ function assertPositiveSafeInteger(value: number, label: string): void {
   }
 }
 
-function assertValidLimits(limits: ArtifactReaderLimits): void {
+export function assertValidArtifactReaderLimits(limits: ArtifactReaderLimits): void {
   assertPositiveSafeInteger(limits.bundleInlineMaxBytes, 'bundleInlineMaxBytes');
   assertPositiveSafeInteger(limits.bundleRangeMaxBytes, 'bundleRangeMaxBytes');
   assertPositiveSafeInteger(limits.reportMaxBytes, 'reportMaxBytes');
@@ -125,95 +125,142 @@ function representationFor(bytes: Buffer): { etag: string } {
   return { etag: `"${createHash('sha256').update(bytes).digest('hex')}"` };
 }
 
+type ArtifactReadFailure = Extract<LocalArtifactReadResult, { kind: 'notFound' | 'unavailable' }>;
+
+function artifactReadFailure(error: unknown): ArtifactReadFailure {
+  return isMissingFileError(error) ? { kind: 'notFound' } : { kind: 'unavailable', failureKind: 'unknown' };
+}
+
+async function readArtifactMetadata(
+  configuredPath: string,
+  baseDir: string,
+): Promise<{ kind: 'ready'; realPath: string; totalBytes: number } | ArtifactReadFailure> {
+  let realPath: string;
+  try {
+    realPath = await fs.realpath(configuredPath);
+  } catch (error) {
+    return artifactReadFailure(error);
+  }
+  if (!isExpectedRealPath(configuredPath, realPath, baseDir)) {
+    return { kind: 'unavailable', failureKind: 'unknown' };
+  }
+
+  let totalBytes: number;
+  try {
+    const metadata = await fs.stat(realPath);
+    if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size < 0) {
+      return { kind: 'unavailable', failureKind: 'unknown' };
+    }
+    totalBytes = metadata.size;
+  } catch (error) {
+    return artifactReadFailure(error);
+  }
+
+  return { kind: 'ready', realPath, totalBytes };
+}
+
+export function admitArtifactReadSize(
+  request: LocalArtifactReadRequest,
+  totalBytes: number,
+  limits: ArtifactReaderLimits,
+): Extract<LocalArtifactReadResult, { kind: 'tooLarge' | 'invalidRange' }> | null {
+  if (
+    request.range === undefined &&
+    totalBytes > (request.artifact === 'bundle' ? limits.bundleInlineMaxBytes : limits.reportMaxBytes)
+  ) {
+    return { kind: 'tooLarge', totalBytes };
+  }
+  if (request.artifact === 'report' && request.range !== undefined) {
+    return { kind: 'invalidRange', totalBytes };
+  }
+
+  return null;
+}
+
+async function readAdmittedArtifactBytes(
+  realPath: string,
+  totalBytes: number,
+  artifact: LocalArtifactReadRequest['artifact'],
+  options: Pick<LocalArtifactReaderOptions, 'bundlePolicy'>,
+): Promise<{ kind: 'ready'; bytes: Buffer } | ArtifactReadFailure> {
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(realPath);
+  } catch (error) {
+    return artifactReadFailure(error);
+  }
+  if (bytes.byteLength !== totalBytes) {
+    return { kind: 'unavailable', failureKind: 'unknown' };
+  }
+
+  if (artifact === 'bundle') {
+    try {
+      await inspectVerificationBundleArchiveBuffer(bytes, options.bundlePolicy);
+    } catch {
+      return { kind: 'unavailable', failureKind: 'unknown' };
+    }
+  }
+
+  return { kind: 'ready', bytes };
+}
+
+function projectArtifactRead(
+  request: LocalArtifactReadRequest,
+  bytes: Buffer,
+  totalBytes: number,
+  maxRangeBytes: number,
+): LocalArtifactReadResult {
+  const representation = representationFor(bytes);
+  if (request.range === undefined) {
+    return {
+      kind: 'full',
+      bytes: Uint8Array.from(bytes),
+      totalBytes,
+      representation,
+    };
+  }
+
+  const range = resolveArtifactRange(request.range, totalBytes, maxRangeBytes);
+  if (!range) {
+    return { kind: 'invalidRange', totalBytes };
+  }
+  return {
+    kind: 'range',
+    bytes: Uint8Array.from(bytes.subarray(range.start, range.end + 1)),
+    totalBytes,
+    start: range.start,
+    end: range.end,
+    representation,
+  };
+}
+
 export function createLocalArtifactReader(options: LocalArtifactReaderOptions): LocalArtifactReader {
   const baseDir = path.resolve(options.baseDir);
-  assertValidLimits(options.limits);
+  assertValidArtifactReaderLimits(options.limits);
 
   return {
     async read(request): Promise<LocalArtifactReadResult> {
       if (!isSafeVerifierSegment(request.sessionId) || !isSafeVerifierSegment(request.finalizationId)) {
         return { kind: 'unavailable', failureKind: 'unknown' };
       }
-
       const configuredPath = path.join(
         baseDir,
         request.sessionId,
         request.finalizationId,
         artifactFileName(request.artifact),
       );
-
-      let realPath: string;
-      try {
-        realPath = await fs.realpath(configuredPath);
-      } catch (error) {
-        return isMissingFileError(error) ? { kind: 'notFound' } : { kind: 'unavailable', failureKind: 'unknown' };
-      }
-      if (!isExpectedRealPath(configuredPath, realPath, baseDir)) {
-        return { kind: 'unavailable', failureKind: 'unknown' };
-      }
-
-      let totalBytes: number;
-      try {
-        const metadata = await fs.stat(realPath);
-        if (!metadata.isFile() || !Number.isSafeInteger(metadata.size) || metadata.size < 0) {
-          return { kind: 'unavailable', failureKind: 'unknown' };
-        }
-        totalBytes = metadata.size;
-      } catch (error) {
-        return isMissingFileError(error) ? { kind: 'notFound' } : { kind: 'unavailable', failureKind: 'unknown' };
-      }
-
-      if (
-        request.range === undefined &&
-        totalBytes >
-          (request.artifact === 'bundle' ? options.limits.bundleInlineMaxBytes : options.limits.reportMaxBytes)
-      ) {
-        return { kind: 'tooLarge', totalBytes };
-      }
-      if (request.artifact === 'report' && request.range !== undefined) {
-        return { kind: 'invalidRange', totalBytes };
-      }
-
-      let bytes: Buffer;
-      try {
-        bytes = await fs.readFile(realPath);
-      } catch (error) {
-        return isMissingFileError(error) ? { kind: 'notFound' } : { kind: 'unavailable', failureKind: 'unknown' };
-      }
-      if (bytes.byteLength !== totalBytes) {
-        return { kind: 'unavailable', failureKind: 'unknown' };
-      }
-
-      if (request.artifact === 'bundle') {
-        try {
-          await inspectVerificationBundleArchiveBuffer(bytes, options.bundlePolicy);
-        } catch {
-          return { kind: 'unavailable', failureKind: 'unknown' };
-        }
-      }
-
-      const representation = representationFor(bytes);
-      if (request.range === undefined) {
-        return {
-          kind: 'full',
-          bytes: Uint8Array.from(bytes),
-          totalBytes,
-          representation,
-        };
-      }
-
-      const range = resolveArtifactRange(request.range, totalBytes, options.limits.bundleRangeMaxBytes);
-      if (!range) {
-        return { kind: 'invalidRange', totalBytes };
-      }
-      return {
-        kind: 'range',
-        bytes: Uint8Array.from(bytes.subarray(range.start, range.end + 1)),
-        totalBytes,
-        start: range.start,
-        end: range.end,
-        representation,
-      };
+      const metadata = await readArtifactMetadata(configuredPath, baseDir);
+      if (metadata.kind !== 'ready') return metadata;
+      const sizeFailure = admitArtifactReadSize(request, metadata.totalBytes, options.limits);
+      if (sizeFailure) return sizeFailure;
+      const content = await readAdmittedArtifactBytes(
+        metadata.realPath,
+        metadata.totalBytes,
+        request.artifact,
+        options,
+      );
+      if (content.kind !== 'ready') return content;
+      return projectArtifactRead(request, content.bytes, metadata.totalBytes, options.limits.bundleRangeMaxBytes);
     },
   };
 }

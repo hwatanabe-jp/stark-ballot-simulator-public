@@ -7,7 +7,7 @@ The same host binary supports two application paths:
 
 - local or synchronous execution through
   `packages/node-adapters/src/zkvm/executor.ts`
-- asynchronous execution in an ECS Fargate prover task through
+- asynchronous execution in a Batch-scheduled ECS Fargate prover task through
   `infra/docker/entrypoint.sh`
 
 Receipt verification is independent of proof generation and is owned by
@@ -107,7 +107,7 @@ pnpm tsx scripts/tests/generate-bitmap-golden-vectors.ts
 
 The current pins are:
 
-- host Rust: **1.97.1**
+- host Rust: **1.99.0**
 - RISC Zero guest Rust toolchain: **`r0.1.97.0`**
 - RISC Zero: **3.0.6**
 
@@ -174,9 +174,11 @@ unset RISC0_DEV_MODE
 The real proof path is intentionally slow. `RISC0_DEV_MODE=1` produces a fake
 receipt and is never evidence of production proof correctness.
 
-The fixture smoke script runs both checked-in inputs in dev mode:
+The fixture smoke script runs both checked-in inputs in dev mode. Build the
+dev-mode-capable host first because the script reuses an existing binary:
 
 ```bash
+pnpm build:zkvm:dev-mode
 bash scripts/tests/test-zkvm.sh
 ```
 
@@ -485,8 +487,8 @@ For a proof-free query:
 The expected-ID source of truth is `public/imageId-mapping.json`. The current
 mapping is keyed by method version 14 and has two explicit variants:
 
-- `default` is confirmed by the accepted managed ARM64 Prover release
-  for the current guest source.
+- `default` is confirmed by the accepted managed ARM64 Prover release for
+  the current Cargo dependencies. Local x86_64 evidence cannot confirm it.
 - `x86_64` is independently confirmed from a fresh local production build.
 
 Each variant is discriminated:
@@ -566,9 +568,33 @@ host's proof deadline.
 
 ### Asynchronous
 
-Terraform dispatches an ECS Fargate task. `infra/docker/entrypoint.sh` runs the
-host, creates the public bundle and private supporting artifacts, then uploads
-the results to S3.
+After image-signature verification, Step Functions submits a Batch job with
+`batch:submitJob.sync`. Batch schedules the ECS Fargate container and owns its
+capacity reservation through a replenishable consumable resource. Each job
+requires one unit and permits one attempt; the workflow does not retry an
+ambiguous submission. The definitions live in
+`infra/terraform/app/{step_functions,prover_batch}.tf`.
+
+After queue wait, `infra/docker/entrypoint.sh` asks the finalization writer to
+admit `RUNNING` for the current session/finalization before reading input or
+starting the host. A cancelled, superseded, missing, or malformed admission
+fails closed. This admission establishes the persisted `startedAtMs`; success
+callbacks retrieve that matching lifecycle timestamp rather than use transport
+timestamps. The admitted container runs the host, creates the public bundle
+and private supporting artifacts, then uploads the results to S3.
+
+The container host deadline defaults to 900 seconds
+(`ZKVM_TIMEOUT_SECONDS`), with a 10-second termination grace
+(`ZKVM_TERMINATION_GRACE_SECONDS`). The wrapper forwards TERM/INT to the host;
+deadline enforcement can force termination after the grace period. Batch's
+`prover_task_timeout_seconds` separately bounds an attempt, excluding queue
+wait. The Step Functions task has one combined deadline of
+`prover_task_timeout_seconds + 1800 + 180`; the added queue and shutdown
+allowances are not separately enforced deadlines. These async limits are independent of the
+local adapter deadline and CLI HTTP wait above. See the
+[async finalization runbook](../docs/runbooks/aws-runtime-operations.md#6-async-finalization)
+for the operational lifecycle; this describes checked-in source, not evidence
+that a target has deployed it.
 
 ### Verification
 

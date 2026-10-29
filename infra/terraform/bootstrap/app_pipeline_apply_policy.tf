@@ -5,22 +5,11 @@ data "aws_iam_policy_document" "app_terraform_apply" {
     data.aws_iam_policy_document.app_terraform_plan[0].json,
   ]
 
-  statement {
-    sid    = "UseRetainedApprovalEvidenceForAppApply"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-    ]
-    resources = [local.app_retained_approval_evidence_objects_arn]
-  }
 
 }
 
 data "aws_iam_policy_document" "app_terraform_apply_state_backend" {
-  count                   = local.app_pipeline_enabled ? 1 : 0
-  source_policy_documents = [data.aws_iam_policy_document.saved_plan_approval_apply_read["app_terraform"].json]
+  count = local.app_pipeline_enabled ? 1 : 0
 
   statement {
     sid    = "WriteAppStateBackend"
@@ -113,7 +102,6 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   }
 
   statement {
-    # The verifier role is owned by the isolated reviewed preflight apply.
     sid       = "ManageTargetApplicationRuntimeRoles"
     effect    = "Allow"
     actions   = ["iam:*"]
@@ -151,7 +139,6 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   }
 
   statement {
-    # Keep verifier function code/configuration outside the full App apply role.
     sid     = "ManageTargetApplicationLambdas"
     effect  = "Allow"
     actions = ["lambda:*"]
@@ -177,22 +164,103 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   }
 
   statement {
-    # Full normal/rollback plans may only move the two reviewed qualified aliases.
-    sid    = "ManageReviewedVerifierAliases"
-    effect = "Allow"
-    actions = [
-      "lambda:CreateAlias",
-      "lambda:DeleteAlias",
-      "lambda:GetAlias",
-      "lambda:UpdateAlias",
-    ]
-    resources = local.app_signature_verifier_alias_arns
+    sid       = "CreateTaggedRestApi"
+    effect    = "Allow"
+    actions   = ["apigateway:POST"]
+    resources = ["arn:aws:apigateway:${var.aws_region}::/restapis"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project_name]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = [var.deployment_environment]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/StateScope"
+      values   = ["app"]
+    }
   }
 
   statement {
+    sid       = "ManageTaggedRestApi"
     effect    = "Allow"
-    actions   = ["apigateway:*"]
-    resources = concat(local.app_target_api_arns, local.app_target_api_tagging_arns)
+    actions   = ["apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE"]
+    resources = ["arn:aws:apigateway:${var.aws_region}::/restapis/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project_name]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [var.deployment_environment]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/StateScope"
+      values   = ["app"]
+    }
+  }
+
+  statement {
+    sid       = "SetRestApiTags"
+    effect    = "Allow"
+    actions   = ["apigateway:PUT"]
+    resources = local.app_target_api_tagging_arns
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project_name]
+    }
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "aws:RequestTag/Environment"
+      values   = [var.deployment_environment]
+    }
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "aws:RequestTag/AccountAlias"
+      values   = [var.account_alias]
+    }
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "aws:RequestTag/StateScope"
+      values   = ["app"]
+    }
+  }
+
+  statement {
+    sid       = "RemoveUnprotectedRestApiTags"
+    effect    = "Allow"
+    actions   = ["apigateway:DELETE"]
+    resources = local.app_target_api_tagging_arns
+    condition {
+      test     = "ForAllValues:StringNotEquals"
+      variable = "aws:TagKeys"
+      values   = ["Project", "Environment", "AccountAlias", "StateScope"]
+    }
+  }
+
+  # Retire the former HTTP API; never create or update that product again.
+  statement {
+    effect    = "Allow"
+    actions   = ["apigateway:GET", "apigateway:DELETE"]
+    resources = local.app_retired_http_api_arns
   }
 
   statement {
@@ -214,7 +282,7 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
   statement {
     effect    = "Allow"
     actions   = ["ecs:*"]
-    resources = [local.app_target_ecs_cluster_arn, local.app_target_ecs_task_definition_arn, "*"]
+    resources = ["*"]
   }
 
   statement {
@@ -254,7 +322,6 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime" {
 resource "aws_iam_policy" "app_terraform_apply_runtime" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management]
 
   name   = local.app_terraform_apply_runtime_policy_name
   policy = data.aws_iam_policy_document.app_terraform_apply_runtime[0].json
@@ -274,10 +341,131 @@ check "app_terraform_apply_runtime_policy_size" {
 resource "aws_iam_role_policy_attachment" "app_terraform_apply_runtime" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 
   role       = aws_iam_role.app_terraform_apply[0].name
   policy_arn = aws_iam_policy.app_terraform_apply_runtime[0].arn
+}
+
+data "aws_iam_policy_document" "app_terraform_apply_verifier" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+  statement {
+    sid    = "ManageSignatureVerifierLambda"
+    effect = "Allow"
+    actions = [
+      "lambda:CreateFunction",
+      "lambda:DeleteAlias",
+      "lambda:GetAlias",
+      "lambda:GetFunction",
+      "lambda:GetFunctionCodeSigningConfig",
+      "lambda:GetFunctionConfiguration",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetPolicy",
+      "lambda:GetRuntimeManagementConfig",
+      "lambda:ListTags",
+      "lambda:ListVersionsByFunction",
+      "lambda:PublishVersion",
+      "lambda:TagResource",
+      "lambda:UntagResource",
+      "lambda:UpdateFunctionCode",
+      "lambda:UpdateFunctionConfiguration",
+    ]
+    resources = [
+      local.app_signature_verifier_lambda_arn,
+      "${local.app_signature_verifier_lambda_arn}:*",
+    ]
+  }
+
+  statement {
+    sid    = "ManageSignatureVerifierRole"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRolePolicies",
+      "iam:ListRoleTags",
+      "iam:PutRolePolicy",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:UpdateAssumeRolePolicy",
+    ]
+    resources = [
+      "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_runtime_name_prefix}-image-signature-verifier-role",
+    ]
+  }
+
+  statement {
+    sid    = "CreateSignatureVerifierRoleWithBoundary"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    resources = [
+      "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_runtime_name_prefix}-image-signature-verifier-role",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.app_signature_verifier_execution_boundary_policy_arn]
+    }
+  }
+
+  statement {
+    sid       = "PassSignatureVerifierRoleToLambda"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_runtime_name_prefix}-image-signature-verifier-role"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["lambda.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid    = "ManageSignatureVerifierLogGroup"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:DescribeLogGroups",
+      "logs:ListTagsForResource",
+      "logs:PutRetentionPolicy",
+      "logs:TagResource",
+      "logs:UntagResource",
+    ]
+    resources = [
+      "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.app_signature_runtime_name_prefix}-image-signature-verifier",
+      "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.app_signature_runtime_name_prefix}-image-signature-verifier:*",
+    ]
+  }
+}
+
+resource "aws_iam_policy" "app_terraform_apply_verifier" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+
+  name   = local.app_terraform_apply_verifier_policy_name
+  policy = data.aws_iam_policy_document.app_terraform_apply_verifier[0].json
+  tags   = local.common_tags
+
+  lifecycle {
+    precondition {
+      condition     = length(jsonencode(jsondecode(data.aws_iam_policy_document.app_terraform_apply_verifier[0].json))) <= 6144
+      error_message = "The app verifier deployment policy must remain within the IAM 6,144-character quota."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "app_terraform_apply_verifier" {
+  count = local.app_pipeline_enabled ? 1 : 0
+
+
+  role       = aws_iam_role.app_terraform_apply[0].name
+  policy_arn = aws_iam_policy.app_terraform_apply_verifier[0].arn
 }
 
 data "aws_iam_policy_document" "app_terraform_apply_events" {
@@ -294,10 +482,6 @@ data "aws_iam_policy_document" "app_terraform_apply_events" {
 resource "aws_iam_policy" "app_terraform_apply_events" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
-    terraform_data.bootstrap_apply_authorization_propagation,
-  ]
 
   name   = local.app_terraform_apply_events_policy_name
   policy = data.aws_iam_policy_document.app_terraform_apply_events[0].json
@@ -317,7 +501,6 @@ check "app_terraform_apply_events_policy_size" {
 resource "aws_iam_role_policy_attachment" "app_terraform_apply_events" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 
   role       = aws_iam_role.app_terraform_apply[0].name
   policy_arn = aws_iam_policy.app_terraform_apply_events[0].arn
@@ -513,7 +696,6 @@ data "aws_iam_policy_document" "app_terraform_apply_runtime_kms" {
 resource "aws_iam_policy" "app_terraform_apply_runtime_kms" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management]
 
   name   = local.app_terraform_apply_runtime_kms_policy_name
   policy = data.aws_iam_policy_document.app_terraform_apply_runtime_kms[0].json
@@ -523,7 +705,6 @@ resource "aws_iam_policy" "app_terraform_apply_runtime_kms" {
 resource "aws_iam_role_policy_attachment" "app_terraform_apply_runtime_kms" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 
   role       = aws_iam_role.app_terraform_apply[0].name
   policy_arn = aws_iam_policy.app_terraform_apply_runtime_kms[0].arn
@@ -552,7 +733,6 @@ resource "aws_iam_role_policy" "app_terraform_apply" {
 resource "aws_iam_policy" "app_terraform_apply_state_backend" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management]
 
   name   = local.app_terraform_apply_state_backend_policy_name
   policy = data.aws_iam_policy_document.app_terraform_apply_state_backend[0].json
@@ -572,7 +752,6 @@ check "app_terraform_apply_state_backend_policy_size" {
 resource "aws_iam_role_policy_attachment" "app_terraform_apply_state_backend" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management]
 
   role       = aws_iam_role.app_terraform_apply[0].name
   policy_arn = aws_iam_policy.app_terraform_apply_state_backend[0].arn

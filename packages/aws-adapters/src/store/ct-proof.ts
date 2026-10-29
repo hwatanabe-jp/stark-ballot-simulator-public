@@ -1,3 +1,6 @@
+import type { SessionId } from '@stark-ballot/domain/types/identifiers';
+import type { SessionVotingStore } from '@stark-ballot/domain/types/voteStore';
+import type { StoredVoteRecord, SessionVotingRecord } from '@stark-ballot/domain/types/sessionRecords';
 import { normalizeHex } from '@stark-ballot/domain/utils/hex';
 
 type CtProofProvider = {
@@ -78,4 +81,54 @@ export function deriveExactCtProof(params: {
   } catch (error) {
     rethrowAsCtProofUnavailable(error);
   }
+}
+
+export type VoteWithCtProof = ExactCtProof & { voteData: StoredVoteRecord };
+export type TimestampedCtProof = ExactCtProof & { timestamp: number };
+
+function deriveStoredVoteProof(
+  voteInfo: { voteData: StoredVoteRecord; index: number } | null,
+  voting: SessionVotingRecord | null,
+): VoteWithCtProof | null {
+  if (!voteInfo || !voting) return null;
+  return {
+    voteData: voteInfo.voteData,
+    ...deriveExactCtProof({
+      bulletin: voting.bulletin,
+      voteId: voteInfo.voteData.voteId,
+      leafIndex: voteInfo.index,
+      rootAtCast: voteInfo.voteData.rootAtCast,
+    }),
+  };
+}
+
+function timestampedVoteProof(proof: VoteWithCtProof | null): TimestampedCtProof | null {
+  return proof
+    ? {
+        leafIndex: proof.leafIndex,
+        merklePath: proof.merklePath,
+        bulletinRootAtCast: proof.bulletinRootAtCast,
+        treeSize: proof.treeSize,
+        timestamp: proof.voteData.timestamp,
+      }
+    : null;
+}
+
+export async function readStoredVoteProof(
+  store: Pick<SessionVotingStore, 'getVoteById' | 'getVotingRecord'>,
+  sessionId: SessionId,
+  voteId: string,
+): Promise<VoteWithCtProof | null> {
+  const voteInfo = await store.getVoteById(sessionId, voteId);
+  const voting = await store.getVotingRecord(sessionId);
+  return deriveStoredVoteProof(voteInfo, voting);
+}
+
+export async function readIndexedVoteProof(
+  store: Pick<SessionVotingStore, 'getVoteByIdWithProof'>,
+  owner: { sessionId: SessionId } | undefined,
+  voteId: string,
+): Promise<TimestampedCtProof | null> {
+  if (!owner) return null;
+  return timestampedVoteProof(await store.getVoteByIdWithProof(owner.sessionId, voteId));
 }

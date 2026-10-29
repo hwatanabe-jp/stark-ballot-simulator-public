@@ -1,25 +1,19 @@
 import {
-  isAppVerifierPrerequisiteReview,
-  assertAppVerifierPrerequisiteReviewPlan,
-} from './app-verifier-initialization.js';
-import { resolveAllowedDeploymentTarget, resolveDeploymentLaneAuthority } from './index.js';
-/** @typedef {ReturnType<typeof resolveAllowedDeploymentTarget>} AllowedDeploymentTarget */
-import { isDeepStrictEqual, types } from 'node:util';
-import {
+  hasDenseArrayOwnKeys,
   deepFreeze,
   hasControlCharacter,
   isPlainRecord,
-  parseGitCommitSha,
-  parseImageDigest,
-  parseImmutableObjectReference,
   parseSha256,
   requireExactKeys,
-  requireGroupedLowercaseUuid,
-  requireString,
 } from './internal.js';
-import { admitFoundationAcceptanceApprovalBinding } from './plan-approval.js';
+import {
+  copyArrayDataEntries,
+  requireEnumerableDataProperty,
+  isEnumerableDataDescriptor,
+} from './descriptor-snapshot.js';
+import { storedBytesSha256 as canonicalPlanHash } from './plan-package.js';
+import { isDeepStrictEqual, types } from 'node:util';
 import { classifyFoundationBootstrapImpact } from './foundation-bootstrap-impact.js';
-import { PROVER_RELEASE_KIND, TOOLCHAIN_RELEASE_KIND, admitReleaseRecordKey } from './release-ledger.js';
 import {
   classifyTerraformActionSequence,
   redactTerraformResourceAddress,
@@ -30,8 +24,8 @@ import {
 
 /**
  * @typedef {'app' | 'bootstrap' | 'foundation'} SavedPlanReviewLane
- * @typedef {'terraform' | 'verifier-preflight'} SavedPlanReviewGate
- * @typedef {'normal' | 'rollback'} SavedPlanReviewDeploymentMode
+ * @typedef {'terraform'} SavedPlanReviewGate
+ * @typedef {'normal'} SavedPlanReviewDeploymentMode
  * @typedef {'create' | 'update' | 'replace' | 'delete' | 'read-only'} SavedPlanReviewActionClass
  * @typedef {{ nodes: number, bytes: number }} SavedPlanReviewChangeBudget
  * @typedef {{
@@ -39,7 +33,7 @@ import {
  *   readonly allowNonApplyableNoOp: boolean;
  *   readonly root: SavedPlanReviewLane;
  *   readonly approval: 'app' | 'source';
- *   readonly authority: 'app-deployment' | 'app-verifier-preflight' | null;
+ *   readonly authority: 'app-deployment' | null;
  * }} SavedPlanReviewGatePolicy
  * @typedef {{
  *   changedAttributes: Set<string>;
@@ -78,29 +72,6 @@ import {
  * @property {string} deploymentEnvironment
  * @property {string} reviewedPlanChecksum
  *
- * @typedef {object} SavedPlanReviewAppVerifierPreflightAuthority
- * @property {'app-verifier-preflight'} authorityType
- * @property {string} packageSourceSha
- * @property {string} proverImageDigest
- * @property {{ key: string, versionId: string, sha256: string }} package
- * @property {string} sourceCodeHash
- * @property {string} assetManifestSha256
- * @property {string} trustRootSha256
- * @property {string} expectedFunctionVersion
- * @property {string} reconciliationDesiredSha256
- * @property {{
- *   foundationAcceptanceKey: string,
- *   foundationAcceptedSourceSha: string,
- *   closureIdentity: string,
- *   foundationContractHash: string,
- * }} foundationAcceptance
- *
- * @typedef {Omit<SavedPlanReviewAppVerifierPreflightAuthority, 'authorityType' | 'expectedFunctionVersion' | 'reconciliationDesiredSha256'> & {
- *   readonly authorityType: 'app-verifier-prerequisite';
- *   readonly expectedFunctionVersion: null;
- *   readonly reconciliationDesiredSha256: null;
- * }} SavedPlanReviewAppVerifierPrerequisiteAuthority
- *
  * @typedef {object} SavedPlanReviewAppDeploymentAuthority
  * @property {'app-deployment'} authorityType
  * @property {SavedPlanReviewDeploymentMode} deploymentMode
@@ -119,7 +90,6 @@ import {
  * @property {string} lambdaSourceSha
  * @property {6} lambdaCount
  * @property {string} lambdaSetSha256
- * @property {string} verifierFunctionVersion
  *
  * @typedef {object} SavedPlanReviewActionCounts
  * @property {number} create
@@ -138,7 +108,7 @@ import {
  *
  * @typedef {object} SavedPlanReviewSummary
  * @property {'1.2'} formatVersion
- * @property {'1.15.8'} terraformVersion
+ * @property {'1.17.0'} terraformVersion
  * @property {boolean} applyable
  * @property {boolean} complete
  * @property {false} errored
@@ -164,58 +134,7 @@ const MAX_CHANGE_VALUE_DEPTH = 64;
 const MAX_CHANGE_VALUE_NODES = 1_000_000;
 const MAX_CHANGE_VALUE_BYTES = 64 * 1024 * 1024;
 const REVIEWED_PLAN_FORMAT_VERSION = '1.2';
-const REVIEWED_TERRAFORM_VERSION = '1.15.8';
-const REVIEW_GATES = Object.freeze({
-  'app/terraform': Object.freeze({
-    complete: true,
-    allowNonApplyableNoOp: true,
-    root: 'app',
-    approval: 'app',
-    authority: 'app-deployment',
-  }),
-  'app/verifier-preflight': Object.freeze({
-    complete: false,
-    allowNonApplyableNoOp: false,
-    root: 'app',
-    approval: 'source',
-    authority: 'app-verifier-preflight',
-  }),
-  'bootstrap/terraform': Object.freeze({
-    complete: true,
-    allowNonApplyableNoOp: true,
-    root: 'bootstrap',
-    approval: 'source',
-    authority: null,
-  }),
-  'foundation/terraform': Object.freeze({
-    complete: true,
-    allowNonApplyableNoOp: true,
-    root: 'foundation',
-    approval: 'source',
-    authority: null,
-  }),
-});
-
-/**
- * @param {SavedPlanReviewLane} lane
- * @param {SavedPlanReviewGate} gate
- * @returns {SavedPlanReviewGatePolicy}
- */
-function resolveReviewGatePolicy(lane, gate) {
-  switch (`${lane}/${gate}`) {
-    case 'app/terraform':
-      return REVIEW_GATES['app/terraform'];
-    case 'app/verifier-preflight':
-      return REVIEW_GATES['app/verifier-preflight'];
-    case 'bootstrap/terraform':
-      return REVIEW_GATES['bootstrap/terraform'];
-    case 'foundation/terraform':
-      return REVIEW_GATES['foundation/terraform'];
-    default:
-      throw new Error('Saved-plan review lane and gate are not supported.');
-  }
-}
-
+const REVIEWED_TERRAFORM_VERSION = '1.17.0';
 /**
  * @param {unknown} value
  * @param {string} label
@@ -249,11 +168,7 @@ function exactKeys(value, keys, label) {
  * @returns {unknown}
  */
 function requiredDataProperty(record, key, label) {
-  const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-    throw new Error(`${label} is required.`);
-  }
-  return descriptor.value;
+  return requireEnumerableDataProperty(record, key, `${label} is required.`);
 }
 
 /**
@@ -284,104 +199,11 @@ function denseArray(value, label) {
   if (types.isProxy(value) || !Array.isArray(value) || value.length > MAX_PLAN_COLLECTION_ENTRIES) {
     throw new Error(`${label} must be a bounded dense array.`);
   }
-  const values = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-      throw new Error(`${label} must be a bounded dense array.`);
-    }
-    values.push(descriptor.value);
-  }
-  if (
-    Reflect.ownKeys(value).length !== value.length + 1 ||
-    Reflect.ownKeys(value).some(
-      (key) =>
-        typeof key !== 'string' ||
-        (key !== 'length' && (!/^(?:0|[1-9][0-9]*)$/u.test(key) || Number(key) >= value.length)),
-    )
-  ) {
+  const values = copyArrayDataEntries(value, value.length, `${label} must be a bounded dense array.`);
+  if (!hasDenseArrayOwnKeys(Reflect.ownKeys(value), value.length)) {
     throw new Error(`${label} must be a bounded dense array.`);
   }
   return values;
-}
-
-/**
- * @param {unknown} value
- * @param {AllowedDeploymentTarget} target
- * @returns {SavedPlanReviewContext}
- */
-function parseContext(value, target) {
-  const context = exactKeys(
-    value,
-    [
-      'accountId',
-      'backendKey',
-      'deploymentEnvironment',
-      'gate',
-      'lane',
-      'pipelineExecutionId',
-      'region',
-      'sourceSha',
-      'stateIdentity',
-    ],
-    'Saved-plan review context',
-  );
-  const laneValue = requireString(context['lane'], 'Saved-plan review lane', /^(?:app|bootstrap|foundation)$/u);
-  const gateValue = requireString(context['gate'], 'Saved-plan review gate', /^(?:terraform|verifier-preflight)$/u);
-  const lane = /** @type {SavedPlanReviewLane} */ (laneValue);
-  const gate = /** @type {SavedPlanReviewGate} */ (gateValue);
-  const policy = resolveReviewGatePolicy(lane, gate);
-  const deploymentEnvironment = requireString(
-    context['deploymentEnvironment'],
-    'Saved-plan review deployment environment',
-    /^[a-z][a-z0-9-]{0,62}$/u,
-  );
-  const stateIdentity = requireString(
-    context['stateIdentity'],
-    'Saved-plan review state identity',
-    /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*\/(?:app|bootstrap|foundation)$/u,
-  );
-  const stateSegments = stateIdentity.split('/');
-  if (stateSegments[1] !== deploymentEnvironment || stateSegments[2] !== policy.root) {
-    throw new Error('Saved-plan review state identity does not match its context.');
-  }
-  const backendKey = requireString(
-    context['backendKey'],
-    'Saved-plan review backend key',
-    /^[A-Za-z0-9][A-Za-z0-9._/-]{1,1023}$/u,
-  );
-  if (
-    backendKey.startsWith('/') ||
-    backendKey.includes('//') ||
-    backendKey.includes('..') ||
-    !backendKey.endsWith(`/${stateIdentity}/terraform.tfstate`)
-  ) {
-    throw new Error('Saved-plan review backend key does not match its state identity.');
-  }
-  const laneAuthority = resolveDeploymentLaneAuthority(target, lane);
-  if (
-    context['accountId'] !== target.accountId ||
-    context['region'] !== target.region ||
-    deploymentEnvironment !== target.environmentId ||
-    stateIdentity !== laneAuthority.stateIdentity ||
-    backendKey !== laneAuthority.backendKey
-  ) {
-    throw new Error('Saved-plan review context does not match the expected target and lane.');
-  }
-  return deepFreeze({
-    accountId: requireString(context['accountId'], 'Saved-plan review AWS account ID', /^[0-9]{12}$/u),
-    region: requireString(context['region'], 'Saved-plan review AWS region', /^[a-z]{2}(?:-gov)?-[a-z]+-[0-9]$/u),
-    deploymentEnvironment,
-    lane,
-    gate,
-    pipelineExecutionId: requireGroupedLowercaseUuid(
-      context['pipelineExecutionId'],
-      'Saved-plan review pipeline execution ID',
-    ),
-    sourceSha: parseGitCommitSha(context['sourceSha'], 'Saved-plan review source SHA'),
-    stateIdentity,
-    backendKey,
-  });
 }
 
 /**
@@ -408,11 +230,7 @@ function rejectMoveOrImportMetadata(changes, label) {
  * @returns {unknown}
  */
 function attributeMetadataProperty(change, key, label) {
-  const descriptor = Object.getOwnPropertyDescriptor(change, key);
-  if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-    throw new Error(`${label} attribute metadata is invalid.`);
-  }
-  return descriptor.value;
+  return requireEnumerableDataProperty(change, key, `${label} attribute metadata is invalid.`);
 }
 
 /**
@@ -464,45 +282,15 @@ function validateBoundedChangeValue(value, label, budget, depth = 0) {
       consumeChangeValueBudget(budget, 0, label);
       return;
     case 'number':
-      if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-        throw new Error(`${label} is invalid.`);
-      }
-      consumeChangeValueBudget(budget, 0, label);
+      consumeNumericChangeValue(value, label, budget);
       return;
     case 'string':
       consumeChangeValueBudget(budget, Buffer.byteLength(value, 'utf8'), label);
       return;
-    case 'object': {
+    case 'object':
       consumeChangeValueBudget(budget, 0, label);
-      if (Array.isArray(value)) {
-        const entries = denseArray(value, label);
-        for (const entry of entries) {
-          validateBoundedChangeValue(entry, label, budget, depth + 1);
-        }
-        return;
-      }
-      const record = requiredRecord(value, label);
-      const keys = Reflect.ownKeys(record);
-      if (keys.length > MAX_PLAN_COLLECTION_ENTRIES) {
-        throw new Error(`${label} exceeds the review bound.`);
-      }
-      for (const key of keys) {
-        const descriptor = Object.getOwnPropertyDescriptor(record, key);
-        if (
-          typeof key !== 'string' ||
-          Buffer.byteLength(key, 'utf8') > 4_096 ||
-          hasControlCharacter(key) ||
-          descriptor === undefined ||
-          descriptor.enumerable !== true ||
-          !Object.hasOwn(descriptor, 'value')
-        ) {
-          throw new Error(`${label} is invalid.`);
-        }
-        consumeChangeValueBudget(budget, Buffer.byteLength(key, 'utf8'), label);
-        validateBoundedChangeValue(descriptor.value, label, budget, depth + 1);
-      }
+      validateChangeCollection(value, label, budget, depth);
       return;
-    }
     default:
       throw new Error(`${label} is invalid.`);
   }
@@ -535,26 +323,11 @@ function parseTopLevelResourceValue(value, label, budget) {
     consumeChangeValueBudget(budget, 0, label);
     return new Map();
   }
-  const record = requiredRecord(value, label);
-  const keys = Reflect.ownKeys(record);
-  if (keys.length > MAX_REPORTED_RESOURCE_ATTRIBUTES) {
-    throw new Error('Terraform resource attribute summary exceeds the review bound.');
-  }
   /** @type {Map<string, unknown>} */
   const attributes = new Map();
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(record, key);
-    if (
-      typeof key !== 'string' ||
-      descriptor === undefined ||
-      descriptor.enumerable !== true ||
-      !Object.hasOwn(descriptor, 'value')
-    ) {
-      throw new Error(`${label} is invalid.`);
-    }
-    const attribute = parseResourceAttributeName(key, `${label} attribute name`);
-    validateBoundedChangeValue(descriptor.value, label, budget, 1);
-    attributes.set(attribute, descriptor.value);
+  for (const [attribute, entry] of topLevelResourceEntries(value, label)) {
+    validateBoundedChangeValue(entry, label, budget, 1);
+    attributes.set(attribute, entry);
   }
   return attributes;
 }
@@ -582,26 +355,9 @@ function flagTreeContainsTrue(value, label, budget, depth = 0) {
     }
     return containsTrue;
   }
-  const record = requiredRecord(value, label);
-  const keys = Reflect.ownKeys(record);
-  if (keys.length > MAX_PLAN_COLLECTION_ENTRIES) {
-    throw new Error(`${label} exceeds the review bound.`);
-  }
   let containsTrue = false;
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(record, key);
-    if (
-      typeof key !== 'string' ||
-      Buffer.byteLength(key, 'utf8') > 4_096 ||
-      hasControlCharacter(key) ||
-      descriptor === undefined ||
-      descriptor.enumerable !== true ||
-      !Object.hasOwn(descriptor, 'value')
-    ) {
-      throw new Error(`${label} is invalid.`);
-    }
-    consumeChangeValueBudget(budget, Buffer.byteLength(key, 'utf8'), label);
-    containsTrue = flagTreeContainsTrue(descriptor.value, label, budget, depth + 1) || containsTrue;
+  for (const entry of changeRecordValues(value, label, budget)) {
+    containsTrue = flagTreeContainsTrue(entry, label, budget, depth + 1) || containsTrue;
   }
   return containsTrue;
 }
@@ -624,24 +380,9 @@ function parseTopLevelFlaggedAttributes(value, knownAttributes, label, budget, a
     }
     return [...knownAttributes.keys()].sort();
   }
-  const record = requiredRecord(value, label);
-  const keys = Reflect.ownKeys(record);
-  if (keys.length > MAX_REPORTED_RESOURCE_ATTRIBUTES) {
-    throw new Error('Terraform resource attribute summary exceeds the review bound.');
-  }
   const attributes = [];
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(record, key);
-    if (
-      typeof key !== 'string' ||
-      descriptor === undefined ||
-      descriptor.enumerable !== true ||
-      !Object.hasOwn(descriptor, 'value')
-    ) {
-      throw new Error(`${label} is invalid.`);
-    }
-    const attribute = parseResourceAttributeName(key, `${label} attribute name`);
-    const containsTrue = flagTreeContainsTrue(descriptor.value, label, budget, 1);
+  for (const [attribute, entry] of topLevelResourceEntries(value, label)) {
+    const containsTrue = flagTreeContainsTrue(entry, label, budget, 1);
     if (!containsTrue) {
       continue;
     }
@@ -668,14 +409,7 @@ function parseReplacementAttributes(value, knownAttributes, actionClass, label) 
     if (path.length === 0 || path.length > MAX_REPLACEMENT_PATH_SEGMENTS) {
       throw new Error(`${label} replacement path is invalid.`);
     }
-    for (const segment of path) {
-      const validStringSegment =
-        typeof segment === 'string' && Buffer.byteLength(segment, 'utf8') <= 4_096 && !hasControlCharacter(segment);
-      const validNumericSegment = typeof segment === 'number' && Number.isSafeInteger(segment) && segment >= 0;
-      if (!validStringSegment && !validNumericSegment) {
-        throw new Error(`${label} replacement path is invalid.`);
-      }
-    }
+    assertReplacementPathSegments(path, label);
     const attribute = parseResourceAttributeName(path[0], `${label} replacement path attribute`);
     if (!knownAttributes.has(attribute)) {
       throw new Error(`${label} replacement path does not match its resource value.`);
@@ -835,13 +569,7 @@ function summarizeOutputChanges(value) {
   const changedNames = [];
   for (const key of Reflect.ownKeys(outputChanges)) {
     const descriptor = Object.getOwnPropertyDescriptor(outputChanges, key);
-    if (
-      typeof key !== 'string' ||
-      descriptor === undefined ||
-      descriptor.enumerable !== true ||
-      !Object.hasOwn(descriptor, 'value') ||
-      !/^[A-Za-z0-9_-]{1,256}$/u.test(key)
-    ) {
+    if (typeof key !== 'string' || !isEnumerableDataDescriptor(descriptor) || !/^[A-Za-z0-9_-]{1,256}$/u.test(key)) {
       throw new Error('Terraform plan output_changes is invalid.');
     }
     const change = requiredRecord(descriptor.value, `Terraform output change ${key}`);
@@ -899,36 +627,9 @@ function parsePlan(value, policy) {
     'Saved-plan review plan binding',
   );
   const plan = requiredRecord(planBinding['planJson'], 'Terraform plan JSON');
-  const formatVersion = requiredDataProperty(plan, 'format_version', 'Terraform plan format_version');
-  const terraformVersion = requiredDataProperty(plan, 'terraform_version', 'Terraform plan terraform_version');
-  const applyable = requiredDataProperty(plan, 'applyable', 'Terraform plan applyable');
-  const complete = requiredDataProperty(plan, 'complete', 'Terraform plan complete');
-  const errored = requiredDataProperty(plan, 'errored', 'Terraform plan errored');
-  if (formatVersion !== REVIEWED_PLAN_FORMAT_VERSION || terraformVersion !== REVIEWED_TERRAFORM_VERSION) {
-    throw new Error('Terraform plan runtime is not the reviewed runtime.');
-  }
-  if ((applyable !== true && applyable !== false) || errored !== false || complete !== policy.complete) {
-    throw new Error('Terraform plan execution disposition does not match the selected gate.');
-  }
+  const { formatVersion, terraformVersion, applyable, complete, errored } = admitPlanDisposition(plan, policy);
 
-  const deferredChanges = denseArray(
-    optionalDataProperty(plan, 'deferred_changes', [], 'Terraform plan deferred_changes'),
-    'Terraform plan deferred_changes',
-  );
-  if (deferredChanges.length !== 0) {
-    throw new Error('Terraform plan contains deferred changes.');
-  }
-  const actionInvocations = denseArray(
-    optionalDataProperty(plan, 'action_invocations', [], 'Terraform plan action_invocations'),
-    'Terraform plan action_invocations',
-  );
-  const deferredActionInvocations = denseArray(
-    optionalDataProperty(plan, 'deferred_action_invocations', [], 'Terraform plan deferred_action_invocations'),
-    'Terraform plan deferred_action_invocations',
-  );
-  if (actionInvocations.length !== 0 || deferredActionInvocations.length !== 0) {
-    throw new Error('Terraform plan action invocations are not supported by saved-plan review.');
-  }
+  rejectUnsupportedPlanActions(plan);
   const resourceChanges = denseArray(
     requiredDataProperty(plan, 'resource_changes', 'Terraform plan resource_changes'),
     'Terraform plan resource_changes',
@@ -959,20 +660,7 @@ function parsePlan(value, policy) {
   if (outputChanges.omittedNameCount !== 0) {
     throw new Error('Saved-plan review cannot omit changed output names.');
   }
-  const semanticResourceChangeCount = Object.values(resourceSummary.actionCounts).reduce(
-    (total, count) => total + count,
-    0,
-  );
-  const semanticNoOp = semanticResourceChangeCount === 0 && outputChanges.count === 0;
-  if (applyable === false && !semanticNoOp) {
-    throw new Error('Terraform non-applyable plan contains semantic changes.');
-  }
-  if (applyable === true && semanticNoOp) {
-    throw new Error('Terraform applyable plan contains no semantic changes.');
-  }
-  if (applyable === false && policy.allowNonApplyableNoOp !== true) {
-    throw new Error('Terraform non-applyable no-op is not admitted for the selected gate.');
-  }
+  assertSemanticPlanDisposition(applyable, resourceSummary.actionCounts, outputChanges.count, policy);
   const checkStatusCounts = summarizeChecks(requiredDataProperty(plan, 'checks', 'Terraform plan checks'));
   const foundationBootstrapImpact =
     policy.root === 'bootstrap' ? classifyFoundationBootstrapImpact({ changedAddresses, outputChanges }) : null;
@@ -996,400 +684,141 @@ function parsePlan(value, policy) {
 }
 
 /**
- * Reuse the exact saved-plan parser for the separately scoped Bootstrap seed.
- * The initialization owner additionally validates every resource and action.
- * This does not add an initialization gate to ordinary pipeline review.
- * @param {unknown} value
+ * The immutable package owns target/source/dependencies. Only Terraform's
+ * redacted semantic view crosses the interactive display boundary.
+ * @param {import('./plan-package.js').PlanPackage} plan
  */
-export function summarizeBootstrapInitializationPlan(value) {
-  return parsePlan(value, {
-    complete: false,
-    allowNonApplyableNoOp: false,
-    root: 'bootstrap',
-    approval: 'source',
-    authority: null,
-  });
-}
-
-/**
- * @param {unknown} value
- * @param {SavedPlanReviewContext} context
- * @param {SavedPlanReviewGatePolicy} policy
- * @param {string} tfplanSha256
- * @returns {SavedPlanReviewSourceApproval | SavedPlanReviewAppApproval}
- */
-function parseApproval(value, context, policy, tfplanSha256) {
-  if (policy.approval === 'app') {
-    const approval = exactKeys(
-      value,
-      [
-        'accountId',
-        'controlSourceSha',
-        'deploymentEnvironment',
-        'deploymentMode',
-        'reviewedPlanChecksum',
-        'selectedSourceSha',
-      ],
-      'Saved-plan review App approval',
-    );
-    const deploymentModeValue = requireString(
-      approval['deploymentMode'],
-      'Saved-plan review App deployment mode',
-      /^(?:normal|rollback)$/u,
-    );
-    const deploymentMode = /** @type {SavedPlanReviewDeploymentMode} */ (deploymentModeValue);
-    const controlSourceSha = parseGitCommitSha(
-      approval['controlSourceSha'],
-      'Saved-plan review App control source SHA',
-    );
-    const selectedSourceSha = parseGitCommitSha(
-      approval['selectedSourceSha'],
-      'Saved-plan review App selected source SHA',
-    );
-    if (
-      controlSourceSha !== context.sourceSha ||
-      (deploymentMode === 'normal' && selectedSourceSha !== controlSourceSha)
-    ) {
-      throw new Error('Saved-plan review App source authority does not match its context.');
-    }
-    const bindings = {
-      accountId: approval['accountId'],
-      deploymentEnvironment: approval['deploymentEnvironment'],
-      reviewedPlanChecksum: approval['reviewedPlanChecksum'],
-    };
-    assertApprovalBindings(bindings, context, tfplanSha256);
-    /** @type {SavedPlanReviewAppApproval} */
-    const parsed = {
-      deploymentMode,
-      controlSourceSha,
-      selectedSourceSha,
-      accountId: context.accountId,
-      deploymentEnvironment: context.deploymentEnvironment,
-      reviewedPlanChecksum: tfplanSha256,
-    };
-    return deepFreeze(parsed);
-  }
-
-  const approval = exactKeys(
-    value,
-    ['accountId', 'deploymentEnvironment', 'reviewedPlanChecksum', 'sourceSha'],
-    'Saved-plan review source approval',
+export function summarizePlanPackageReview(plan) {
+  return parsePlan(
+    {
+      planJson: JSON.parse(plan.files.tfplanJson),
+      planJsonSha256: canonicalPlanHash(plan.files.tfplanJson),
+      tfplanSha256: canonicalPlanHash(Buffer.from(plan.files.tfplan, 'base64')),
+    },
+    {
+      complete: true,
+      allowNonApplyableNoOp: true,
+      root: plan.root,
+      approval: plan.root === 'app' ? 'app' : 'source',
+      authority: null,
+    },
   );
-  const sourceSha = parseGitCommitSha(approval['sourceSha'], 'Saved-plan review approval source SHA');
-  if (sourceSha !== context.sourceSha) {
-    throw new Error('Saved-plan review approval source SHA does not match its context.');
-  }
-  const bindings = {
-    accountId: approval['accountId'],
-    deploymentEnvironment: approval['deploymentEnvironment'],
-    reviewedPlanChecksum: approval['reviewedPlanChecksum'],
-  };
-  assertApprovalBindings(bindings, context, tfplanSha256);
-  /** @type {SavedPlanReviewSourceApproval} */
-  const parsed = {
-    sourceSha,
-    accountId: context.accountId,
-    deploymentEnvironment: context.deploymentEnvironment,
-    reviewedPlanChecksum: tfplanSha256,
-  };
-  return deepFreeze(parsed);
 }
 
-/**
- * @param {{accountId: unknown, deploymentEnvironment: unknown, reviewedPlanChecksum: unknown}} approval
- * @param {SavedPlanReviewContext} context
- * @param {string} tfplanSha256
- */
-function assertApprovalBindings(approval, context, tfplanSha256) {
-  if (
-    approval.accountId !== context.accountId ||
-    approval.deploymentEnvironment !== context.deploymentEnvironment ||
-    approval.reviewedPlanChecksum !== tfplanSha256
-  ) {
-    throw new Error('Saved-plan review approval does not match its context and saved plan.');
+/** @param {object} value @param {string} label @param {SavedPlanReviewChangeBudget} budget @param {number} depth */
+function validateChangeCollection(value, label, budget, depth) {
+  const entries = Array.isArray(value) ? denseArray(value, label) : changeRecordValues(value, label, budget);
+  for (const entry of entries) validateBoundedChangeValue(entry, label, budget, depth + 1);
+}
+
+/** @param {unknown} value @param {string} label @param {SavedPlanReviewChangeBudget} budget @returns {Generator<unknown>} */
+function* changeRecordValues(value, label, budget) {
+  const record = requiredRecord(value, label);
+  const keys = Reflect.ownKeys(record);
+  if (keys.length > MAX_PLAN_COLLECTION_ENTRIES) {
+    throw new Error(`${label} exceeds the review bound.`);
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (
+      typeof key !== 'string' ||
+      Buffer.byteLength(key, 'utf8') > 4_096 ||
+      hasControlCharacter(key) ||
+      !isEnumerableDataDescriptor(descriptor)
+    ) {
+      throw new Error(`${label} is invalid.`);
+    }
+    consumeChangeValueBudget(budget, Buffer.byteLength(key, 'utf8'), label);
+    yield descriptor.value;
   }
 }
 
-/**
- * @param {unknown} value
- * @param {string} label
- * @returns {string}
- */
-function parsePositiveDecimalVersion(value, label) {
-  const version = requireString(value, label, /^[1-9][0-9]*$/u);
-  if (Buffer.byteLength(version, 'utf8') > 32) {
+/** @param {unknown} value @param {string} label @returns {Generator<[string, unknown]>} */
+function* topLevelResourceEntries(value, label) {
+  const record = requiredRecord(value, label);
+  const keys = Reflect.ownKeys(record);
+  if (keys.length > MAX_REPORTED_RESOURCE_ATTRIBUTES) {
+    throw new Error('Terraform resource attribute summary exceeds the review bound.');
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (typeof key !== 'string' || !isEnumerableDataDescriptor(descriptor)) {
+      throw new Error(`${label} is invalid.`);
+    }
+    const attribute = parseResourceAttributeName(key, `${label} attribute name`);
+    yield [attribute, descriptor.value];
+  }
+}
+
+/** @param {unknown[]} path @param {string} label */
+function assertReplacementPathSegments(path, label) {
+  for (const segment of path) {
+    const validStringSegment =
+      typeof segment === 'string' && Buffer.byteLength(segment, 'utf8') <= 4_096 && !hasControlCharacter(segment);
+    const validNumericSegment = typeof segment === 'number' && Number.isSafeInteger(segment) && segment >= 0;
+    if (!validStringSegment && !validNumericSegment) {
+      throw new Error(`${label} replacement path is invalid.`);
+    }
+  }
+}
+
+/** @param {Record<string,unknown>} plan @param {SavedPlanReviewGatePolicy} policy
+ * @returns {Pick<SavedPlanReviewSummary, "formatVersion"|"terraformVersion"|"applyable"|"complete"|"errored">} */
+function admitPlanDisposition(plan, policy) {
+  const formatVersion = requiredDataProperty(plan, 'format_version', 'Terraform plan format_version');
+  const terraformVersion = requiredDataProperty(plan, 'terraform_version', 'Terraform plan terraform_version');
+  const applyable = requiredDataProperty(plan, 'applyable', 'Terraform plan applyable');
+  const complete = requiredDataProperty(plan, 'complete', 'Terraform plan complete');
+  const errored = requiredDataProperty(plan, 'errored', 'Terraform plan errored');
+  if (formatVersion !== REVIEWED_PLAN_FORMAT_VERSION || terraformVersion !== REVIEWED_TERRAFORM_VERSION) {
+    throw new Error('Terraform plan runtime is not the reviewed runtime.');
+  }
+  if ((applyable !== true && applyable !== false) || errored !== false || complete !== policy.complete) {
+    throw new Error('Terraform plan execution disposition does not match the selected gate.');
+  }
+
+  return { formatVersion, terraformVersion, applyable, complete, errored };
+}
+/** @param {Record<string,unknown>} plan */
+function rejectUnsupportedPlanActions(plan) {
+  const deferredChanges = denseArray(
+    optionalDataProperty(plan, 'deferred_changes', [], 'Terraform plan deferred_changes'),
+    'Terraform plan deferred_changes',
+  );
+  if (deferredChanges.length !== 0) {
+    throw new Error('Terraform plan contains deferred changes.');
+  }
+  const actionInvocations = denseArray(
+    optionalDataProperty(plan, 'action_invocations', [], 'Terraform plan action_invocations'),
+    'Terraform plan action_invocations',
+  );
+  const deferredActionInvocations = denseArray(
+    optionalDataProperty(plan, 'deferred_action_invocations', [], 'Terraform plan deferred_action_invocations'),
+    'Terraform plan deferred_action_invocations',
+  );
+  if (actionInvocations.length !== 0 || deferredActionInvocations.length !== 0) {
+    throw new Error('Terraform plan action invocations are not supported by saved-plan review.');
+  }
+}
+/** @param {boolean} applyable @param {SavedPlanReviewActionCounts} actionCounts @param {number} outputChangeCount @param {SavedPlanReviewGatePolicy} policy */
+function assertSemanticPlanDisposition(applyable, actionCounts, outputChangeCount, policy) {
+  const semanticResourceChangeCount = Object.values(actionCounts).reduce((total, count) => total + count, 0);
+  const semanticNoOp = semanticResourceChangeCount === 0 && outputChangeCount === 0;
+  if (applyable === false && !semanticNoOp) {
+    throw new Error('Terraform non-applyable plan contains semantic changes.');
+  }
+  if (applyable === true && semanticNoOp) {
+    throw new Error('Terraform applyable plan contains no semantic changes.');
+  }
+  if (applyable === false && policy.allowNonApplyableNoOp !== true) {
+    throw new Error('Terraform non-applyable no-op is not admitted for the selected gate.');
+  }
+}
+
+/** @param {number} value @param {string} label @param {SavedPlanReviewChangeBudget} budget */
+function consumeNumericChangeValue(value, label, budget) {
+  if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
     throw new Error(`${label} is invalid.`);
   }
-  return version;
-}
-
-/**
- * @param {unknown} value
- * @returns {string}
- */
-function parseLambdaSourceCodeHash(value) {
-  const sourceCodeHash = requireString(value, 'Saved-plan review verifier source code hash', /^[A-Za-z0-9+/]{43}=$/u);
-  const decoded = Buffer.from(sourceCodeHash, 'base64');
-  if (decoded.length !== 32 || decoded.toString('base64') !== sourceCodeHash) {
-    throw new Error('Saved-plan review verifier source code hash is invalid.');
-  }
-  return sourceCodeHash;
-}
-
-/**
- * @param {unknown} value
- * @param {SavedPlanReviewContext} context
- * @param {AllowedDeploymentTarget} target
- * @returns {SavedPlanReviewAppVerifierPreflightAuthority | SavedPlanReviewAppVerifierPrerequisiteAuthority}
- */
-function parseAppVerifierPreflightAuthority(value, context, target) {
-  const authority = exactKeys(
-    value,
-    [
-      'assetManifestSha256',
-      'authorityType',
-      'expectedFunctionVersion',
-      'foundationAcceptance',
-      'package',
-      'packageSourceSha',
-      'proverImageDigest',
-      'reconciliationDesiredSha256',
-      'sourceCodeHash',
-      'trustRootSha256',
-    ],
-    'Saved-plan review App verifier preflight authority',
-  );
-  const prerequisite = isAppVerifierPrerequisiteReview(authority, target.targetKey);
-  if (!prerequisite && authority['authorityType'] !== 'app-verifier-preflight') {
-    throw new Error('Saved-plan review App verifier preflight authority discriminator is invalid.');
-  }
-  const packageSourceSha = parseGitCommitSha(
-    authority['packageSourceSha'],
-    'Saved-plan review verifier package source SHA',
-  );
-  if (packageSourceSha !== context.sourceSha) {
-    throw new Error('Saved-plan review verifier package source SHA does not match its context.');
-  }
-  const common = {
-    packageSourceSha,
-    proverImageDigest: parseImageDigest(
-      authority['proverImageDigest'],
-      'Saved-plan review verifier prover image digest',
-    ),
-    package: parseImmutableObjectReference(authority['package']),
-    sourceCodeHash: parseLambdaSourceCodeHash(authority['sourceCodeHash']),
-    assetManifestSha256: parseSha256(
-      authority['assetManifestSha256'],
-      'Saved-plan review verifier asset manifest SHA-256',
-    ),
-    trustRootSha256: parseSha256(authority['trustRootSha256'], 'Saved-plan review verifier trust root SHA-256'),
-    foundationAcceptance: admitFoundationAcceptanceApprovalBinding(authority['foundationAcceptance'], target.targetKey),
-  };
-  if (prerequisite)
-    return deepFreeze({
-      ...common,
-      authorityType: 'app-verifier-prerequisite',
-      expectedFunctionVersion: null,
-      reconciliationDesiredSha256: null,
-    });
-  return deepFreeze({
-    ...common,
-    authorityType: 'app-verifier-preflight',
-    expectedFunctionVersion: parsePositiveDecimalVersion(
-      authority['expectedFunctionVersion'],
-      'Saved-plan review verifier expected FunctionVersion',
-    ),
-    reconciliationDesiredSha256: parseSha256(
-      authority['reconciliationDesiredSha256'],
-      'Saved-plan review verifier reconciliation desired SHA-256',
-    ),
-  });
-}
-
-/**
- * @param {unknown} value
- * @param {SavedPlanReviewAppApproval} approval
- * @param {AllowedDeploymentTarget} target
- * @returns {SavedPlanReviewAppDeploymentAuthority}
- */
-function parseAppDeploymentAuthority(value, approval, target) {
-  const authority = exactKeys(
-    value,
-    [
-      'appExecutionAuthoritySha256',
-      'authorityType',
-      'deploymentId',
-      'deploymentMode',
-      'expectedImageId',
-      'imageIdMappingSha256',
-      'imageIdVariant',
-      'lambdaCount',
-      'lambdaSetSha256',
-      'lambdaSourceSha',
-      'methodVersion',
-      'proverImageDigest',
-      'proverReleaseKey',
-      'selectedProverSelector',
-      'selectedSourceSha',
-      'toolchainReleaseKey',
-      'toolchainImageDigest',
-      'verifierFunctionVersion',
-    ],
-    'Saved-plan review App deployment authority',
-  );
-  if (authority['authorityType'] !== 'app-deployment') {
-    throw new Error('Saved-plan review App deployment authority discriminator is invalid.');
-  }
-  const deploymentModeValue = requireString(
-    authority['deploymentMode'],
-    'Saved-plan review App deployment authority mode',
-    /^(?:normal|rollback)$/u,
-  );
-  const deploymentMode = /** @type {SavedPlanReviewDeploymentMode} */ (deploymentModeValue);
-  const selectedSourceSha = parseGitCommitSha(
-    authority['selectedSourceSha'],
-    'Saved-plan review App deployment authority selected source SHA',
-  );
-  if (deploymentMode !== approval.deploymentMode || selectedSourceSha !== approval.selectedSourceSha) {
-    throw new Error('Saved-plan review App deployment authority does not match its approval.');
-  }
-  const lambdaSourceSha = parseGitCommitSha(
-    authority['lambdaSourceSha'],
-    'Saved-plan review App deployment Lambda source SHA',
-  );
-  if (lambdaSourceSha !== selectedSourceSha) {
-    throw new Error('Saved-plan review App deployment Lambda source SHA does not match the selected source.');
-  }
-  if (authority['lambdaCount'] !== 6) {
-    throw new Error('Saved-plan review App deployment Lambda count must be exactly 6.');
-  }
-  const methodVersion = authority['methodVersion'];
-  if (typeof methodVersion !== 'number' || !Number.isSafeInteger(methodVersion) || methodVersion < 1) {
-    throw new Error('Saved-plan review App deployment method version is invalid.');
-  }
-  const selectedProverSelector = /** @type {'accepted' | 'pinned'} */ (
-    requireString(
-      authority['selectedProverSelector'],
-      'Saved-plan review App selected prover selector',
-      /^(?:accepted|pinned)$/u,
-    )
-  );
-  const imageIdVariant = /** @type {'default' | 'x86_64'} */ (
-    requireString(authority['imageIdVariant'], 'Saved-plan review App ImageID variant', /^(?:default|x86_64)$/u)
-  );
-  return deepFreeze({
-    authorityType: 'app-deployment',
-    deploymentMode,
-    selectedSourceSha,
-    deploymentId: requireString(
-      authority['deploymentId'],
-      'Saved-plan review App deployment ID',
-      /^dep_[0-9a-f]{32}$/u,
-    ),
-    appExecutionAuthoritySha256: parseSha256(
-      authority['appExecutionAuthoritySha256'],
-      'Saved-plan review App execution-authority SHA-256',
-    ),
-    selectedProverSelector,
-    expectedImageId: requireString(
-      authority['expectedImageId'],
-      'Saved-plan review App expected ImageID',
-      /^0x[0-9a-f]{64}$/u,
-    ),
-    methodVersion,
-    imageIdVariant,
-    imageIdMappingSha256: parseSha256(
-      authority['imageIdMappingSha256'],
-      'Saved-plan review App ImageID mapping SHA-256',
-    ),
-    proverImageDigest: parseImageDigest(authority['proverImageDigest'], 'Saved-plan review App prover image digest'),
-    toolchainImageDigest: parseImageDigest(
-      authority['toolchainImageDigest'],
-      'Saved-plan review App toolchain image digest',
-    ),
-    proverReleaseKey: admitReleaseRecordKey(PROVER_RELEASE_KIND, authority['proverReleaseKey'], target.targetKey),
-    toolchainReleaseKey: admitReleaseRecordKey(
-      TOOLCHAIN_RELEASE_KIND,
-      authority['toolchainReleaseKey'],
-      target.targetKey,
-    ),
-    lambdaSourceSha,
-    lambdaCount: 6,
-    lambdaSetSha256: parseSha256(authority['lambdaSetSha256'], 'Saved-plan review App Lambda set SHA-256'),
-    verifierFunctionVersion: parsePositiveDecimalVersion(
-      authority['verifierFunctionVersion'],
-      'Saved-plan review App verifier function version',
-    ),
-  });
-}
-
-/**
- * @param {unknown} value
- * @param {SavedPlanReviewContext} context
- * @param {SavedPlanReviewGatePolicy} policy
- * @param {SavedPlanReviewSourceApproval | SavedPlanReviewAppApproval} approval
- * @param {AllowedDeploymentTarget} target
- * @returns {null | SavedPlanReviewAppVerifierPreflightAuthority | SavedPlanReviewAppVerifierPrerequisiteAuthority | SavedPlanReviewAppDeploymentAuthority}
- */
-function parseAuthority(value, context, policy, approval, target) {
-  if (policy.authority === null) {
-    if (value !== null) {
-      throw new Error('Saved-plan review authority must be null outside the App lane.');
-    }
-    return null;
-  }
-  const authority = requiredRecord(value, 'Saved-plan review authority');
-  if (policy.authority === 'app-verifier-preflight') {
-    return parseAppVerifierPreflightAuthority(authority, context, target);
-  }
-  if (!('deploymentMode' in approval)) {
-    throw new Error('Saved-plan review App deployment authority requires an App approval.');
-  }
-  return parseAppDeploymentAuthority(authority, approval, target);
-}
-
-/** @param {Record<string, unknown>} input @param {SavedPlanReviewContext} context @param {AllowedDeploymentTarget} target */
-function buildSemanticReview(input, context, target) {
-  const policy = resolveReviewGatePolicy(context.lane, context.gate);
-  const summary = parsePlan(input['plan'], policy);
-  const approval = parseApproval(input['approval'], context, policy, summary.tfplanSha256);
-  const authority = parseAuthority(input['authority'], context, policy, approval, target);
-  if (authority?.authorityType === 'app-verifier-prerequisite') {
-    assertAppVerifierPrerequisiteReviewPlan(
-      requiredRecord(input['plan'], 'Verifier prerequisite plan input')['planJson'],
-      authority,
-      context,
-      target.targetKey,
-    );
-  }
-  return deepFreeze({
-    reviewType: /** @type {const} */ ('saved-plan-semantic-review'),
-    context,
-    summary,
-    approval,
-    authority,
-  });
-}
-
-/**
- * Exact-admits the context shared by semantic and artifact-bound reviews.
- *
- * @param {unknown} value
- * @param {unknown} expectedTargetKey
- */
-export function admitSavedPlanReviewContext(value, expectedTargetKey) {
-  const target = resolveAllowedDeploymentTarget(requireString(expectedTargetKey, 'Saved-plan expected target'));
-  return parseContext(value, target);
-}
-
-/**
- * Builds the immutable plan-time semantic view through the sole Terraform plan parser.
- *
- * @param {unknown} value
- * @param {unknown} expectedTargetKey
- */
-export function buildSavedPlanSemanticReview(value, expectedTargetKey) {
-  const target = resolveAllowedDeploymentTarget(requireString(expectedTargetKey, 'Saved-plan expected target'));
-  const input = exactKeys(value, ['approval', 'authority', 'context', 'plan'], 'Saved-plan semantic review input');
-  return buildSemanticReview(input, parseContext(input['context'], target), target);
+  consumeChangeValueBudget(budget, 0, label);
 }

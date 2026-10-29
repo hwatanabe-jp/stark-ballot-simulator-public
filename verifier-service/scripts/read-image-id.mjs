@@ -18,6 +18,24 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** @param {Record<string,unknown>} payload */
+function readSnakeCaseImageId(payload) {
+  if (typeof payload['image_id'] === 'string' && payload['image_id'].length > 0) {
+    return payload['image_id'];
+  }
+
+  return null;
+}
+
+/** @param {Record<string,unknown>} payload */
+function readDirectImageId(payload) {
+  if (typeof payload['imageId'] === 'string' && payload['imageId'].length > 0) {
+    return payload['imageId'];
+  }
+
+  return readSnakeCaseImageId(payload);
+}
+
 /**
  * @param {unknown} payload
  * @param {import('../../packages/validation/src/image-id-policy.js').ImageIdVariant} variant
@@ -28,14 +46,13 @@ function resolveImageId(payload, variant) {
     return null;
   }
 
-  if (typeof payload['imageId'] === 'string' && payload['imageId'].length > 0) {
-    return payload['imageId'];
-  }
+  const directImageId = readDirectImageId(payload);
+  if (directImageId !== null) return directImageId;
+  return readMappedImageId(payload, variant);
+}
 
-  if (typeof payload['image_id'] === 'string' && payload['image_id'].length > 0) {
-    return payload['image_id'];
-  }
-
+/** @param {Record<string,unknown>} payload @param {import('../../packages/validation/src/image-id-policy.js').ImageIdVariant} variant */
+function readMappedImageId(payload, variant) {
   if (typeof payload['current'] === 'string' && isRecord(payload['mappings'])) {
     return resolveExpectedImageIdFromMapping(
       /** @type {import('../../packages/validation/src/image-id-policy.js').ImageIdMapping} */ (
@@ -49,6 +66,29 @@ function resolveImageId(payload, variant) {
   return null;
 }
 
+/** @param {string|undefined} token */
+function exitForImageIdHelp(token) {
+  if (token === '--help' || token === '-h') {
+    usage();
+    process.exit(0);
+  }
+}
+
+/** @param {string|undefined} value */
+function readVariantArgument(value) {
+  if (!value) {
+    throw new Error('--variant requires a value');
+  }
+  return resolveConfiguredImageIdVariant(value);
+}
+
+/** @param {string} filePath @param {string|undefined} token */
+function readImageIdFileArgument(filePath, token) {
+  if (filePath) throw new Error(`unexpected argument: ${token}`);
+  if (!token) throw new Error('unexpected empty argument');
+  return token;
+}
+
 /**
  * @param {string[]} argv
  * @returns {{ filePath: string; variant: import('../../packages/validation/src/image-id-policy.js').ImageIdVariant }}
@@ -59,30 +99,15 @@ function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
-    if (token === '--help' || token === '-h') {
-      usage();
-      process.exit(0);
-    }
+    exitForImageIdHelp(token);
 
     if (token === '--variant') {
-      const value = argv[index + 1];
-      if (!value) {
-        throw new Error('--variant requires a value');
-      }
-      variant = resolveConfiguredImageIdVariant(value);
+      variant = readVariantArgument(argv[index + 1]);
       index += 1;
       continue;
     }
 
-    if (!filePath) {
-      if (!token) {
-        throw new Error('unexpected empty argument');
-      }
-      filePath = token;
-      continue;
-    }
-
-    throw new Error(`unexpected argument: ${token}`);
+    filePath = readImageIdFileArgument(filePath, token);
   }
 
   if (!filePath) {

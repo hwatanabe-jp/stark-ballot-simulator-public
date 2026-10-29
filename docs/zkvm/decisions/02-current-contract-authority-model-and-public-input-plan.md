@@ -1,5 +1,11 @@
 # Current Contract Authority Model and Public-Input Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: Coordinated `1.1 + contractGeneration` cutover implemented**
 > (commit `3a02a08`). The repository now treats `publicInputArtifact` as
 > the only persisted and restored public-input authority, requires

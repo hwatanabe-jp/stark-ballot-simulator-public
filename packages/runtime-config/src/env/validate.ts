@@ -247,56 +247,7 @@ function validateTargetAwsRuntimeConfig(profile: ResolvedRuntimeProfile, env: No
   validateTargetOriginVerifyHeader(env);
 }
 
-/**
- * Environment variable validation
- *
- * Target AWS access uses DynamoDB, S3, SQS, Step Functions, and Lambda with execution-role/default credentials.
- */
-
-export function validateEnv(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv = process.env): void {
-  if (profile.target.kind === 'aws') {
-    validateTargetAwsRuntimeConfig(profile, env);
-  }
-
-  const usesDynamoSessionStore = profile.sessionStore.kind === 'dynamo';
-  const rateLimitStore = profile.rateLimit.store;
-
-  const capabilitySecret = readTrimmedEnv(env, 'SESSION_CAPABILITY_SECRET');
-  const capabilitySecretRef = readTrimmedEnv(env, 'SESSION_CAPABILITY_SECRET_REF');
-  const capabilityTtlRaw = readTrimmedEnv(env, 'SESSION_CAPABILITY_TTL_SECONDS');
-  if (usesDynamoSessionStore) {
-    assertTargetRuntimeReferenceOnly('SESSION_CAPABILITY_SECRET', capabilitySecret);
-    assertTargetRuntimeReferenceOnly('SESSION_CAPABILITY_TTL_SECONDS', capabilityTtlRaw);
-    assertTargetRuntimeReferenceOnly('VOTE_SECRET_ENCRYPTION_KEY', readTrimmedEnv(env, 'VOTE_SECRET_ENCRYPTION_KEY'));
-    validateTargetTurnstileRuntimeConfig(env);
-  } else if (profile.proof.executor === 'risc0') {
-    if (!capabilitySecret && !capabilitySecretRef) {
-      throw configError(
-        ['SESSION_CAPABILITY_SECRET', 'SESSION_CAPABILITY_SECRET_REF'],
-        'SESSION_CAPABILITY_SECRET must be set to at least 32 characters',
-      );
-    }
-    if (capabilitySecret && capabilitySecret.length < 32) {
-      throw configError('SESSION_CAPABILITY_SECRET', 'SESSION_CAPABILITY_SECRET must be set to at least 32 characters');
-    }
-    if (capabilitySecret && isUnresolvedRuntimeSecretPlaceholder(capabilitySecret)) {
-      throw configError(
-        'SESSION_CAPABILITY_SECRET',
-        'SESSION_CAPABILITY_SECRET was not resolved from runtime secret references',
-      );
-    }
-    if (capabilitySecret) {
-      assertRawSecretIsNotReference('SESSION_CAPABILITY_SECRET', capabilitySecret);
-      const lowered = capabilitySecret.toLowerCase();
-      if (DISALLOWED_SESSION_CAPABILITY_SECRETS.has(lowered) || lowered.startsWith('change-me-please')) {
-        throw configError(
-          'SESSION_CAPABILITY_SECRET',
-          'SESSION_CAPABILITY_SECRET must be changed from placeholder/test values',
-        );
-      }
-    }
-  }
-
+function validateFinalizeCallbackSecret(env: NodeJS.ProcessEnv): void {
   // Optional by design:
   // production async flow updates state via finalization-writer Lambda,
   // and /api/internal/sessions/:sessionId/finalizations/:finalizationId/callback
@@ -321,7 +272,9 @@ export function validateEnv(profile: ResolvedRuntimeProfile, env: NodeJS.Process
       throw configError('FINALIZE_CALLBACK_SECRET', 'FINALIZE_CALLBACK_SECRET must be changed from placeholder values');
     }
   }
+}
 
+function validateCapabilityTtl(env: NodeJS.ProcessEnv, capabilityTtlRaw: string | undefined): void {
   if (capabilityTtlRaw) {
     const capabilityTtl = Number(capabilityTtlRaw);
     if (!Number.isInteger(capabilityTtl) || capabilityTtl <= 0) {
@@ -338,7 +291,9 @@ export function validateEnv(profile: ResolvedRuntimeProfile, env: NodeJS.Process
       );
     }
   }
+}
 
+function validateExpectedImageIdVariant(env: NodeJS.ProcessEnv): void {
   const expectedImageIdVariant = env['EXPECTED_IMAGE_ID_VARIANT']?.trim();
   if (expectedImageIdVariant && !isImageIdVariant(expectedImageIdVariant)) {
     throw configError(
@@ -346,6 +301,106 @@ export function validateEnv(profile: ResolvedRuntimeProfile, env: NodeJS.Process
       `Invalid EXPECTED_IMAGE_ID_VARIANT value: ${env['EXPECTED_IMAGE_ID_VARIANT']}. Expected "default" or "x86_64".`,
     );
   }
+}
+
+function validateSignedUrlTtls(env: NodeJS.ProcessEnv): void {
+  const signedUrlTtlRaw = env['S3_SIGNED_URL_TTL_SECONDS']?.trim();
+  if (signedUrlTtlRaw) {
+    const signedUrlTtl = Number(signedUrlTtlRaw);
+    if (!Number.isInteger(signedUrlTtl) || signedUrlTtl <= 0) {
+      throw configError(
+        'S3_SIGNED_URL_TTL_SECONDS',
+        `Invalid S3_SIGNED_URL_TTL_SECONDS value: ${env['S3_SIGNED_URL_TTL_SECONDS']}. ` +
+          'Expected a positive integer.',
+      );
+    }
+  }
+
+  const bundleSignedUrlTtlRaw = env['S3_BUNDLE_SIGNED_URL_TTL_SECONDS']?.trim();
+  if (bundleSignedUrlTtlRaw) {
+    const bundleSignedUrlTtl = Number(bundleSignedUrlTtlRaw);
+    if (!Number.isInteger(bundleSignedUrlTtl) || bundleSignedUrlTtl <= 0) {
+      throw configError(
+        'S3_BUNDLE_SIGNED_URL_TTL_SECONDS',
+        `Invalid S3_BUNDLE_SIGNED_URL_TTL_SECONDS value: ${env['S3_BUNDLE_SIGNED_URL_TTL_SECONDS']}. ` +
+          'Expected a positive integer.',
+      );
+    }
+    if (bundleSignedUrlTtl > 900) {
+      throw configError(
+        'S3_BUNDLE_SIGNED_URL_TTL_SECONDS',
+        'S3_BUNDLE_SIGNED_URL_TTL_SECONDS must be 900 or less for security hardening.',
+      );
+    }
+  }
+}
+
+function validateLocalCapabilitySecret(
+  capabilitySecret: string | undefined,
+  capabilitySecretRef: string | undefined,
+): void {
+  if (!capabilitySecret && !capabilitySecretRef) {
+    throw configError(
+      ['SESSION_CAPABILITY_SECRET', 'SESSION_CAPABILITY_SECRET_REF'],
+      'SESSION_CAPABILITY_SECRET must be set to at least 32 characters',
+    );
+  }
+  if (capabilitySecret) {
+    validateRawCapabilitySecret(capabilitySecret);
+  }
+}
+
+function validateRawCapabilitySecret(capabilitySecret: string): void {
+  if (capabilitySecret.length < 32) {
+    throw configError('SESSION_CAPABILITY_SECRET', 'SESSION_CAPABILITY_SECRET must be set to at least 32 characters');
+  }
+  if (isUnresolvedRuntimeSecretPlaceholder(capabilitySecret)) {
+    throw configError(
+      'SESSION_CAPABILITY_SECRET',
+      'SESSION_CAPABILITY_SECRET was not resolved from runtime secret references',
+    );
+  }
+  assertRawSecretIsNotReference('SESSION_CAPABILITY_SECRET', capabilitySecret);
+  const lowered = capabilitySecret.toLowerCase();
+  if (DISALLOWED_SESSION_CAPABILITY_SECRETS.has(lowered) || lowered.startsWith('change-me-please')) {
+    throw configError(
+      'SESSION_CAPABILITY_SECRET',
+      'SESSION_CAPABILITY_SECRET must be changed from placeholder/test values',
+    );
+  }
+}
+
+/**
+ * Environment variable validation
+ *
+ * Target AWS access uses DynamoDB, S3, SQS, Step Functions, and Lambda with execution-role/default credentials.
+ */
+
+export function validateEnv(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv = process.env): void {
+  if (profile.target.kind === 'aws') {
+    validateTargetAwsRuntimeConfig(profile, env);
+  }
+
+  const usesDynamoSessionStore = profile.sessionStore.kind === 'dynamo';
+  const rateLimitStore = profile.rateLimit.store;
+
+  const capabilitySecret = readTrimmedEnv(env, 'SESSION_CAPABILITY_SECRET');
+  const capabilitySecretRef = readTrimmedEnv(env, 'SESSION_CAPABILITY_SECRET_REF');
+  const capabilityTtlRaw = readTrimmedEnv(env, 'SESSION_CAPABILITY_TTL_SECONDS');
+  if (usesDynamoSessionStore) {
+    assertTargetRuntimeReferenceOnly('SESSION_CAPABILITY_SECRET', capabilitySecret);
+    assertTargetRuntimeReferenceOnly('SESSION_CAPABILITY_TTL_SECONDS', capabilityTtlRaw);
+    assertTargetRuntimeReferenceOnly('VOTE_SECRET_ENCRYPTION_KEY', readTrimmedEnv(env, 'VOTE_SECRET_ENCRYPTION_KEY'));
+    validateTargetTurnstileRuntimeConfig(env);
+  } else if (profile.proof.executor === 'risc0') {
+    validateLocalCapabilitySecret(capabilitySecret, capabilitySecretRef);
+  }
+
+  validateFinalizeCallbackSecret(env);
+
+  validateCapabilityTtl(env, capabilityTtlRaw);
+
+  validateExpectedImageIdVariant(env);
 
   validatePositiveIntegerEnv('MAX_SESSIONS', env['MAX_SESSIONS'], { min: 1 });
   validatePositiveIntegerEnv('SESSION_CREATE_RATE_LIMIT', env['SESSION_CREATE_RATE_LIMIT'], { min: 1 });
@@ -390,35 +445,7 @@ export function validateEnv(profile: ResolvedRuntimeProfile, env: NodeJS.Process
   validatePositiveIntegerEnv('ZKVM_GLOBAL_DAILY_LIMIT', env['ZKVM_GLOBAL_DAILY_LIMIT'], { min: 1 });
   validatePositiveIntegerEnv('ZKVM_GLOBAL_HOURLY_LIMIT', env['ZKVM_GLOBAL_HOURLY_LIMIT'], { min: 1 });
 
-  const signedUrlTtlRaw = env['S3_SIGNED_URL_TTL_SECONDS']?.trim();
-  if (signedUrlTtlRaw) {
-    const signedUrlTtl = Number(signedUrlTtlRaw);
-    if (!Number.isInteger(signedUrlTtl) || signedUrlTtl <= 0) {
-      throw configError(
-        'S3_SIGNED_URL_TTL_SECONDS',
-        `Invalid S3_SIGNED_URL_TTL_SECONDS value: ${env['S3_SIGNED_URL_TTL_SECONDS']}. ` +
-          'Expected a positive integer.',
-      );
-    }
-  }
-
-  const bundleSignedUrlTtlRaw = env['S3_BUNDLE_SIGNED_URL_TTL_SECONDS']?.trim();
-  if (bundleSignedUrlTtlRaw) {
-    const bundleSignedUrlTtl = Number(bundleSignedUrlTtlRaw);
-    if (!Number.isInteger(bundleSignedUrlTtl) || bundleSignedUrlTtl <= 0) {
-      throw configError(
-        'S3_BUNDLE_SIGNED_URL_TTL_SECONDS',
-        `Invalid S3_BUNDLE_SIGNED_URL_TTL_SECONDS value: ${env['S3_BUNDLE_SIGNED_URL_TTL_SECONDS']}. ` +
-          'Expected a positive integer.',
-      );
-    }
-    if (bundleSignedUrlTtl > 900) {
-      throw configError(
-        'S3_BUNDLE_SIGNED_URL_TTL_SECONDS',
-        'S3_BUNDLE_SIGNED_URL_TTL_SECONDS must be 900 or less for security hardening.',
-      );
-    }
-  }
+  validateSignedUrlTtls(env);
 
   const voteSecretRef = readTrimmedEnv(env, 'VOTE_SECRET_ENCRYPTION_KEY_REF');
   const turnstileSecretRef = readTrimmedEnv(env, 'TURNSTILE_SECRET_KEY_REF');

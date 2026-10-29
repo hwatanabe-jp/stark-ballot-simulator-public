@@ -213,9 +213,9 @@ data "aws_iam_policy_document" "target_lambda_public_api" {
   }
 
   statement {
-    sid       = "ObserveAndStopTargetFinalization"
+    sid       = "StopTargetFinalization"
     effect    = "Allow"
-    actions   = ["states:DescribeExecution", "states:StopExecution"]
+    actions   = ["states:StopExecution"]
     resources = [local.target_execution_arn]
   }
 
@@ -268,6 +268,20 @@ data "aws_iam_policy_document" "target_lambda_finalization_writer" {
     data.aws_iam_policy_document.target_lambda_session_store_runtime.json,
     data.aws_iam_policy_document.target_lambda_logs["finalization_writer"].json,
   ]
+
+  statement {
+    sid       = "QueryFinalizationCandidates"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = [for arn in local.runtime_sessions_table_arns : "${arn}/index/finalization-expiry-index"]
+  }
+
+  statement {
+    sid       = "ObserveFinalizationExecution"
+    effect    = "Allow"
+    actions   = ["states:DescribeExecution"]
+    resources = [local.target_execution_arn]
+  }
 
   # Container launch failures have no marker. Permit one bounded existence
   # observation without granting an unrestricted proof-bucket inventory.
@@ -392,56 +406,7 @@ data "aws_iam_policy_document" "target_lambda_semaphore_janitor" {
     resources = ["${aws_cloudwatch_log_group.ops_ledger.arn}:*"]
   }
 
-  statement {
-    sid    = "UseProverSemaphore"
-    effect = "Allow"
 
-    actions = [
-      "dynamodb:GetItem",
-      "dynamodb:UpdateItem",
-    ]
-    resources = [aws_dynamodb_table.prover_semaphore.arn]
-  }
-
-  statement {
-    sid    = "UseProverSemaphoreKey"
-    effect = "Allow"
-
-    actions = [
-      "kms:Decrypt",
-      "kms:DescribeKey",
-      "kms:Encrypt",
-      "kms:GenerateDataKey",
-      "kms:ReEncryptFrom",
-      "kms:ReEncryptTo",
-    ]
-    resources = [aws_kms_key.app_data.arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:CallerAccount"
-      values   = [var.aws_account_id]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["dynamodb.${var.aws_region}.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:aws:dynamodb:tableName"
-      values   = [aws_dynamodb_table.prover_semaphore.name]
-    }
-  }
-
-  statement {
-    sid       = "DescribeTargetFinalizationExecution"
-    effect    = "Allow"
-    actions   = ["states:DescribeExecution"]
-    resources = [local.target_execution_arn]
-  }
 }
 
 resource "aws_iam_role_policy" "target_lambda_public_api" {

@@ -11,7 +11,7 @@ import * as evidenceCollector from './cli-run-evidence';
 import { collectCliRunEvidence, type CollectCliRunEvidenceOptions } from './cli-run-evidence';
 import { CLIVotingTest, stopCliServer, type CLITestConfig } from '../cli-e2e-voting-flow';
 import * as cliHelpers from '@stark-ballot/test-support/testing/cli-test-helpers';
-import { requireRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { requireNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import rootPackage from '../../../package.json';
 
 const cleanup: string[] = [];
@@ -178,7 +178,7 @@ describe('CLI run evidence', () => {
         outputDir: options.projectRoot,
       });
       const payload: unknown = JSON.parse(await readFile(output.jsonPath, 'utf8'));
-      const record = requireRecord(payload, 'CLI report');
+      const record = requireNonNullObject(payload, 'CLI report');
       expect(record['evidence']).toEqual(evidence);
       expect(record['scenarioExecution']).toEqual([
         { scenario: 'S0', status: 'passed', reason: null },
@@ -205,7 +205,7 @@ describe('CLI run evidence', () => {
       outputDir: options.projectRoot,
     });
     const payload: unknown = JSON.parse(output.content);
-    const record = requireRecord(payload, 'CLI report');
+    const record = requireNonNullObject(payload, 'CLI report');
     expect(record['summary']).toEqual({ total: 0, passed: 0, failed: 0, duration: 0 });
     expect(record['runFailure']).toBe('setup_failed');
     expect(record['scenarioExecution']).toEqual([

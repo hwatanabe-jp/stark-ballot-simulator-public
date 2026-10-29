@@ -1,13 +1,14 @@
 # Logging Runbook
 
-> **Scope:** the deployed, operator-gated `stark-dev/develop` target runtime.
-> There is no deployed or validated `stark-prod/main` logging surface. Keep
-> target logs useful without exposing private artifacts, capability tokens,
+> **Scope:** the deployed `stark-dev/develop` and `stark-prod/main` target runtimes.
+> Develop remains operator-gated. Consult the private current AWS inventory for
+> dated deployment and monitoring evidence for each target.
+> Keep target logs useful without exposing private artifacts, capability tokens,
 > vote openings, raw identifiers, or storage locations.
 
 ## Deployed logging contract
 
-The target has four structured-log producer shapes:
+Each target has five structured-log producer shapes:
 
 1. `public-api`, `proof-dispatcher`, `finalization-writer`,
    `verification-worker`, and `semaphore-janitor` use the shared diagnostics
@@ -18,6 +19,7 @@ The target has four structured-log producer shapes:
 3. The ECS prover emits flat NDJSON `prover_summary` records.
 4. The normalized operations ledger stores flat, allowlisted JSON records for
    deployment and runtime-change correlation.
+5. REST API Gateway emits flat JSON access logs with bounded request metadata.
 
 All six Lambda log groups use the Node.js JSON envelope. `timestamp`, `level`,
 and `requestId` are outer fields; the application record is the `message`
@@ -48,16 +50,23 @@ or alters a verification verdict.
 
 ## Deployed instrumentation and open evidence
 
-The object-valued Lambda envelope, exact-field metric filters,
+The retained develop rollout recorded the object-valued Lambda envelope, exact-field metric filters,
 `finalization_admitted`, Q9–Q10 instrumentation, current normalized ledger
-shape, and notification-only actionable path are deployed. Deployment does not
-by itself prove runtime event matching or query calibration.
+shape, and notification-only actionable path as deployed. Consult the private
+current AWS inventory for each target's dated evidence. Deployment does not by
+itself prove runtime event matching or query calibration.
+
+The retained develop monitoring window at source `3c2f0353…` recorded completion
+of all ten queries, plus readback and execution of the corrected saved
+completion-cohort and terminal-reasons definitions. The window contained three
+admissions and three terminal outcomes. This is bounded query evidence; it does
+not establish long-term calibration, validate later source changes, or transfer
+develop observations to production.
 
 The exact post-rollout `verification_run_summary` envelope and metric-filter
-match were not inspected during the retained acceptance journey, so that match
-is not established. The ten-query live smoke and finalization-cohort
-calibration likewise have no retained execution evidence. Confirm them from a
-bounded, read-only window after a normal future journey; do not generate
+match were not inspected during that retained develop acceptance journey and
+remain unproven. Confirm remaining evidence gaps from a bounded, read-only window
+after a normal future journey; do not generate
 traffic, a verdict contradiction, or a notification solely to close these
 evidence gaps. An empty result is insufficient evidence, not proof that an
 event never occurred or that the runtime is healthy.
@@ -77,6 +86,10 @@ observability configuration is mandatory and fail-closed:
   hexadecimal source SHA.
 - `DEPLOY_MODE` must be `normal` or `rollback`.
 
+These are admitted logging values, not operational deployment selectors or
+authorization for rollback. Current deployment procedures remain in the private
+deployment-operation guides.
+
 The salt supports stable, domain-separated hashes for IP addresses, session
 IDs, and storage-key prefixes. A salt rotation changes those hashes, so split
 operational queries at the rotation boundary.
@@ -85,8 +98,7 @@ The Lambda bootstrap receives the already resolved immutable profile and
 selects Lambda-native JSON output from `profile.target.kind === "aws"`; it does
 not reread a target-name flag. Non-target local profiles may omit
 `LOG_IP_HASH_SALT`; they then use the public non-secret default for local
-diagnostics only. Do not describe that fallback as valid for the deployed
-environment named `develop`.
+diagnostics only. That fallback is invalid for either deployed target.
 
 ## Privacy and non-regression boundaries
 
@@ -132,9 +144,24 @@ For Q9, confirm that the durable first `none` to `pending` write occurred and
 that the query deduplicates the matching bounded `finalization_id`. Do not call
 an `inside_window` cohort stalled before the 75-minute deadline and five-minute
 delivery grace have elapsed, and do not interpret zero eligible rows as
-success. Check the current inventory before claiming that the ten-query smoke,
-cohort calibration, or exact `verification_run_summary` filter match has been
-proven.
+success. Check the current inventory for the source and window covered by query
+evidence, and keep long-term calibration and the exact
+`verification_run_summary` filter match distinct from successful query execution.
+
+For stuck finalizations, inspect the writer's scheduled reconciliation records.
+The `finalization-sweep` rule invokes it every minute independently of API reads.
+Candidate, SDK, or persistence failures fail the invocation and feed the writer
+Errors alarm; the rule's passive `FailedInvocations` alarm covers exhausted
+delivery retries. Candidate failure records retain only hashed session identity,
+admitted finalization identity, and an allowlisted error name. The completion
+summary counts visited index rows and failures, not completed transitions.
+
+For request correlation, the REST gateway's `requestContext.extendedRequestId`
+is the trusted application `request_id` and access-log `requestId`. Client
+request IDs are untrusted and must not replace it. Missing trusted identity
+fails invocation admission without logging the raw request. REST execution
+logging and data tracing are disabled; use the bounded access logs and
+application records for diagnosis.
 
 For unstable IP or session correlation, verify that the query window does not
 cross a salt rotation. If browser-origin requests fail before handlers run,
@@ -151,6 +178,8 @@ debug headers.
   `packages/runtime-config/src/env/observability.ts`
 - Request metadata and IP hashing:
   `apps/api/src/server/http/requestLogging.ts`
+- REST invocation admission and access logs:
+  `infra/lambdas/public-api/handler.ts`, `infra/terraform/app/api_gateway.tf`
 - Hono route binding and CORS headers:
   `apps/api/src/server/api/routes/hono.ts`
 - Verification observation:
@@ -161,6 +190,9 @@ debug headers.
   `packages/diagnostics/src/canonicalEvents.ts`
 - Post-persistence finalization observer:
   `packages/aws-adapters/src/finalize/finalizationTransitionObservability.ts`
+- Scheduled reconciliation and delivery alarm:
+  `packages/aws-adapters/src/finalize/reconcileFinalizations.ts`,
+  `infra/terraform/app/finalization_sweep.tf`
 - Finalization cohort classifier:
   `scripts/aws/lib/finalization-sli.ts`
 - Executable query pack and smoke:

@@ -84,50 +84,11 @@ function createSession(overrides: SessionOverrides = {}): ZkVMInputSessionRecord
         }),
       ],
     ]);
-  const bulletin = Object.prototype.hasOwnProperty.call(overrides, 'bulletin')
-    ? overrides.bulletin
-    : new SimpleBulletinBoard('0x' + 'b'.repeat(64));
-  if (bulletin && !Object.prototype.hasOwnProperty.call(overrides, 'bulletin')) {
-    for (const [index, vote] of rawVotes) {
-      bulletin.appendVote(vote.voteId ?? createVoteId(index), vote.commit.slice(2));
-    }
-  }
-  const storedVotes = new Map<number, StoredVoteRecord>();
-  for (const [index, vote] of rawVotes) {
-    storedVotes.set(index, {
-      voteId: vote.voteId ?? createVoteId(index),
-      vote: vote.vote,
-      rand: vote.rand,
-      commit: vote.commit,
-      timestamp: vote.timestamp ?? SNAPSHOT_TIMESTAMP + index,
-      rootAtCast: vote.rootAtCast ?? `0x${'a'.repeat(64)}`,
-    });
-  }
+  const bulletin = createFixtureBulletin(overrides, rawVotes);
+  const storedVotes = createStoredVoteFixtures(rawVotes);
   const sessionId = overrides.sessionId ?? 'session-test';
-  const identity = {
-    sessionId,
-    electionId: overrides.electionId ?? '550e8400-e29b-41d4-a716-446655440000',
-    electionConfigHash: overrides.electionConfigHash ?? hashElectionConfig(electionConfig ?? defaultElectionConfig),
-    electionConfig,
-    logId: Object.prototype.hasOwnProperty.call(overrides, 'logId') ? overrides.logId : `0x${'b'.repeat(64)}`,
-    createdAtMs: SNAPSHOT_TIMESTAMP - 10,
-  } as SessionIdentityRecord;
-  const voting = {
-    sessionId,
-    votes: storedVotes,
-    bulletin,
-    botCount: overrides.botCount ?? BOT_COUNT,
-    userParticipation: { status: 'cast', voteIndex: 0 },
-    lastActivityMs: SNAPSHOT_TIMESTAMP,
-    bulletinRootHistory:
-      overrides.bulletinRootHistory ??
-      bulletin?.getRootHistory().map((snapshot, index) => ({
-        timestamp: index === 0 ? SNAPSHOT_TIMESTAMP - 1 : SNAPSHOT_TIMESTAMP,
-        root: snapshot.root,
-        treeSize: snapshot.treeSize,
-      })) ??
-      [],
-  } as SessionVotingRecord;
+  const identity = createIdentityFixture(overrides, electionConfig, defaultElectionConfig, sessionId);
+  const voting = createVotingFixture(overrides, sessionId, storedVotes, bulletin);
   return { identity, voting };
 }
 
@@ -462,3 +423,75 @@ describe('buildZkVMInputFromSession', () => {
     expect(() => buildZkVMInputFromSession(session)).toThrow('Missing logId for session');
   });
 });
+
+function createFixtureBulletin(
+  overrides: SessionOverrides,
+  rawVotes: Map<number, TestVoteFixture>,
+): SimpleBulletinBoard | undefined {
+  const bulletin = Object.prototype.hasOwnProperty.call(overrides, 'bulletin')
+    ? overrides.bulletin
+    : new SimpleBulletinBoard('0x' + 'b'.repeat(64));
+  if (bulletin && !Object.prototype.hasOwnProperty.call(overrides, 'bulletin')) {
+    for (const [index, vote] of rawVotes) {
+      bulletin.appendVote(vote.voteId ?? createVoteId(index), vote.commit.slice(2));
+    }
+  }
+  return bulletin;
+}
+
+function createStoredVoteFixtures(rawVotes: Map<number, TestVoteFixture>): Map<number, StoredVoteRecord> {
+  const storedVotes = new Map<number, StoredVoteRecord>();
+  for (const [index, vote] of rawVotes) {
+    storedVotes.set(index, {
+      voteId: vote.voteId ?? createVoteId(index),
+      vote: vote.vote,
+      rand: vote.rand,
+      commit: vote.commit,
+      timestamp: vote.timestamp ?? SNAPSHOT_TIMESTAMP + index,
+      rootAtCast: vote.rootAtCast ?? `0x${'a'.repeat(64)}`,
+    });
+  }
+  return storedVotes;
+}
+
+function createIdentityFixture(
+  overrides: SessionOverrides,
+  electionConfig: SessionOverrides['electionConfig'],
+  defaultElectionConfig: SessionIdentityRecord['electionConfig'],
+  sessionId: string,
+): SessionIdentityRecord {
+  const identity = {
+    sessionId,
+    electionId: overrides.electionId ?? '550e8400-e29b-41d4-a716-446655440000',
+    electionConfigHash: overrides.electionConfigHash ?? hashElectionConfig(electionConfig ?? defaultElectionConfig),
+    electionConfig,
+    logId: Object.prototype.hasOwnProperty.call(overrides, 'logId') ? overrides.logId : `0x${'b'.repeat(64)}`,
+    createdAtMs: SNAPSHOT_TIMESTAMP - 10,
+  } as SessionIdentityRecord;
+  return identity;
+}
+
+function createVotingFixture(
+  overrides: SessionOverrides,
+  sessionId: string,
+  storedVotes: Map<number, StoredVoteRecord>,
+  bulletin: SimpleBulletinBoard | undefined,
+): SessionVotingRecord {
+  const voting = {
+    sessionId,
+    votes: storedVotes,
+    bulletin,
+    botCount: overrides.botCount ?? BOT_COUNT,
+    userParticipation: { status: 'cast', voteIndex: 0 },
+    lastActivityMs: SNAPSHOT_TIMESTAMP,
+    bulletinRootHistory:
+      overrides.bulletinRootHistory ??
+      bulletin?.getRootHistory().map((snapshot, index) => ({
+        timestamp: index === 0 ? SNAPSHOT_TIMESTAMP - 1 : SNAPSHOT_TIMESTAMP,
+        root: snapshot.root,
+        treeSize: snapshot.treeSize,
+      })) ??
+      [],
+  } as SessionVotingRecord;
+  return voting;
+}

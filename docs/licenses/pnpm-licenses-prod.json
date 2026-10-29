@@ -2,9 +2,9 @@
   "MIT": [
     {
       "name": "@apidevtools/json-schema-ref-parser",
-      "versions": ["15.3.6"],
+      "versions": ["16.0.3"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@apidevtools+json-schema-ref-parser@15.3.6_@types+json-schema@7.0.15/node_modules/@apidevtools/json-schema-ref-parser"
+        "<REPO_ROOT>/node_modules/.pnpm/@apidevtools+json-schema-ref-parser@16.0.3_@types+json-schema@7.0.15/node_modules/@apidevtools/json-schema-ref-parser"
       ],
       "license": "MIT",
       "author": "JonLuca DeCaro",
@@ -35,19 +35,36 @@
     },
     {
       "name": "@apidevtools/swagger-parser",
-      "versions": ["13.0.0"],
+      "versions": ["13.1.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@apidevtools+swagger-parser@13.0.0_openapi-types@12.1.3/node_modules/@apidevtools/swagger-parser"
+        "<REPO_ROOT>/node_modules/.pnpm/@apidevtools+swagger-parser@13.1.0_openapi-types@12.1.3/node_modules/@apidevtools/swagger-parser"
       ],
       "license": "MIT",
       "homepage": "https://apidevtools.com/swagger-parser/",
       "description": "Swagger 2.0 and OpenAPI 3.0 parser and validator for Node and browsers"
     },
     {
+      "name": "@esbuild/linux-x64",
+      "versions": ["0.28.2"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@esbuild+linux-x64@0.28.2/node_modules/@esbuild/linux-x64"],
+      "license": "MIT",
+      "homepage": "https://github.com/evanw/esbuild#readme",
+      "description": "The Linux 64-bit binary for esbuild, a JavaScript bundler."
+    },
+    {
+      "name": "@hono/aws-lambda",
+      "versions": ["1.0.1"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@hono+aws-lambda@1.0.1_hono@4.13.13/node_modules/@hono/aws-lambda"],
+      "license": "MIT",
+      "author": "Yusuke Wada",
+      "homepage": "https://hono.dev",
+      "description": "AWS Lambda adapter for Hono"
+    },
+    {
       "name": "@marsidev/react-turnstile",
-      "versions": ["1.6.1"],
+      "versions": ["1.6.3"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@marsidev+react-turnstile@1.6.1_react-dom@19.3.0_react@19.3.0__react@19.3.0/node_modules/@marsidev/react-turnstile"
+        "<REPO_ROOT>/node_modules/.pnpm/@marsidev+react-turnstile@1.6.3_react-dom@19.3.1_react@19.3.1__react@19.3.1/node_modules/@marsidev/react-turnstile"
       ],
       "license": "MIT",
       "author": "Luis Marsiglia",
@@ -64,13 +81,43 @@
       "description": "Audited & minimal 0-dependency JS implementation of SHA, RIPEMD, BLAKE, HMAC, HKDF, PBKDF & Scrypt"
     },
     {
+      "name": "@oxc-parser/binding-linux-x64-gnu",
+      "versions": ["0.155.0"],
+      "paths": [
+        "<REPO_ROOT>/node_modules/.pnpm/@oxc-parser+binding-linux-x64-gnu@0.155.0/node_modules/@oxc-parser/binding-linux-x64-gnu"
+      ],
+      "license": "MIT",
+      "author": "Boshen and oxc contributors",
+      "homepage": "https://oxc.rs/docs/guide/usage/parser",
+      "description": "Oxc Parser Node API"
+    },
+    {
       "name": "@oxc-project/types",
-      "versions": ["0.149.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@oxc-project+types@0.149.0/node_modules/@oxc-project/types"],
+      "versions": ["0.155.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@oxc-project+types@0.155.0/node_modules/@oxc-project/types"],
       "license": "MIT",
       "author": "Boshen and oxc contributors",
       "homepage": "https://oxc.rs",
       "description": "Types for Oxc AST nodes"
+    },
+    {
+      "name": "@oxfmt/binding-linux-x64-gnu",
+      "versions": ["0.74.0"],
+      "paths": [
+        "<REPO_ROOT>/node_modules/.pnpm/@oxfmt+binding-linux-x64-gnu@0.74.0/node_modules/@oxfmt/binding-linux-x64-gnu"
+      ],
+      "license": "MIT",
+      "author": "Boshen and oxc contributors",
+      "homepage": "https://oxc.rs/docs/guide/usage/formatter",
+      "description": "Formatter for the JavaScript Oxidation Compiler"
+    },
+    {
+      "name": "@remix-run/route-pattern",
+      "versions": ["0.22.1"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@remix-run+route-pattern@0.22.1/node_modules/@remix-run/route-pattern"],
+      "license": "MIT",
+      "homepage": "https://github.com/remix-run/remix/tree/main/packages/route-pattern#readme",
+      "description": "Match and generate URLs with strong typing"
     },
     {
       "name": "@types/json-schema",
@@ -160,8 +207,8 @@
     },
     {
       "name": "hono",
-      "versions": ["4.13.7"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/hono@4.13.7/node_modules/hono"],
+      "versions": ["4.13.13"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/hono@4.13.13/node_modules/hono"],
       "license": "MIT",
       "author": "Yusuke Wada",
       "homepage": "https://hono.dev",
@@ -169,8 +216,8 @@
     },
     {
       "name": "js-yaml",
-      "versions": ["4.3.2"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/js-yaml@4.3.2/node_modules/js-yaml"],
+      "versions": ["5.4.3"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/js-yaml@5.4.3/node_modules/js-yaml"],
       "license": "MIT",
       "author": "Vladimir Zapparov",
       "homepage": "https://github.com/nodeca/js-yaml#readme",
@@ -223,8 +270,8 @@
     },
     {
       "name": "oxc-parser",
-      "versions": ["0.149.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/oxc-parser@0.149.0/node_modules/oxc-parser"],
+      "versions": ["0.155.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/oxc-parser@0.155.0/node_modules/oxc-parser"],
       "license": "MIT",
       "author": "Boshen and oxc contributors",
       "homepage": "https://oxc.rs/docs/guide/usage/parser",
@@ -232,8 +279,8 @@
     },
     {
       "name": "oxfmt",
-      "versions": ["0.67.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/oxfmt@0.67.0/node_modules/oxfmt"],
+      "versions": ["0.74.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/oxfmt@0.74.0/node_modules/oxfmt"],
       "license": "MIT",
       "author": "Boshen and oxc contributors",
       "homepage": "https://oxc.rs/docs/guide/usage/formatter",
@@ -250,25 +297,25 @@
     },
     {
       "name": "react",
-      "versions": ["19.3.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/react@19.3.0/node_modules/react"],
+      "versions": ["19.3.1"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/react@19.3.1/node_modules/react"],
       "license": "MIT",
       "homepage": "https://react.dev/",
       "description": "React is a JavaScript library for building user interfaces."
     },
     {
       "name": "react-dom",
-      "versions": ["19.3.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/react-dom@19.3.0_react@19.3.0/node_modules/react-dom"],
+      "versions": ["19.3.1"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/react-dom@19.3.1_react@19.3.1/node_modules/react-dom"],
       "license": "MIT",
       "homepage": "https://react.dev/",
       "description": "React package for working with the DOM."
     },
     {
       "name": "react-router",
-      "versions": ["8.3.1"],
+      "versions": ["8.5.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/react-router@8.3.1_react-dom@19.3.0_react@19.3.0__react@19.3.0/node_modules/react-router"
+        "<REPO_ROOT>/node_modules/.pnpm/react-router@8.5.0_@types+react-dom@19.3.0_@types+react@19.3.0__@types+react@19.3.0_rea_6cb9623782d1813d65fa0efb9041c376/node_modules/react-router"
       ],
       "license": "MIT",
       "author": "Remix Software",
@@ -303,16 +350,16 @@
     },
     {
       "name": "tinypool",
-      "versions": ["2.1.2"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/tinypool@2.1.2/node_modules/tinypool"],
+      "versions": ["2.2.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/tinypool@2.2.0/node_modules/tinypool"],
       "license": "MIT",
       "homepage": "https://github.com/tinylibs/tinypool#readme",
       "description": "A minimal and tiny Node.js Worker Thread Pool implementation, a fork of piscina, but with fewer features"
     },
     {
       "name": "undici",
-      "versions": ["8.10.2"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/undici@8.10.2/node_modules/undici"],
+      "versions": ["8.12.3"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/undici@8.12.3/node_modules/undici"],
       "license": "MIT",
       "homepage": "https://undici.nodejs.org",
       "description": "An HTTP/1.1 client, written from scratch for Node.js"
@@ -337,8 +384,8 @@
     },
     {
       "name": "zod",
-      "versions": ["3.25.76"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/zod@3.25.76/node_modules/zod"],
+      "versions": ["4.6.7"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/zod@4.6.7/node_modules/zod"],
       "license": "MIT",
       "author": "Colin McDonnell",
       "homepage": "https://zod.dev",
@@ -348,8 +395,8 @@
   "Apache-2.0": [
     {
       "name": "@aws-sdk/checksums",
-      "versions": ["3.1001.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+checksums@3.1001.0/node_modules/@aws-sdk/checksums"],
+      "versions": ["3.1001.5"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+checksums@3.1001.5/node_modules/@aws-sdk/checksums"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/checksums",
@@ -357,9 +404,9 @@
     },
     {
       "name": "@aws-sdk/client-cloudwatch-logs",
-      "versions": ["3.1130.0"],
+      "versions": ["3.1156.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-cloudwatch-logs@3.1130.0/node_modules/@aws-sdk/client-cloudwatch-logs"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-cloudwatch-logs@3.1156.0/node_modules/@aws-sdk/client-cloudwatch-logs"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -367,32 +414,10 @@
       "description": "AWS SDK for JavaScript Cloudwatch Logs Client for Node.js, Browser and React Native"
     },
     {
-      "name": "@aws-sdk/client-codebuild",
-      "versions": ["3.1130.0"],
-      "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-codebuild@3.1130.0/node_modules/@aws-sdk/client-codebuild"
-      ],
-      "license": "Apache-2.0",
-      "author": "AWS SDK for JavaScript Team",
-      "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-codebuild",
-      "description": "AWS SDK for JavaScript Codebuild Client for Node.js, Browser and React Native"
-    },
-    {
-      "name": "@aws-sdk/client-codepipeline",
-      "versions": ["3.1130.0"],
-      "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-codepipeline@3.1130.0/node_modules/@aws-sdk/client-codepipeline"
-      ],
-      "license": "Apache-2.0",
-      "author": "AWS SDK for JavaScript Team",
-      "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-codepipeline",
-      "description": "AWS SDK for JavaScript Codepipeline Client for Node.js, Browser and React Native"
-    },
-    {
       "name": "@aws-sdk/client-dynamodb",
-      "versions": ["3.1130.0"],
+      "versions": ["3.1156.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-dynamodb@3.1130.0/node_modules/@aws-sdk/client-dynamodb"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-dynamodb@3.1156.0/node_modules/@aws-sdk/client-dynamodb"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -401,26 +426,17 @@
     },
     {
       "name": "@aws-sdk/client-ecr",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-ecr@3.1130.0/node_modules/@aws-sdk/client-ecr"],
+      "versions": ["3.1156.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-ecr@3.1156.0/node_modules/@aws-sdk/client-ecr"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-ecr",
       "description": "AWS SDK for JavaScript Ecr Client for Node.js, Browser and React Native"
     },
     {
-      "name": "@aws-sdk/client-ecs",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-ecs@3.1130.0/node_modules/@aws-sdk/client-ecs"],
-      "license": "Apache-2.0",
-      "author": "AWS SDK for JavaScript Team",
-      "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-ecs",
-      "description": "AWS SDK for JavaScript Ecs Client for Node.js, Browser and React Native"
-    },
-    {
       "name": "@aws-sdk/client-s3",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-s3@3.1130.0/node_modules/@aws-sdk/client-s3"],
+      "versions": ["3.1156.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-s3@3.1156.0/node_modules/@aws-sdk/client-s3"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-s3",
@@ -428,9 +444,9 @@
     },
     {
       "name": "@aws-sdk/client-secrets-manager",
-      "versions": ["3.1130.0"],
+      "versions": ["3.1156.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-secrets-manager@3.1130.0/node_modules/@aws-sdk/client-secrets-manager"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-secrets-manager@3.1156.0/node_modules/@aws-sdk/client-secrets-manager"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -439,8 +455,8 @@
     },
     {
       "name": "@aws-sdk/client-sfn",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-sfn@3.1130.0/node_modules/@aws-sdk/client-sfn"],
+      "versions": ["3.1156.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-sfn@3.1156.0/node_modules/@aws-sdk/client-sfn"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-sfn",
@@ -448,8 +464,8 @@
     },
     {
       "name": "@aws-sdk/client-sqs",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-sqs@3.1130.0/node_modules/@aws-sdk/client-sqs"],
+      "versions": ["3.1156.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-sqs@3.1156.0/node_modules/@aws-sdk/client-sqs"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-sqs",
@@ -457,26 +473,17 @@
     },
     {
       "name": "@aws-sdk/client-ssm",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-ssm@3.1130.0/node_modules/@aws-sdk/client-ssm"],
+      "versions": ["3.1156.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-ssm@3.1156.0/node_modules/@aws-sdk/client-ssm"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-ssm",
       "description": "AWS SDK for JavaScript Ssm Client for Node.js, Browser and React Native"
     },
     {
-      "name": "@aws-sdk/client-sts",
-      "versions": ["3.1130.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+client-sts@3.1130.0/node_modules/@aws-sdk/client-sts"],
-      "license": "Apache-2.0",
-      "author": "AWS SDK for JavaScript Team",
-      "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/clients/client-sts",
-      "description": "AWS SDK for JavaScript Sts Client for Node.js, Browser and React Native"
-    },
-    {
       "name": "@aws-sdk/core",
-      "versions": ["3.978.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+core@3.978.0/node_modules/@aws-sdk/core"],
+      "versions": ["3.978.5"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+core@3.978.5/node_modules/@aws-sdk/core"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/core",
@@ -484,9 +491,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-cognito-identity",
-      "versions": ["3.972.70"],
+      "versions": ["3.972.75"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-cognito-identity@3.972.70/node_modules/@aws-sdk/credential-provider-cognito-identity"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-cognito-identity@3.972.75/node_modules/@aws-sdk/credential-provider-cognito-identity"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -494,9 +501,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-env",
-      "versions": ["3.972.71"],
+      "versions": ["3.972.76"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-env@3.972.71/node_modules/@aws-sdk/credential-provider-env"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-env@3.972.76/node_modules/@aws-sdk/credential-provider-env"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -505,9 +512,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-http",
-      "versions": ["3.972.73"],
+      "versions": ["3.972.78"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-http@3.972.73/node_modules/@aws-sdk/credential-provider-http"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-http@3.972.78/node_modules/@aws-sdk/credential-provider-http"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -516,9 +523,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-ini",
-      "versions": ["3.973.16"],
+      "versions": ["3.973.21"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-ini@3.973.16/node_modules/@aws-sdk/credential-provider-ini"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-ini@3.973.21/node_modules/@aws-sdk/credential-provider-ini"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -527,9 +534,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-login",
-      "versions": ["3.972.78"],
+      "versions": ["3.972.83"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-login@3.972.78/node_modules/@aws-sdk/credential-provider-login"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-login@3.972.83/node_modules/@aws-sdk/credential-provider-login"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -538,9 +545,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-node",
-      "versions": ["3.972.83"],
+      "versions": ["3.972.88"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-node@3.972.83/node_modules/@aws-sdk/credential-provider-node"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-node@3.972.88/node_modules/@aws-sdk/credential-provider-node"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -549,9 +556,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-process",
-      "versions": ["3.972.71"],
+      "versions": ["3.972.76"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-process@3.972.71/node_modules/@aws-sdk/credential-provider-process"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-process@3.972.76/node_modules/@aws-sdk/credential-provider-process"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -560,9 +567,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-sso",
-      "versions": ["3.973.15"],
+      "versions": ["3.973.20"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-sso@3.973.15/node_modules/@aws-sdk/credential-provider-sso"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-sso@3.973.20/node_modules/@aws-sdk/credential-provider-sso"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -571,9 +578,9 @@
     },
     {
       "name": "@aws-sdk/credential-provider-web-identity",
-      "versions": ["3.972.77"],
+      "versions": ["3.972.82"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-web-identity@3.972.77/node_modules/@aws-sdk/credential-provider-web-identity"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-provider-web-identity@3.972.82/node_modules/@aws-sdk/credential-provider-web-identity"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -582,9 +589,9 @@
     },
     {
       "name": "@aws-sdk/credential-providers",
-      "versions": ["3.1130.0"],
+      "versions": ["3.1156.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-providers@3.1130.0/node_modules/@aws-sdk/credential-providers"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+credential-providers@3.1156.0/node_modules/@aws-sdk/credential-providers"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -593,8 +600,8 @@
     },
     {
       "name": "@aws-sdk/dynamodb-codec",
-      "versions": ["3.973.45"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+dynamodb-codec@3.973.45/node_modules/@aws-sdk/dynamodb-codec"],
+      "versions": ["3.973.50"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+dynamodb-codec@3.973.50/node_modules/@aws-sdk/dynamodb-codec"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/dynamodb-codec"
@@ -609,9 +616,9 @@
     },
     {
       "name": "@aws-sdk/lib-dynamodb",
-      "versions": ["3.1130.0"],
+      "versions": ["3.1156.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+lib-dynamodb@3.1130.0_@aws-sdk+client-dynamodb@3.1130.0/node_modules/@aws-sdk/lib-dynamodb"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+lib-dynamodb@3.1156.0_@aws-sdk+client-dynamodb@3.1156.0/node_modules/@aws-sdk/lib-dynamodb"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -620,9 +627,9 @@
     },
     {
       "name": "@aws-sdk/middleware-endpoint-discovery",
-      "versions": ["3.972.30"],
+      "versions": ["3.972.34"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+middleware-endpoint-discovery@3.972.30/node_modules/@aws-sdk/middleware-endpoint-discovery"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+middleware-endpoint-discovery@3.972.34/node_modules/@aws-sdk/middleware-endpoint-discovery"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -630,9 +637,9 @@
     },
     {
       "name": "@aws-sdk/middleware-sdk-s3",
-      "versions": ["3.972.76"],
+      "versions": ["3.972.81"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+middleware-sdk-s3@3.972.76/node_modules/@aws-sdk/middleware-sdk-s3"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+middleware-sdk-s3@3.972.81/node_modules/@aws-sdk/middleware-sdk-s3"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -640,9 +647,9 @@
     },
     {
       "name": "@aws-sdk/middleware-sdk-sqs",
-      "versions": ["3.972.42"],
+      "versions": ["3.972.46"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+middleware-sdk-sqs@3.972.42/node_modules/@aws-sdk/middleware-sdk-sqs"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+middleware-sdk-sqs@3.972.46/node_modules/@aws-sdk/middleware-sdk-sqs"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -650,8 +657,8 @@
     },
     {
       "name": "@aws-sdk/nested-clients",
-      "versions": ["3.997.45"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+nested-clients@3.997.45/node_modules/@aws-sdk/nested-clients"],
+      "versions": ["3.997.50"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+nested-clients@3.997.50/node_modules/@aws-sdk/nested-clients"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/packages/nested-clients",
@@ -659,9 +666,9 @@
     },
     {
       "name": "@aws-sdk/signature-v4-multi-region",
-      "versions": ["3.996.46"],
+      "versions": ["3.996.49"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+signature-v4-multi-region@3.996.46/node_modules/@aws-sdk/signature-v4-multi-region"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+signature-v4-multi-region@3.996.49/node_modules/@aws-sdk/signature-v4-multi-region"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -669,9 +676,9 @@
     },
     {
       "name": "@aws-sdk/token-providers",
-      "versions": ["3.1129.0"],
+      "versions": ["3.1155.0"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+token-providers@3.1129.0/node_modules/@aws-sdk/token-providers"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+token-providers@3.1155.0/node_modules/@aws-sdk/token-providers"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -680,8 +687,8 @@
     },
     {
       "name": "@aws-sdk/types",
-      "versions": ["3.974.5"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+types@3.974.5/node_modules/@aws-sdk/types"],
+      "versions": ["3.975.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+types@3.975.0/node_modules/@aws-sdk/types"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/types",
@@ -691,7 +698,7 @@
       "name": "@aws-sdk/util-dynamodb",
       "versions": ["3.996.9"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+util-dynamodb@3.996.9_@aws-sdk+client-dynamodb@3.1130.0/node_modules/@aws-sdk/util-dynamodb"
+        "<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+util-dynamodb@3.996.9_@aws-sdk+client-dynamodb@3.1156.0/node_modules/@aws-sdk/util-dynamodb"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -699,8 +706,8 @@
     },
     {
       "name": "@aws-sdk/xml-builder",
-      "versions": ["3.972.40"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+xml-builder@3.972.40/node_modules/@aws-sdk/xml-builder"],
+      "versions": ["3.972.41"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@aws-sdk+xml-builder@3.972.41/node_modules/@aws-sdk/xml-builder"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/xml-builder",
@@ -717,16 +724,16 @@
     },
     {
       "name": "@backstage/catalog-model",
-      "versions": ["1.10.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@backstage+catalog-model@1.10.0/node_modules/@backstage/catalog-model"],
+      "versions": ["1.10.2"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@backstage+catalog-model@1.10.2/node_modules/@backstage/catalog-model"],
       "license": "Apache-2.0",
       "homepage": "https://backstage.io",
       "description": "Types and validators that help describe the model of a Backstage Catalog"
     },
     {
       "name": "@backstage/errors",
-      "versions": ["1.3.1"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@backstage+errors@1.3.1/node_modules/@backstage/errors"],
+      "versions": ["1.3.2"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@backstage+errors@1.3.2/node_modules/@backstage/errors"],
       "license": "Apache-2.0",
       "homepage": "https://backstage.io",
       "description": "Common utilities for error handling within Backstage"
@@ -741,17 +748,17 @@
     },
     {
       "name": "@smithy/core",
-      "versions": ["3.33.3"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@smithy+core@3.33.3/node_modules/@smithy/core"],
+      "versions": ["3.36.2"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@smithy+core@3.36.2/node_modules/@smithy/core"],
       "license": "Apache-2.0",
       "author": "AWS Smithy Team",
       "homepage": "https://github.com/smithy-lang/smithy-typescript/tree/main/packages/core"
     },
     {
       "name": "@smithy/credential-provider-imds",
-      "versions": ["4.4.16"],
+      "versions": ["4.5.2"],
       "paths": [
-        "<REPO_ROOT>/node_modules/.pnpm/@smithy+credential-provider-imds@4.4.16/node_modules/@smithy/credential-provider-imds"
+        "<REPO_ROOT>/node_modules/.pnpm/@smithy+credential-provider-imds@4.5.2/node_modules/@smithy/credential-provider-imds"
       ],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
@@ -782,8 +789,8 @@
     },
     {
       "name": "@smithy/signature-v4",
-      "versions": ["5.6.12"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@smithy+signature-v4@5.6.12/node_modules/@smithy/signature-v4"],
+      "versions": ["5.7.4"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@smithy+signature-v4@5.7.4/node_modules/@smithy/signature-v4"],
       "license": "Apache-2.0",
       "author": "AWS SDK for JavaScript Team",
       "homepage": "https://github.com/smithy-lang/smithy-typescript/tree/main/packages/signature-v4",
@@ -791,11 +798,22 @@
     },
     {
       "name": "@smithy/types",
-      "versions": ["4.16.1"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@smithy+types@4.16.1/node_modules/@smithy/types"],
+      "versions": ["4.19.0"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/@smithy+types@4.19.0/node_modules/@smithy/types"],
       "license": "Apache-2.0",
       "author": "AWS Smithy Team",
       "homepage": "https://github.com/smithy-lang/smithy-typescript/tree/main/packages/types"
+    },
+    {
+      "name": "@typescript/typescript-linux-x64",
+      "versions": ["7.0.2"],
+      "paths": [
+        "<REPO_ROOT>/node_modules/.pnpm/@typescript+typescript-linux-x64@7.0.2/node_modules/@typescript/typescript-linux-x64"
+      ],
+      "license": "Apache-2.0",
+      "author": "Microsoft Corp.",
+      "homepage": "https://www.typescriptlang.org/",
+      "description": "TypeScript is a language for application scale JavaScript development"
     },
     {
       "name": "typescript",
@@ -820,8 +838,8 @@
   "BSD-2-Clause": [
     {
       "name": "dotenv",
-      "versions": ["17.4.2"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/dotenv@17.4.2/node_modules/dotenv"],
+      "versions": ["18.0.9"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/dotenv@18.0.9/node_modules/dotenv"],
       "license": "BSD-2-Clause",
       "homepage": "https://github.com/motdotla/dotenv#readme",
       "description": "Loads environment variables from .env file"
@@ -830,8 +848,8 @@
   "BSD-3-Clause": [
     {
       "name": "fast-uri",
-      "versions": ["3.1.7"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/fast-uri@3.1.7/node_modules/fast-uri"],
+      "versions": ["3.1.8"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/fast-uri@3.1.8/node_modules/fast-uri"],
       "license": "BSD-3-Clause",
       "author": "Vincent Le Goff",
       "homepage": "https://github.com/fastify/fast-uri",
@@ -841,8 +859,10 @@
   "ISC": [
     {
       "name": "lucide-react",
-      "versions": ["1.44.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/lucide-react@1.44.0_react@19.3.0/node_modules/lucide-react"],
+      "versions": ["1.61.0"],
+      "paths": [
+        "<REPO_ROOT>/node_modules/.pnpm/lucide-react@1.61.0_@types+react@19.3.0_react@19.3.1/node_modules/lucide-react"
+      ],
       "license": "ISC",
       "author": "Eric Fennis",
       "homepage": "https://lucide.dev",
@@ -850,8 +870,8 @@
     },
     {
       "name": "yaml",
-      "versions": ["2.9.0"],
-      "paths": ["<REPO_ROOT>/node_modules/.pnpm/yaml@2.9.0/node_modules/yaml"],
+      "versions": ["2.9.1"],
+      "paths": ["<REPO_ROOT>/node_modules/.pnpm/yaml@2.9.1/node_modules/yaml"],
       "license": "ISC",
       "author": "Eemeli Aro",
       "homepage": "https://eemeli.org/yaml/",

@@ -8,8 +8,8 @@ import {
   assertExpectedOverallVerdict,
   assertGatedSmokeScenarioSemantics,
   completeFinalizedVerificationAcceptance,
-  createPositiveOwnerFlowConfig,
-  createPositiveOwnerFlowConfigs,
+  projectFinalizationObservations,
+  runParallelOwnerFlows,
   downloadAuthenticatedBundle,
   expectCloudFrontGateRejected,
   expectJsonErrorCodeRejected,
@@ -23,7 +23,7 @@ import {
   runNegativeGateChecks,
   runWrongCapabilityCheck,
 } from './develop-gated-smoke';
-import type { ImageIdMapping } from '@stark-ballot/verification/image-id-types';
+import type { ImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 import {
   VERIFICATION_CHECK_DEFINITIONS,
   getVerificationStepInputs,
@@ -33,6 +33,11 @@ import packageJson from '../../package.json';
 import { computeCommitment } from '@stark-ballot/zkvm-contract/zkvm/types';
 import type { AvailableVerificationResource } from '@stark-ballot/api-contract/schemas/verification';
 import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
+import {
+  CLITestHelpers,
+  type FinalizeWithScenariosResult,
+  type VoteResult,
+} from '@stark-ballot/test-support/testing/cli-test-helpers';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
 type HeadersInput = NonNullable<ConstructorParameters<typeof Headers>[0]>;
@@ -132,38 +137,53 @@ const UNAVAILABLE_VOTER_CHECK_IDS = new Set<VerificationCheck['id']>([
   'recorded_consistency_proof',
 ]);
 
+function terminalServerCheckStatus(
+  definition: (typeof VERIFICATION_CHECK_DEFINITIONS)[number],
+  status: AvailableVerificationResource['verifierResult']['status'],
+): VerificationCheck['status'] {
+  const terminalCheckStatus = status === 'dev_mode' ? 'success' : status;
+  if (definition.id === 'stark_image_id_match' || definition.id === 'stark_receipt_verify') {
+    return terminalCheckStatus;
+  } else if (ZK_GATE_CHECK_IDS.has(definition.id)) {
+    return status === 'running' ? 'pending' : terminalCheckStatus;
+  }
+
+  return 'success';
+}
+
+function serverCheckOutcome(
+  definition: (typeof VERIFICATION_CHECK_DEFINITIONS)[number],
+  status: AvailableVerificationResource['verifierResult']['status'],
+  voterEvidenceAvailability: 'available' | 'unavailable',
+):
+  | { status: VerificationCheck['status'] }
+  | { status: 'not_run'; noteKey: 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt' } {
+  let checkStatus: VerificationCheck['status'] = 'success';
+  if (definition.category === 'cast_as_intended') {
+    checkStatus = 'not_run';
+  } else if (voterEvidenceAvailability === 'unavailable' && UNAVAILABLE_VOTER_CHECK_IDS.has(definition.id)) {
+    checkStatus = 'not_run';
+  } else if (voterEvidenceAvailability === 'unavailable' && definition.id === 'counted_my_vote_included') {
+    return { status: 'not_run', noteKey: 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt' };
+  } else {
+    checkStatus = terminalServerCheckStatus(definition, status);
+  }
+
+  return { status: checkStatus };
+}
+
 function buildServerVerificationChecks(
   status: AvailableVerificationResource['verifierResult']['status'] = 'success',
   voterEvidenceAvailability: 'available' | 'unavailable' = 'available',
 ): VerificationCheck[] {
   return VERIFICATION_CHECK_DEFINITIONS.map((definition) => {
-    const terminalCheckStatus = status === 'dev_mode' ? 'success' : status;
-    let checkStatus: VerificationCheck['status'] = 'success';
-    if (definition.category === 'cast_as_intended') {
-      checkStatus = 'not_run';
-    } else if (voterEvidenceAvailability === 'unavailable' && UNAVAILABLE_VOTER_CHECK_IDS.has(definition.id)) {
-      checkStatus = 'not_run';
-    } else if (voterEvidenceAvailability === 'unavailable' && definition.id === 'counted_my_vote_included') {
-      return {
-        id: definition.id,
-        status: 'not_run',
-        evidence: status === 'dev_mode' && definition.evidence === 'zk' ? 'demo' : definition.evidence,
-        inputs: [...definition.inputs],
-        ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
-        noteKey: 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt',
-      };
-    } else if (definition.id === 'stark_image_id_match' || definition.id === 'stark_receipt_verify') {
-      checkStatus = terminalCheckStatus;
-    } else if (ZK_GATE_CHECK_IDS.has(definition.id)) {
-      checkStatus = status === 'running' ? 'pending' : terminalCheckStatus;
-    }
-
+    const outcome = serverCheckOutcome(definition, status, voterEvidenceAvailability);
     return {
       id: definition.id,
-      status: checkStatus,
       evidence: status === 'dev_mode' && definition.evidence === 'zk' ? 'demo' : definition.evidence,
       inputs: [...definition.inputs],
       ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+      ...outcome,
     };
   });
 }
@@ -429,6 +449,169 @@ describe('develop gated smoke contract', () => {
     vi.restoreAllMocks();
   });
 
+  it('prepares every independent session before starting all finalizations, then waits for every failure', async () => {
+    const preparations = ['S0', 'S1', 'S2'].map(() => Promise.withResolvers<void>());
+    const finalizations = ['S0', 'S1', 'S2'].map(() => Promise.withResolvers<FinalizeWithScenariosResult>());
+    const vote: VoteResult = { leafIndex: 0, merklePath: [], commitment: 'commitment', choice: 'A', random: 'opening' };
+    let sessionIndex = 0;
+    const create = vi
+      .spyOn(CLITestHelpers.prototype, 'createSession')
+      .mockImplementation(async () => `session-${sessionIndex++}`);
+    vi.spyOn(CLITestHelpers.prototype, 'submitVote').mockResolvedValue(vote);
+    vi.spyOn(CLITestHelpers.prototype, 'generateBotVotes').mockImplementation((sessionId) => {
+      const gate = preparations[Number(sessionId.split('-')[1])];
+      if (!gate) throw new Error('Unknown session');
+      return gate.promise;
+    });
+    const finalize = vi
+      .spyOn(CLITestHelpers.prototype, 'finalizeWithScenarios')
+      .mockImplementation((_session, scenario) => {
+        const gate = finalizations[Number(scenario.slice(1))];
+        if (!gate) throw new Error('Unknown scenario');
+        return gate.promise;
+      });
+    const localProver = vi.spyOn(CLITestHelpers.prototype, 'executeZkVM');
+    const localVerifier = vi.spyOn(CLITestHelpers.prototype, 'verifySTARK');
+    let settled = false;
+    const outcome = runParallelOwnerFlows('https://develop.example', {}, `0x${'1'.repeat(64)}`).then(
+      () => {
+        settled = true;
+        return 'unexpected success';
+      },
+      (error: unknown) => {
+        settled = true;
+        return error instanceof Error ? error.message : 'unexpected error';
+      },
+    );
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(3));
+    expect(new Set(create.mock.instances).size).toBe(3);
+    preparations[0]?.resolve();
+    preparations[1]?.resolve();
+    await Promise.resolve();
+    expect(finalize).not.toHaveBeenCalled();
+    preparations[2]?.resolve();
+    await vi.waitFor(() => expect(finalize).toHaveBeenCalledTimes(3));
+    expect(finalize.mock.calls).toEqual([
+      ['session-0', 'S0'],
+      ['session-1', 'S1'],
+      ['session-2', 'S2'],
+    ]);
+    finalizations[0]?.reject(new Error('private capability must not escape'));
+    finalizations[1]?.reject(new Error('private response'));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finalizations[2]?.reject(new Error('late failure'));
+    expect(await outcome).toBe('Parallel acceptance failed; all started finalizations and checks settled.');
+    expect(localProver).not.toHaveBeenCalled();
+    expect(localVerifier).not.toHaveBeenCalled();
+  });
+
+  it('settles all preparations and never finalizes a partial prepared set', async () => {
+    const last = Promise.withResolvers<void>();
+    let sessionIndex = 0;
+    vi.spyOn(CLITestHelpers.prototype, 'createSession').mockImplementation(async () => `session-${sessionIndex++}`);
+    vi.spyOn(CLITestHelpers.prototype, 'submitVote').mockResolvedValue({
+      leafIndex: 0,
+      merklePath: [],
+      commitment: 'commitment',
+      choice: 'A',
+      random: 'opening',
+    });
+    const prepare = vi.spyOn(CLITestHelpers.prototype, 'generateBotVotes').mockImplementation(async (session) => {
+      if (session === 'session-0') throw new Error('private preparation failure');
+      if (session === 'session-2') await last.promise;
+    });
+    const finalize = vi.spyOn(CLITestHelpers.prototype, 'finalizeWithScenarios');
+    let settled = false;
+    const outcome = runParallelOwnerFlows('https://develop.example', {}, `0x${'1'.repeat(64)}`).catch(
+      (error: unknown) => {
+        settled = true;
+        return error instanceof Error ? error.message : 'unexpected error';
+      },
+    );
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(3));
+    expect(settled).toBe(false);
+    last.resolve();
+    expect(await outcome).toBe('Parallel acceptance preparation failed; all started preparations settled.');
+    expect(finalize).not.toHaveBeenCalled();
+  });
+
+  it('projects only bounded status fields from finalization history and rejects an identity change', () => {
+    const runtimeDiagnostics = {
+      asyncMode: 'enabled',
+      queue: { concurrencyLimit: 2, estimatedDurationMs: 360000 },
+    } as const;
+    const result: FinalizeWithScenariosResult = {
+      data: {},
+      meta: {
+        mode: 'async',
+        finalizationId: 'finalization-1',
+        runtimeDiagnostics,
+        finalizationState: {
+          status: 'failed',
+          finalizationId: 'finalization-1',
+          queuedAtMs: 1,
+          failedAtMs: 4,
+          error: { code: 'failure', message: 'private' },
+          runtimeDiagnostics,
+        },
+        finalizationHistory: [
+          {
+            state: {
+              status: 'pending',
+              finalizationId: 'finalization-1',
+              queuedAtMs: 1,
+              stepFunctionsArn: 'private-arn',
+            },
+            receivedAt: 2,
+            runtimeDiagnostics,
+          },
+          {
+            state: { status: 'running', finalizationId: 'finalization-1', queuedAtMs: 1, startedAtMs: 3 },
+            receivedAt: 3,
+            runtimeDiagnostics,
+          },
+          {
+            state: {
+              status: 'failed',
+              finalizationId: 'finalization-1',
+              queuedAtMs: 1,
+              startedAtMs: 3,
+              failedAtMs: 4,
+              error: { code: 'failure', message: 'private' },
+            },
+            receivedAt: 5,
+            runtimeDiagnostics,
+          },
+        ],
+      },
+    };
+    expect(projectFinalizationObservations(result)).toEqual([
+      { status: 'pending', finalizationId: 'finalization-1', queuedAtMs: 1, receivedAt: 2, concurrencyLimit: 2 },
+      {
+        status: 'running',
+        finalizationId: 'finalization-1',
+        queuedAtMs: 1,
+        startedAtMs: 3,
+        receivedAt: 3,
+        concurrencyLimit: 2,
+      },
+      {
+        status: 'failed',
+        finalizationId: 'finalization-1',
+        queuedAtMs: 1,
+        startedAtMs: 3,
+        failedAtMs: 4,
+        receivedAt: 5,
+        concurrencyLimit: 2,
+      },
+    ]);
+    if (!result.meta) throw new Error('Missing fixture metadata');
+    result.meta.finalizationId = 'another-finalization';
+    expect(() => projectFinalizationObservations(result)).toThrow('Finalization observation identity changed.');
+    expect(() => projectFinalizationObservations({ data: {} })).toThrow('Finalization observation history is missing.');
+  });
+
   it('refuses localhost unless explicit local non-acceptance mode is enabled', () => {
     vi.stubEnv('STARK_BALLOT_DEVELOP_BASE_URL', 'http://localhost:3000/path');
 
@@ -503,7 +686,7 @@ describe('develop gated smoke contract', () => {
 
     await expectJsonErrorCodeRejected(
       'direct-origin POST /api/sessions',
-      'https://abc123.execute-api.ap-northeast-1.amazonaws.com/api/sessions',
+      'https://abc123.execute-api.ap-northeast-1.amazonaws.com/live/api/sessions',
       ErrorCode.SAME_ORIGIN_REQUIRED,
     );
   });
@@ -515,7 +698,7 @@ describe('develop gated smoke contract', () => {
     await expect(
       expectJsonErrorCodeRejected(
         'direct-origin POST /api/sessions',
-        'https://abc123.execute-api.ap-northeast-1.amazonaws.com/api/sessions',
+        'https://abc123.execute-api.ap-northeast-1.amazonaws.com/live/api/sessions',
         ErrorCode.SAME_ORIGIN_REQUIRED,
       ),
     ).rejects.toThrow('returned 200 with error SAME_ORIGIN_REQUIRED');
@@ -524,7 +707,7 @@ describe('develop gated smoke contract', () => {
   it('sends operator credentials to the direct-origin probe and expects the origin guard error', async () => {
     const fetchMock = vi.fn().mockResolvedValue(errorResponseJson(ErrorCode.SAME_ORIGIN_REQUIRED, 403));
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubEnv('STARK_BALLOT_DIRECT_API_ORIGIN', 'https://abc123.execute-api.ap-northeast-1.amazonaws.com/prod');
+    vi.stubEnv('STARK_BALLOT_DIRECT_API_ORIGIN', 'https://abc123.execute-api.ap-northeast-1.amazonaws.com/live');
 
     await runDirectOriginCheck(
       { Cookie: 'CloudFront-Policy=policy; CloudFront-Signature=sig' },
@@ -532,7 +715,7 @@ describe('develop gated smoke contract', () => {
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://abc123.execute-api.ap-northeast-1.amazonaws.com/api/sessions',
+      'https://abc123.execute-api.ap-northeast-1.amazonaws.com/live/api/sessions',
       expect.objectContaining({ method: 'POST', redirect: 'manual' }),
     );
     const headers = callHeaders(fetchMock, 0);
@@ -543,7 +726,7 @@ describe('develop gated smoke contract', () => {
   it('fails closed when the direct-origin probe returns a normal response instead of the origin guard error', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubEnv('STARK_BALLOT_DIRECT_API_ORIGIN', 'https://abc123.execute-api.ap-northeast-1.amazonaws.com');
+    vi.stubEnv('STARK_BALLOT_DIRECT_API_ORIGIN', 'https://abc123.execute-api.ap-northeast-1.amazonaws.com/live');
 
     await expect(runDirectOriginCheck({}, 'https://develop.example')).rejects.toThrow(
       'expected JSON error SAME_ORIGIN_REQUIRED',
@@ -553,7 +736,7 @@ describe('develop gated smoke contract', () => {
   it('fails closed when the direct-origin probe returns an ordinary app error', async () => {
     const fetchMock = vi.fn().mockResolvedValue(errorResponseJson(ErrorCode.INVALID_REQUEST, 400));
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubEnv('STARK_BALLOT_DIRECT_API_ORIGIN', 'https://abc123.execute-api.ap-northeast-1.amazonaws.com');
+    vi.stubEnv('STARK_BALLOT_DIRECT_API_ORIGIN', 'https://abc123.execute-api.ap-northeast-1.amazonaws.com/live');
 
     await expect(runDirectOriginCheck({}, 'https://develop.example')).rejects.toThrow(
       'returned 400 with error INVALID_REQUEST',
@@ -588,20 +771,6 @@ describe('develop gated smoke contract', () => {
     const wrongCapabilityHeaders = callHeaders(fetchMock, 1);
     expect(wrongCapabilityHeaders.get('Cookie')).toContain('CloudFront-Key-Pair-Id=key');
     expect(wrongCapabilityHeaders.get('X-Session-Capability')).toBe('wrong-capability-token');
-  });
-
-  it('constructs the positive owner flow with production STARK verification required', () => {
-    expect(createPositiveOwnerFlowConfig()).toEqual({
-      scenarios: [],
-      useRealZkVM: true,
-      realMode: 'prod',
-      verbose: false,
-      outputFormat: 'table',
-      allScenarios: false,
-      scenario: 'S0',
-      userChoice: 'A',
-      skipBuild: true,
-    });
   });
 
   it('resolves the independent develop ImageID from the current default mapping variant', () => {
@@ -1017,7 +1186,6 @@ describe('develop gated smoke contract', () => {
 
   it('defaults to a compact S0, exclusion, and claimed-tally scenario matrix', () => {
     expect(resolveGatedSmokeScenarios()).toEqual(['S0', 'S1', 'S2']);
-    expect(createPositiveOwnerFlowConfigs().map((config) => config.scenario)).toEqual(['S0', 'S1', 'S2']);
     expect(resolveGatedSmokeScenarioExpectation('S0')).toEqual({
       terminalVerificationStatus: 'success',
       overallVerdict: 'fully_verified',

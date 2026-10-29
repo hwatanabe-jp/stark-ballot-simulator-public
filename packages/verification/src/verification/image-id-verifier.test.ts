@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { ImageIdMapping } from './image-id-types';
+import type { ImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 import { CURRENT_METHOD_VERSION } from '@stark-ballot/zkvm-contract/zkvm/types';
 
 function strictDefined<T>(value: T, label = 'value'): NonNullable<T> {

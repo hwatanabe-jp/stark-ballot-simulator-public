@@ -70,7 +70,7 @@ function policyFor(specification: AuditSpecification) {
           [restriction.conditionOperator]: {
             'aws:PrincipalArn':
               restriction.publisherPrincipalArns.length === 1
-                ? restriction.publisherPrincipalArns[0]
+                ? restriction.publisherPrincipalArns[0]?.replace('????????????????', '0123456789abcdef')
                 : [...restriction.publisherPrincipalArns],
           },
         },
@@ -128,6 +128,39 @@ function mutableStatement(input: MutableAuditInput, observationIndex: number, st
 }
 
 describe('authority bucket policy audit', () => {
+  it('requires retired recovery manifests to reject every writer, including the former operator', () => {
+    const target = resolveAllowedDeploymentTarget('stark-dev/develop');
+    const app = resolveDeploymentLaneAuthority(target, 'app');
+    const specification = buildAuthorityBucketPolicyAuditSpecifications(target.targetKey).find(
+      ({ kind }) => kind === 'app-retained',
+    );
+    if (specification === undefined) throw new Error('retained authority specification missing');
+    const resource = `arn:${target.partition}:s3:::${specification.bucketName}/${app.names.recoveryManifestPrefix}/*`;
+    const observation = singleObservationFor(specification);
+    observation.policy.Statement = observation.policy.Statement.filter(
+      (statement) =>
+        !JSON.stringify(statement.Resource).includes(resource) ||
+        (!statement.Sid.includes('publisher') && !statement.Sid.includes('retired-write')),
+    );
+    observation.policy.Statement.push({
+      Sid: 'RetiredRecoveryManifestWrites',
+      Effect: 'Deny',
+      Principal: '*',
+      Action: 's3:PutObject',
+      Resource: resource,
+    });
+    expect(() => auditAuthorityBucketPolicyObservation('app-retained', observation, target.targetKey)).not.toThrow();
+
+    for (const statement of observation.policy.Statement) {
+      if (statement.Resource === resource) {
+        Object.assign(statement, {
+          Condition: { ArnNotLike: { 'aws:PrincipalArn': 'arn:aws:iam::*:role/aws-reserved/sso.amazonaws.com/*' } },
+        });
+      }
+    }
+    expect(() => auditAuthorityBucketPolicyObservation('app-retained', observation, target.targetKey)).toThrow();
+  });
+
   it('admits the exact three configured authority buckets and freezes its summary', () => {
     const specifications = buildAuthorityBucketPolicyAuditSpecifications('stark-dev/develop');
 
@@ -161,7 +194,7 @@ describe('authority bucket policy audit', () => {
     );
     if (specification === undefined) throw new Error('missing App-retained audit specification');
     const bucketArn = `arn:${target.partition}:s3:::${names.appRetainedArtifactBucket}`;
-    const acceptancePointerArn = `${bucketArn}/${names.acceptedDeploymentPointerKey}`;
+    const acceptancePointerArn = `${bucketArn}/deployment/${target.targetKey}/app/*`;
     const statusObjectArn = `${bucketArn}/${names.appDeploymentStatusKey}`;
 
     expect(specification.pointerObjectArns).toEqual([acceptancePointerArn, statusObjectArn]);
@@ -176,53 +209,34 @@ describe('authority bucket policy audit', () => {
     });
   });
 
-  it('seals predecessor App history while Bootstrap and Foundation own current Terraform authority', () => {
+  it('assigns checkpoint and mutation writers separately and freezes retired Terraform namespaces', () => {
     const target = resolveAllowedDeploymentTarget('stark-dev/develop');
-    const bootstrap = resolveDeploymentLaneAuthority(target, 'bootstrap');
-    const foundation = resolveDeploymentLaneAuthority(target, 'foundation');
-    const app = resolveDeploymentLaneAuthority(target, 'app');
-    const terraform = buildAuthorityBucketPolicyAuditSpecifications('stark-dev/develop').find(
+    const names = resolveDeploymentLaneAuthority(target, 'foundation').names;
+    const terraform = buildAuthorityBucketPolicyAuditSpecifications(target.targetKey).find(
       ({ kind }) => kind === 'terraform',
     );
-    if (terraform === undefined) throw new Error('missing Terraform audit specification');
-    const bucketArn = `arn:${target.partition}:s3:::${foundation.names.terraformAuthorityBucket}`;
-    const prefix = foundation.names.terraformBaselinePrefix;
-    const bootstrapHistory = `${bucketArn}/${prefix}/${bootstrap.stateIdentity}/executions/*`;
-    const bootstrapAcceptances = `${bucketArn}/${prefix}/${bootstrap.stateIdentity}/acceptances/*`;
-    const foundationHistory = `${bucketArn}/${prefix}/${foundation.stateIdentity}/executions/*`;
-    const foundationAcceptances = `${bucketArn}/${prefix}/${foundation.stateIdentity}/acceptances/*`;
-    const appHistory = `${bucketArn}/${prefix}/${app.stateIdentity}/executions/*`;
-    const bootstrapPointer = `${bucketArn}/${prefix}/${bootstrap.stateIdentity}/current.json`;
-    const foundationPointer = `${bucketArn}/${prefix}/${foundation.stateIdentity}/current.json`;
-
-    expect(terraform.immutableObjectArns).toEqual([bootstrapAcceptances, foundationAcceptances]);
-    expect(terraform.pointerObjectArns).toEqual([bootstrapPointer, foundationPointer]);
-    expect(terraform.deletionProtectedObjectArns).toEqual([
-      bootstrapAcceptances,
-      foundationAcceptances,
-      bootstrapHistory,
-      foundationHistory,
-      appHistory,
-      bootstrapPointer,
-      foundationPointer,
+    if (!terraform) throw new Error('Terraform inventory missing');
+    const bucket = `arn:${target.partition}:s3:::${names.terraformAuthorityBucket}`;
+    expect(terraform.retiredWriteDeniedObjectArns).toEqual([
+      `${bucket}/${names.terraformBaselinePrefix}/*`,
+      `${bucket}/${names.approvalEvidencePrefix}/*`,
     ]);
-    expect(terraform.retiredWriteDeniedObjectArns).toEqual([bootstrapHistory, foundationHistory, appHistory]);
-    expect(terraform.publisherRestrictions).toEqual([
-      {
-        objectArns: [bootstrapAcceptances, bootstrapPointer],
+    for (const root of ['bootstrap', 'foundation']) {
+      const prefix = `${bucket}/deployment/${target.targetKey}/${root}`;
+      expect(terraform.immutableObjectArns).toContain(`${prefix}/plan-packages/*`);
+      expect(terraform.immutableObjectArns).toContain(`${prefix}/actions/*`);
+      expect(terraform.deletionProtectedObjectArns).toContain(`${prefix}/*`);
+    }
+    for (const [key, role] of [
+      ['checkpoint.json', names.terraformSmokeRole],
+      ['mutation-owner.json', names.terraformApplyRole],
+    ]) {
+      expect(terraform.publisherRestrictions).toContainEqual({
+        objectArns: [`${bucket}/deployment/${target.targetKey}/foundation/${key}`],
         conditionOperator: 'ArnNotEquals',
-        publisherPrincipalArns: [
-          `arn:${target.partition}:iam::${target.accountId}:role/${bootstrap.names.bootstrapTerraformAcceptancePublisherRole}`,
-        ],
-      },
-      {
-        objectArns: [foundationAcceptances, foundationPointer],
-        conditionOperator: 'ArnNotEquals',
-        publisherPrincipalArns: [
-          `arn:${target.partition}:iam::${target.accountId}:role/${foundation.names.foundationTerraformAcceptancePublisherRole}`,
-        ],
-      },
-    ]);
+        publisherPrincipalArns: [`arn:${target.partition}:iam::${target.accountId}:role/${role}`],
+      });
+    }
   });
 
   it('separates Toolchain candidate and release publishers at their target ledger namespaces', () => {
@@ -236,7 +250,7 @@ describe('authority bucket policy audit', () => {
       restriction.objectArns.some((arn) => arn.endsWith('/artifacts/toolchain/candidates/*')),
     );
     const releaseResource = specification.publisherRestrictions.find((restriction) =>
-      restriction.objectArns.some((arn) => arn.endsWith('/artifacts/toolchain/releases/*')),
+      restriction.objectArns.some((arn) => arn.endsWith('/promotions/toolchain/current.json')),
     );
 
     expect(candidateResource).toEqual({
@@ -245,7 +259,7 @@ describe('authority bucket policy audit', () => {
       publisherPrincipalArns: [`arn:${target.partition}:iam::${target.accountId}:role/${names.toolchainCandidateRole}`],
     });
     expect(releaseResource).toEqual({
-      objectArns: [expect.stringMatching(/\/artifacts\/toolchain\/releases\/\*$/u)],
+      objectArns: [expect.stringMatching(/\/promotions\/toolchain\/current\.json$/u)],
       conditionOperator: 'ArnNotEquals',
       publisherPrincipalArns: [`arn:${target.partition}:iam::${target.accountId}:role/${names.toolchainPointerRole}`],
     });
@@ -267,7 +281,7 @@ describe('authority bucket policy audit', () => {
       restriction.objectArns.some((arn) => arn.endsWith('/artifacts/prover/candidates/*')),
     );
     const releaseResource = specification.publisherRestrictions.find((restriction) =>
-      restriction.objectArns.some((arn) => arn.endsWith('/artifacts/prover/releases/*')),
+      restriction.objectArns.some((arn) => arn.endsWith('/promotions/prover/current.json')),
     );
 
     expect(candidateResource).toEqual({
@@ -276,7 +290,7 @@ describe('authority bucket policy audit', () => {
       publisherPrincipalArns: [`arn:${target.partition}:iam::${target.accountId}:role/${names.proverCandidateRole}`],
     });
     expect(releaseResource).toEqual({
-      objectArns: [expect.stringMatching(/\/artifacts\/prover\/releases\/\*$/u)],
+      objectArns: [expect.stringMatching(/\/promotions\/prover\/current\.json$/u)],
       conditionOperator: 'ArnNotEquals',
       publisherPrincipalArns: [`arn:${target.partition}:iam::${target.accountId}:role/${names.proverPointerRole}`],
     });
@@ -285,14 +299,13 @@ describe('authority bucket policy audit', () => {
         restriction.objectArns.some((arn) => arn.endsWith('/artifacts/prover/*')),
       ),
     ).toBe(false);
-    expect(specification.retiredWriteDeniedObjectArns).toEqual([
-      expect.stringMatching(/\/artifacts\/prover\/\*\/manifest\.json$/u),
-      expect.stringMatching(/\/artifacts\/toolchain\/\*\/manifest\.json$/u),
-      expect.stringMatching(/\/deployments\/\*$/u),
-      expect.stringMatching(/\/rollbacks\/\*$/u),
-      expect.stringMatching(/\/artifacts\/foundation\/image-signing\/\*$/u),
-      expect.stringMatching(/\/channels\/develop\/foundation\/app-networking\.json$/u),
-    ]);
+    expect(specification.retiredWriteDeniedObjectArns).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/\/artifacts\/prover\/releases\/\*$/u),
+        expect.stringMatching(/\/artifacts\/toolchain\/releases\/\*$/u),
+        expect.stringMatching(/\/artifacts\/foundation\/image-signing\/\*$/u),
+      ]),
+    );
     expect(JSON.stringify(specification)).not.toContain('appDeploymentRecordRole');
     expect(
       specification.publisherRestrictions.some((restriction) =>
@@ -653,7 +666,7 @@ it('audits the production authority buckets without admitting a static-fast publ
     const production = targets.resolveAllowedDeploymentTarget('stark-prod/main');
     const development = targets.resolveAllowedDeploymentTarget('stark-dev/develop');
     const app = targets.resolveDeploymentLaneAuthority(production, 'app');
-    const staticFast = targets.resolveDeploymentLaneAuthority(development, 'static-fast');
+
     const specifications = authority.buildAuthorityBucketPolicyAuditSpecifications(production.targetKey);
     const observations = specifications.map(observationFor);
     expect(authority.auditAuthorityBucketPolicies({ observations }, production.targetKey).buckets).toHaveLength(3);
@@ -672,7 +685,7 @@ it('audits the production authority buckets without admitting a static-fast publ
       restriction.objectArns.some((arn) => arn.endsWith(`/${app.names.staticFrontendArtifactPrefix}/*`)),
     );
     expect(staticPublishers?.publisherPrincipalArns).toEqual([
-      `arn:${production.partition}:iam::${production.accountId}:role/${app.names.appStaticDeployRole}`,
+      `arn:${production.partition}:iam::${production.accountId}:role/${app.names.terraformPlanRole}`,
     ]);
     for (const wrongTarget of [undefined, 'unreviewed/main', development.targetKey]) {
       expect(() => authority.auditAuthorityBucketPolicies({ observations }, wrongTarget)).toThrow();
@@ -689,7 +702,7 @@ it('audits the production authority buckets without admitting a static-fast publ
               ...restriction,
               publisherPrincipalArns: [
                 ...restriction.publisherPrincipalArns,
-                `arn:${production.partition}:iam::${production.accountId}:role/${staticFast.names.appStaticFastDeployRole}`,
+                `arn:${production.partition}:iam::${production.accountId}:role/${app.names.appStaticDeployRole}`,
               ],
             }
           : restriction,

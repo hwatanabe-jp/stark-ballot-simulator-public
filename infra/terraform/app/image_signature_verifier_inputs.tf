@@ -43,7 +43,7 @@ variable "lambda_artifacts" {
   }))
 
   validation {
-    condition = toset(keys(var.lambda_artifacts)) == toset(local.image_signature_verifier_standalone ? ["image_signature_verifier"] : [
+    condition = toset(keys(var.lambda_artifacts)) == toset([
       "public_api",
       "finalization_writer",
       "proof_dispatcher",
@@ -51,7 +51,7 @@ variable "lambda_artifacts" {
       "image_signature_verifier",
       "semaphore_janitor",
     ])
-    error_message = "lambda_artifacts must contain exactly public_api, finalization_writer, proof_dispatcher, verification_worker, image_signature_verifier, and semaphore_janitor. The separate verifier-only configuration admits only image_signature_verifier."
+    error_message = "lambda_artifacts must contain exactly public_api, finalization_writer, proof_dispatcher, verification_worker, image_signature_verifier, and semaphore_janitor."
   }
 
   validation {
@@ -88,20 +88,5 @@ variable "prover_image_uri" {
   validation {
     condition     = can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z]{2}-[a-z]+-[0-9]\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$", var.prover_image_uri))
     error_message = "prover_image_uri must be a digest-pinned ECR URI."
-  }
-}
-
-variable "image_signature_preflight_prover_image_uri" {
-  description = "Optional digest-pinned Prover image selected by the isolated verifier preflight; normal full App plans carry that same selection, while refresh and rollback leave it null."
-  type        = string
-  default     = null
-  nullable    = true
-
-  validation {
-    condition = (
-      var.image_signature_preflight_prover_image_uri == null
-      || can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z]{2}-[a-z]+-[0-9]\\.amazonaws\\.com\\/[A-Za-z0-9._\\/-]+@sha256:[0-9a-f]{64}$", var.image_signature_preflight_prover_image_uri))
-    )
-    error_message = "image_signature_preflight_prover_image_uri must be null or a digest-pinned ECR URI."
   }
 }

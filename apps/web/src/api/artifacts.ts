@@ -1,4 +1,9 @@
-import { parseContentRange } from '@stark-ballot/api-contract/http/content-range';
+import {
+  admitInitialArtifactRange,
+  admitNextArtifactRange,
+  resolveArtifactChunkSize,
+  readArtifactContentLength,
+} from '@stark-ballot/api-contract/http/artifact-response';
 import { API_ROUTES, buildApiRouteUrl } from '@stark-ballot/api-contract/routes';
 import type { SessionIdentity } from '@stark-ballot/web/session';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
@@ -95,22 +100,15 @@ async function fetchBundleBlob(url: string, options: ArtifactDownloadOptions): P
     return readBundleBodyWithLimit(firstResponse);
   }
 
-  const contentRange = parseContentRange(firstResponse.headers.get('content-range'));
-  if (
-    contentRange?.kind !== 'satisfied' ||
-    contentRange.start !== 0 ||
-    contentRange.end >= DEFAULT_BUNDLE_RANGE_CHUNK_BYTES ||
-    contentRange.total > MAX_BUNDLE_DOWNLOAD_BYTES
-  ) {
-    throw new Error('Invalid ranged bundle response');
-  }
-
-  const representationIdentity = readRepresentationIdentity(firstResponse.headers);
-  if (!representationIdentity) {
-    throw new Error('Invalid ranged bundle response');
-  }
+  const { range: contentRange, representationIdentity } = admitInitialArtifactRange(firstResponse.headers, {
+    chunkBytes: DEFAULT_BUNDLE_RANGE_CHUNK_BYTES,
+    maxBytes: MAX_BUNDLE_DOWNLOAD_BYTES,
+  });
   const chunks: Blob[] = [await readRangeBody(firstResponse, contentRange.advertisedLength)];
-  const chunkSize = resolveAdvertisedChunkSize(firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER));
+  const chunkSize = resolveArtifactChunkSize(
+    firstResponse.headers.get(BUNDLE_RANGE_CHUNK_HEADER),
+    DEFAULT_BUNDLE_RANGE_CHUNK_BYTES,
+  );
   let nextStart = contentRange.end + 1;
 
   while (nextStart < contentRange.total) {
@@ -121,20 +119,12 @@ async function fetchBundleBlob(url: string, options: ArtifactDownloadOptions): P
       throw new Error('Invalid ranged bundle response');
     }
 
-    const range = parseContentRange(response.headers.get('content-range'));
-    if (
-      range?.kind !== 'satisfied' ||
-      range.start !== nextStart ||
-      range.end !== nextEnd ||
-      range.total !== contentRange.total
-    ) {
-      throw new Error('Invalid ranged bundle response');
-    }
-
-    const nextRepresentationIdentity = readRepresentationIdentity(response.headers);
-    if (!nextRepresentationIdentity || nextRepresentationIdentity !== representationIdentity) {
-      throw new Error('Bundle representation changed during download');
-    }
+    const range = admitNextArtifactRange(response.headers, {
+      start: nextStart,
+      end: nextEnd,
+      total: contentRange.total,
+      representationIdentity,
+    });
     chunks.push(await readRangeBody(response, range.advertisedLength));
     nextStart = range.end + 1;
   }
@@ -164,22 +154,6 @@ async function throwIfDownloadFailed(response: Response, options: ArtifactDownlo
     ...(options.resolveSessionErrorMessage ? { resolveSessionErrorMessage: options.resolveSessionErrorMessage } : {}),
     fallbackMessage: `HTTP ${response.status}`,
   });
-}
-
-function resolveAdvertisedChunkSize(value: string | null): number {
-  if (!value) {
-    return DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
-  }
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0
-    ? Math.min(parsed, DEFAULT_BUNDLE_RANGE_CHUNK_BYTES)
-    : DEFAULT_BUNDLE_RANGE_CHUNK_BYTES;
-}
-
-function readRepresentationIdentity(headers: Headers): string | null {
-  const etag = headers.get('etag')?.trim() ?? '';
-  const versionId = headers.get('x-amz-version-id')?.trim() ?? '';
-  return etag || versionId ? `${etag}\u0000${versionId}` : null;
 }
 
 async function readRangeBody(response: Response, expectedLength: number): Promise<Blob> {
@@ -217,14 +191,7 @@ async function readResponseBytesWithLimit(
   maxBytes: number,
   limitMessage: string,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const contentLength = response.headers.get('content-length');
-  const declaredBytes = contentLength === null || !/^\d+$/.test(contentLength) ? undefined : Number(contentLength);
-  if (
-    contentLength !== null &&
-    (declaredBytes === undefined || !Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes)
-  ) {
-    throw new Error(limitMessage);
-  }
+  const declaredBytes = readArtifactContentLength(response.headers, maxBytes, limitMessage);
 
   if (!response.body) {
     return new Uint8Array();

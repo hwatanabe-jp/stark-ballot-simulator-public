@@ -5,7 +5,7 @@ import {
   type ApiContractRouteId,
 } from '@stark-ballot/api-contract/routes';
 import { ErrorCode, getErrorMessage } from '@stark-ballot/api-contract/errors/apiErrors';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { handleMockRoute } from './handlers';
 
 export interface MockRouteRequest {
@@ -130,7 +130,7 @@ export function routeMockRequest(input: RequestInfo | URL, init?: RequestInit): 
     if (!parsed.success) {
       return invalidRequestResponse(requestId, parsed.error.flatten());
     }
-    if (!isRecord(parsed.data)) {
+    if (!isNonNullObject(parsed.data)) {
       return invalidRequestResponse(requestId);
     }
     query = parsed.data;

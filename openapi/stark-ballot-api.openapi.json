@@ -1451,54 +1451,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -1574,54 +1526,6 @@
                                 "asyncMode": {
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
-                                },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 },
                                 "progress": {
                                   "type": "object",
@@ -3397,54 +3301,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -3554,54 +3410,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -3689,54 +3497,6 @@
                                 "asyncMode": {
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
-                                },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 },
                                 "progress": {
                                   "type": "object",
@@ -3853,54 +3613,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -3976,54 +3688,6 @@
                                 "asyncMode": {
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
-                                },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 },
                                 "progress": {
                                   "type": "object",
@@ -5799,54 +5463,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -5956,54 +5572,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -6091,54 +5659,6 @@
                                 "asyncMode": {
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
-                                },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 },
                                 "progress": {
                                   "type": "object",
@@ -6675,54 +6195,6 @@
                                       "type": "string",
                                       "enum": ["enabled", "disabled"]
                                     },
-                                    "orchestrator": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "startTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "status": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "string"
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "stopTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": ["startTimeMs", "status", "stopTimeMs"]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
                                     "progress": {
                                       "type": "object",
                                       "additionalProperties": false,
@@ -6798,54 +6270,6 @@
                                     "asyncMode": {
                                       "type": "string",
                                       "enum": ["enabled", "disabled"]
-                                    },
-                                    "orchestrator": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "startTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "status": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "string"
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "stopTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": ["startTimeMs", "status", "stopTimeMs"]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
                                     },
                                     "progress": {
                                       "type": "object",
@@ -8632,54 +8056,6 @@
                                       "type": "string",
                                       "enum": ["enabled", "disabled"]
                                     },
-                                    "orchestrator": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "startTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "status": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "string"
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "stopTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": ["startTimeMs", "status", "stopTimeMs"]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
                                     "progress": {
                                       "type": "object",
                                       "additionalProperties": false,
@@ -8789,54 +8165,6 @@
                                       "type": "string",
                                       "enum": ["enabled", "disabled"]
                                     },
-                                    "orchestrator": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "startTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "status": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "string"
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "stopTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": ["startTimeMs", "status", "stopTimeMs"]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
                                     "progress": {
                                       "type": "object",
                                       "additionalProperties": false,
@@ -8924,54 +8252,6 @@
                                     "asyncMode": {
                                       "type": "string",
                                       "enum": ["enabled", "disabled"]
-                                    },
-                                    "orchestrator": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "startTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "status": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "string"
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            },
-                                            "stopTimeMs": {
-                                              "anyOf": [
-                                                {
-                                                  "type": "integer",
-                                                  "minimum": 0,
-                                                  "maximum": 9007199254740991
-                                                },
-                                                {
-                                                  "type": "null"
-                                                }
-                                              ]
-                                            }
-                                          },
-                                          "required": ["startTimeMs", "status", "stopTimeMs"]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
                                     },
                                     "progress": {
                                       "type": "object",
@@ -10701,54 +9981,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -10824,54 +10056,6 @@
                                 "asyncMode": {
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
-                                },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 },
                                 "progress": {
                                   "type": "object",
@@ -12647,54 +11831,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -12804,54 +11940,6 @@
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
                                 },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
-                                },
                                 "progress": {
                                   "type": "object",
                                   "additionalProperties": false,
@@ -12939,54 +12027,6 @@
                                 "asyncMode": {
                                   "type": "string",
                                   "enum": ["enabled", "disabled"]
-                                },
-                                "orchestrator": {
-                                  "anyOf": [
-                                    {
-                                      "type": "object",
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "startTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "status": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        },
-                                        "stopTimeMs": {
-                                          "anyOf": [
-                                            {
-                                              "type": "integer",
-                                              "minimum": 0,
-                                              "maximum": 9007199254740991
-                                            },
-                                            {
-                                              "type": "null"
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "required": ["startTimeMs", "status", "stopTimeMs"]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 },
                                 "progress": {
                                   "type": "object",
@@ -15068,6 +14108,54 @@
               }
             }
           },
+          "202": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "estimatedDurationMs": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "finalizationId": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9-]+$"
+                        },
+                        "idempotent": {
+                          "type": "boolean"
+                        },
+                        "verificationStatus": {
+                          "type": "string",
+                          "enum": ["success", "failed", "dev_mode", "not_run", "running"]
+                        }
+                      },
+                      "required": ["estimatedDurationMs", "finalizationId", "idempotent", "verificationStatus"]
+                    },
+                    "meta": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "type": "string",
+                          "x-runtime-constraints": ["The runtime requires at least 1 UTF-16 code units."]
+                        }
+                      },
+                      "required": ["requestId"]
+                    }
+                  },
+                  "required": ["data", "meta"]
+                }
+              }
+            }
+          },
           "400": {
             "description": "Documented error response (INVALID_REQUEST, SESSION_NOT_FINALIZED).",
             "content": {
@@ -15155,6 +14243,24 @@
               {
                 "code": "SESSION_NOT_FOUND",
                 "status": 404,
+                "contentType": "application/json",
+                "envelope": "standard-error-envelope"
+              }
+            ]
+          },
+          "409": {
+            "description": "Documented error response (FINALIZATION_NOT_CURRENT).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StandardErrorResponse"
+                }
+              }
+            },
+            "x-stark-ballot-errors": [
+              {
+                "code": "FINALIZATION_NOT_CURRENT",
+                "status": 409,
                 "contentType": "application/json",
                 "envelope": "standard-error-envelope"
               }
@@ -15318,6 +14424,12 @@
           {
             "code": "SESSION_NOT_FINALIZED",
             "status": 400,
+            "contentType": "application/json",
+            "envelope": "standard-error-envelope"
+          },
+          {
+            "code": "FINALIZATION_NOT_CURRENT",
+            "status": 409,
             "contentType": "application/json",
             "envelope": "standard-error-envelope"
           },

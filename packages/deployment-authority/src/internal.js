@@ -77,53 +77,6 @@ export function requireExactKeys(value, expectedKeys, label) {
   return record;
 }
 
-/**
- * Admit first-publication evidence for an independently selected S3 object.
- * Terraform Plan creates versioned `${key}.tflock` siblings before state exists.
- * With '.' grouping after the exact prefix, those suffixes consume one result;
- * the exact state key itself still appears as a Version or DeleteMarker.
- * Callers capture the complete observation with snapshotDataTree before entry.
- *
- * @param {unknown} value
- * @param {Readonly<{bucket: string, key: string, allowStateLockSuffix: boolean}>} scope
- * @param {string} label
- */
-export function assertNeverPublishedS3Object(value, scope, label) {
-  const input = requireExactKeys(value, ['versioning', 'versions'], label);
-  const versioning = requireRecord(input['versioning'], `${label} bucket versioning`);
-  const versions = requireRecord(input['versions'], `${label} object versions`);
-  const groupedSuffix =
-    scope.allowStateLockSuffix &&
-    Array.isArray(versions['CommonPrefixes']) &&
-    versions['CommonPrefixes'].length === 1 &&
-    isPlainRecord(versions['CommonPrefixes'][0]) &&
-    Object.keys(versions['CommonPrefixes'][0]).length === 1 &&
-    versions['CommonPrefixes'][0]['Prefix'] === `${scope.key}.`;
-  if (
-    versioning['Status'] !== 'Enabled' ||
-    versions['Name'] !== scope.bucket ||
-    versions['Prefix'] !== scope.key ||
-    versions['MaxKeys'] !== 1 ||
-    versions['IsTruncated'] !== false ||
-    (scope.allowStateLockSuffix
-      ? versions['Delimiter'] !== '.'
-      : Object.hasOwn(versions, 'Delimiter') && versions['Delimiter'] !== '') ||
-    ['KeyMarker', 'VersionIdMarker', 'NextKeyMarker', 'NextVersionIdMarker', 'NextToken', 'ContinuationToken'].some(
-      (name) => Object.hasOwn(versions, name) && versions[name] !== '',
-    ) ||
-    (Object.hasOwn(versions, 'EncodingType') &&
-      versions['EncodingType'] !== '' &&
-      versions['EncodingType'] !== 'url') ||
-    ['Versions', 'DeleteMarkers'].some(
-      (name) => Object.hasOwn(versions, name) && (!Array.isArray(versions[name]) || versions[name].length !== 0),
-    ) ||
-    (Object.hasOwn(versions, 'CommonPrefixes') &&
-      (!Array.isArray(versions['CommonPrefixes']) || (versions['CommonPrefixes'].length !== 0 && !groupedSuffix)))
-  ) {
-    throw new Error(`${label} requires enabled versioning and a complete empty inventory for its exact object.`);
-  }
-}
-
 /** @param {string} value @returns {boolean} */
 export function hasControlCharacter(value) {
   return [...value].some((character) => {
@@ -160,101 +113,101 @@ export function sha256Text(value) {
  * @returns {string}
  */
 function serializeCanonical(value, ancestors, indentationDepth) {
-  if (value === null) {
-    return 'null';
-  }
+  if (value === null) return 'null';
   switch (typeof value) {
     case 'boolean':
       return value ? 'true' : 'false';
     case 'number':
-      if (!Number.isFinite(value)) {
-        throw new Error('canonical JSON numbers must be finite');
-      }
-      if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
-        throw new Error('canonical JSON integers must be safe');
-      }
-      return JSON.stringify(Object.is(value, -0) ? 0 : value);
+      return serializeCanonicalNumber(value);
     case 'string':
       return JSON.stringify(value);
     case 'undefined':
       throw new Error('canonical JSON does not admit undefined values');
-    case 'object': {
-      if (ancestors.has(value)) {
-        throw new Error('canonical JSON does not admit circular values');
-      }
-      ancestors.add(value);
-      try {
-        if (Array.isArray(value)) {
-          const ownKeys = Reflect.ownKeys(value);
-          const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-          if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) {
-            throw new Error('canonical JSON arrays must contain only dense indexed data properties');
-          }
-          const length = lengthDescriptor.value;
-          /** @type {unknown[]} */
-          const entries = [];
-          for (let index = 0; index < length; index += 1) {
-            const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-            if (descriptor === undefined) {
-              throw new Error('canonical JSON does not admit sparse arrays');
-            }
-            if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
-              throw new Error('canonical JSON arrays must contain only dense indexed data properties');
-            }
-            entries.push(descriptor.value);
-          }
-          if (
-            ownKeys.length !== length + 1 ||
-            ownKeys.some(
-              (key) =>
-                typeof key !== 'string' ||
-                (key !== 'length' && (!/^(?:0|[1-9][0-9]*)$/u.test(key) || Number(key) >= length)),
-            )
-          ) {
-            throw new Error('canonical JSON arrays must contain only dense indexed data properties');
-          }
-          const nextIndentationDepth = indentationDepth === undefined ? undefined : indentationDepth + 1;
-          const serializedEntries = entries.map((entry) => serializeCanonical(entry, ancestors, nextIndentationDepth));
-          if (indentationDepth === undefined || serializedEntries.length === 0) {
-            return `[${serializedEntries.join(',')}]`;
-          }
-          const entryIndentation = '  '.repeat(indentationDepth + 1);
-          const closingIndentation = '  '.repeat(indentationDepth);
-          return `[\n${entryIndentation}${serializedEntries.join(`,\n${entryIndentation}`)}\n${closingIndentation}]`;
-        }
-        const record = requireRecord(value, 'canonical JSON value');
-        /** @type {[string, unknown][]} */
-        const entries = Reflect.ownKeys(record).map((key) => {
-          const descriptor = Object.getOwnPropertyDescriptor(record, key);
-          if (
-            typeof key !== 'string' ||
-            descriptor === undefined ||
-            descriptor.enumerable !== true ||
-            !Object.hasOwn(descriptor, 'value')
-          ) {
-            throw new Error('canonical JSON records must contain only enumerable string-keyed data properties');
-          }
-          return [key, descriptor.value];
-        });
-        entries.sort(([leftKey], [rightKey]) => (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0));
-        const nextIndentationDepth = indentationDepth === undefined ? undefined : indentationDepth + 1;
-        const separator = indentationDepth === undefined ? ':' : ': ';
-        const serializedEntries = entries.map(
-          ([key, entry]) =>
-            `${JSON.stringify(key)}${separator}${serializeCanonical(entry, ancestors, nextIndentationDepth)}`,
-        );
-        if (indentationDepth === undefined || serializedEntries.length === 0) {
-          return `{${serializedEntries.join(',')}}`;
-        }
-        const entryIndentation = '  '.repeat(indentationDepth + 1);
-        const closingIndentation = '  '.repeat(indentationDepth);
-        return `{\n${entryIndentation}${serializedEntries.join(`,\n${entryIndentation}`)}\n${closingIndentation}}`;
-      } finally {
-        ancestors.delete(value);
-      }
-    }
+    case 'object':
+      return serializeCanonicalObject(value, ancestors, indentationDepth);
     default:
       throw new Error(`canonical JSON does not admit ${typeof value} values`);
+  }
+}
+
+/** @param {unknown[]} value @returns {unknown[]} */
+function canonicalArrayEntries(value) {
+  const ownKeys = Reflect.ownKeys(value);
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) {
+    throw new Error('canonical JSON arrays must contain only dense indexed data properties');
+  }
+  const length = lengthDescriptor.value;
+  /** @type {unknown[]} */
+  const entries = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined) {
+      throw new Error('canonical JSON does not admit sparse arrays');
+    }
+    if (descriptor.enumerable !== true || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('canonical JSON arrays must contain only dense indexed data properties');
+    }
+    entries.push(descriptor.value);
+  }
+  if (!hasDenseArrayOwnKeys(ownKeys, length)) {
+    throw new Error('canonical JSON arrays must contain only dense indexed data properties');
+  }
+  return entries;
+}
+
+/** @param {object} value @returns {[string, unknown][]} */
+function canonicalRecordEntries(value) {
+  const record = requireRecord(value, 'canonical JSON value');
+  /** @type {[string, unknown][]} */
+  const entries = Reflect.ownKeys(record).map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (
+      typeof key !== 'string' ||
+      descriptor === undefined ||
+      descriptor.enumerable !== true ||
+      !Object.hasOwn(descriptor, 'value')
+    ) {
+      throw new Error('canonical JSON records must contain only enumerable string-keyed data properties');
+    }
+    return [key, descriptor.value];
+  });
+  entries.sort(([leftKey], [rightKey]) => (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0));
+  return entries;
+}
+
+/** @param {string} open @param {string} close @param {string[]} entries @param {number | undefined} depth */
+function renderCanonicalCollection(open, close, entries, depth) {
+  if (depth === undefined || entries.length === 0) return `${open}${entries.join(',')}${close}`;
+  const entryIndentation = '  '.repeat(depth + 1);
+  const closingIndentation = '  '.repeat(depth);
+  return `${open}\n${entryIndentation}${entries.join(`,\n${entryIndentation}`)}\n${closingIndentation}${close}`;
+}
+
+/** @param {number} value */
+function serializeCanonicalNumber(value) {
+  if (!Number.isFinite(value)) throw new Error('canonical JSON numbers must be finite');
+  if (Number.isInteger(value) && !Number.isSafeInteger(value)) throw new Error('canonical JSON integers must be safe');
+  return JSON.stringify(Object.is(value, -0) ? 0 : value);
+}
+
+/** @param {object} value @param {Set<object>} ancestors @param {number | undefined} depth */
+function serializeCanonicalObject(value, ancestors, depth) {
+  if (ancestors.has(value)) throw new Error('canonical JSON does not admit circular values');
+  ancestors.add(value);
+  try {
+    const nextDepth = depth === undefined ? undefined : depth + 1;
+    if (Array.isArray(value)) {
+      const entries = canonicalArrayEntries(value).map((entry) => serializeCanonical(entry, ancestors, nextDepth));
+      return renderCanonicalCollection('[', ']', entries, depth);
+    }
+    const separator = depth === undefined ? ':' : ': ';
+    const entries = canonicalRecordEntries(value).map(
+      ([key, entry]) => `${JSON.stringify(key)}${separator}${serializeCanonical(entry, ancestors, nextDepth)}`,
+    );
+    return renderCanonicalCollection('{', '}', entries, depth);
+  } finally {
+    ancestors.delete(value);
   }
 }
 
@@ -481,4 +434,17 @@ export function assembleDeploymentContext({
     policy,
     targetConfigurationSha256,
   });
+}
+
+/** Validate the complete own-key set of an array without reading its elements.
+ * @param {readonly PropertyKey[]} keys @param {number} length
+ */
+export function hasDenseArrayOwnKeys(keys, length) {
+  return (
+    keys.length === length + 1 &&
+    keys.every(
+      (key) =>
+        typeof key === 'string' && (key === 'length' || (/^(?:0|[1-9][0-9]*)$/u.test(key) && Number(key) < length)),
+    )
+  );
 }

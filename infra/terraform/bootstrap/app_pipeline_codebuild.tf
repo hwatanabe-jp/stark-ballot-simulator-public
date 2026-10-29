@@ -1,50 +1,7 @@
-resource "aws_codebuild_project" "app_execution_authority" {
-  count = local.app_pipeline_enabled ? 1 : 0
-
-  name          = local.app_execution_authority_project_name
-  service_role  = aws_iam_role.app_execution_authority[0].arn
-  build_timeout = 15
-
-  artifacts {
-    type = "CODEPIPELINE"
-  }
-
-  environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = "aws/codebuild/standard:8.0"
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
-
-    environment_variable {
-      name  = "APP_RELEASE_MANIFEST_BUCKET"
-      value = local.app_release_manifest_bucket_name
-    }
-
-    environment_variable {
-      name  = "APP_EXPECTED_AWS_ACCOUNT_ID"
-      value = var.aws_account_id
-    }
-  }
-
-  logs_config {
-    cloudwatch_logs {
-      group_name  = module.app_pipeline_codebuild_log_groups.log_groups[local.app_execution_authority_project_name].name
-      stream_name = "release-resolution"
-    }
-  }
-
-  source {
-    type      = "CODEPIPELINE"
-    buildspec = "infra/terraform/bootstrap/buildspec-app-release-resolution.yml"
-  }
-
-  tags = merge(local.common_tags, {
-    StateScope = "app"
-  })
-}
 
 resource "aws_codebuild_project" "app_terraform_plan" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.app_pipeline_enabled ? 1 : 0
 
   name          = local.app_terraform_plan_project_name
   service_role  = aws_iam_role.app_terraform_plan[0].arn
@@ -139,7 +96,8 @@ resource "aws_codebuild_project" "app_terraform_plan" {
 }
 
 resource "aws_codebuild_project" "app_terraform_apply" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.app_pipeline_enabled ? 1 : 0
 
   name          = local.app_terraform_apply_project_name
   service_role  = aws_iam_role.app_terraform_apply[0].arn
@@ -189,7 +147,8 @@ resource "aws_codebuild_project" "app_terraform_apply" {
 }
 
 resource "aws_codebuild_project" "app_smoke" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.app_pipeline_enabled ? 1 : 0
 
   name          = local.app_smoke_project_name
   service_role  = aws_iam_role.app_terraform_smoke[0].arn
@@ -233,11 +192,6 @@ resource "aws_codebuild_project" "app_smoke" {
     environment_variable {
       name  = "APP_TERRAFORM_SMOKE_ROLE_NAME"
       value = local.app_terraform_smoke_role_name
-    }
-
-    environment_variable {
-      name  = "APP_ACCEPTANCE_PUBLISHER_ROLE_ARN"
-      value = local.app_acceptance_publisher_role_arn
     }
 
     environment_variable {
@@ -285,7 +239,8 @@ resource "aws_codebuild_project" "app_smoke" {
 }
 
 resource "aws_codebuild_project" "app_static_deploy" {
-  count = local.app_pipeline_enabled ? 1 : 0
+  concurrent_build_limit = 1
+  count                  = local.app_pipeline_enabled ? 1 : 0
 
   name          = local.app_static_deploy_project_name
   service_role  = aws_iam_role.app_static_deploy[0].arn

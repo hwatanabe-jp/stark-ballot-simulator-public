@@ -10,7 +10,6 @@ data "aws_iam_policy_document" "app_static_deploy_common" {
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
-      "s3:PutObject",
     ]
     resources = [
       "${aws_s3_bucket.app_pipeline_artifacts[0].arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}/*",
@@ -64,27 +63,6 @@ data "aws_iam_policy_document" "app_static_deploy_common" {
     resources = [local.app_target_cloudfront_distribution_arn]
   }
 
-  statement {
-    sid    = "ReadStaticFrontendPublicationLeaseHolderBuild"
-    effect = "Allow"
-
-    actions = ["codebuild:BatchGetBuilds"]
-    resources = compact([
-      local.source_path_app_start_build_projects.app_static_deploy.project_arn,
-      local.app_static_fast_enabled ? local.source_path_static_fast_start_build_projects.app_static_fast_static_deploy.project_arn : null,
-    ])
-  }
-
-  statement {
-    sid    = "ReadTargetBrowserPublicConfig"
-    effect = "Allow"
-
-    actions = [
-      "ssm:GetParameter",
-    ]
-
-    resources = local.app_browser_public_config_parameter_arns
-  }
 }
 
 data "aws_iam_policy_document" "app_static_deploy" {
@@ -92,12 +70,6 @@ data "aws_iam_policy_document" "app_static_deploy" {
 
   source_policy_documents = [data.aws_iam_policy_document.app_static_deploy_common[0].json]
 
-  statement {
-    sid       = "ReadExactAppStaticDeployProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [local.source_path_app_start_build_projects.app_static_deploy.project_arn]
-  }
 
   statement {
     sid    = "WriteAppStaticDeployLogs"
@@ -137,56 +109,4 @@ resource "aws_iam_role_policy" "app_static_deploy" {
   name   = "${local.app_static_deploy_role_name}-policy"
   role   = aws_iam_role.app_static_deploy[0].id
   policy = data.aws_iam_policy_document.app_static_deploy[0].json
-}
-
-data "aws_iam_policy_document" "app_static_fast_static_deploy" {
-  count = local.app_static_fast_enabled ? 1 : 0
-
-  source_policy_documents = [data.aws_iam_policy_document.app_static_deploy_common[0].json]
-
-  statement {
-    sid       = "ReadExactAppStaticFastDeployProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [local.source_path_static_fast_start_build_projects.app_static_fast_static_deploy.project_arn]
-  }
-
-  statement {
-    sid    = "WriteAppStaticFastDeployLogs"
-    effect = "Allow"
-
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
-    resources = [
-      "${local.app_codebuild_log_group_arn_by_project_name[local.app_static_fast_static_deploy_project_name]}:*",
-    ]
-  }
-
-  statement {
-    sid    = "UseAppStaticFastExecutionArtifacts"
-    effect = "Allow"
-
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:ListBucket",
-      "s3:PutObject",
-    ]
-    resources = [
-      aws_s3_bucket.app_static_fast_execution_artifacts[0].arn,
-      "${aws_s3_bucket.app_static_fast_execution_artifacts[0].arn}/*",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "app_static_fast_static_deploy" {
-  count = local.app_static_fast_enabled ? 1 : 0
-
-  depends_on = [module.app_pipeline_codebuild_log_groups]
-
-  name   = "${local.app_static_fast_static_deploy_role_name}-policy"
-  role   = aws_iam_role.app_static_fast_static_deploy[0].id
-  policy = data.aws_iam_policy_document.app_static_fast_static_deploy[0].json
 }

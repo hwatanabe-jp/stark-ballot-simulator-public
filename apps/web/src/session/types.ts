@@ -1,3 +1,4 @@
+import type { BrowserSessionIdentity } from './identity';
 import type { ClientFinalizationSnapshot } from '@stark-ballot/web/finalize/client-finalization-result';
 import type { VoteChoice } from '@stark-ballot/verification/shared/constants';
 
@@ -5,9 +6,7 @@ export type { VoteChoice };
 
 export type SessionPhase = 'voting' | 'finalizing' | 'verifying';
 
-export interface ServerIssuedSessionIdentity {
-  sessionId: string;
-  capabilityToken: string;
+export interface ServerIssuedSessionIdentity extends BrowserSessionIdentity {
   electionId: string;
   electionConfigHash: string;
   logId: string;
@@ -18,11 +17,11 @@ interface BrowserSessionRecordBase extends ServerIssuedSessionIdentity {
   expiresAt: number;
 }
 
-type PrivateOpening =
+export type PrivateOpening =
   | { myVote: VoteChoice; myCommit: string; myRand: string }
   | { myVote?: never; myCommit?: never; myRand?: never };
 
-type CastReceipt =
+export type CastReceipt =
   | {
       /** Unique vote identifier returned after casting a vote */
       voteId: string;

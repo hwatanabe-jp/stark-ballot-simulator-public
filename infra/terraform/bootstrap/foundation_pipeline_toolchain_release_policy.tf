@@ -1,12 +1,6 @@
 data "aws_iam_policy_document" "foundation_toolchain_release_candidate_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  statement {
-    sid       = "ReadExactToolchainCandidateProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [aws_codebuild_project.toolchain_release_candidate[0].arn]
-  }
 
   statement {
     sid    = "UseToolchainReleaseCandidatePipelineArtifacts"
@@ -94,6 +88,24 @@ data "aws_iam_policy_document" "foundation_toolchain_release_candidate_build" {
     resources = [local.foundation_toolchain_candidate_records_objects_arn]
   }
 
+  statement {
+    sid       = "ObserveToolchainPromotionPredecessor"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = [local.foundation_toolchain_promotion_object_arn]
+  }
+  statement {
+    sid       = "ObserveInitialToolchainPromotionAbsence"
+    effect    = "Allow"
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.foundation_release_manifest_bucket_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:prefix"
+      values   = ["promotions/toolchain/current.json"]
+    }
+  }
+
 }
 
 resource "aws_iam_role_policy" "foundation_toolchain_release_candidate_build" {
@@ -107,12 +119,6 @@ resource "aws_iam_role_policy" "foundation_toolchain_release_candidate_build" {
 data "aws_iam_policy_document" "foundation_toolchain_release_update_accepted_pointer_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  statement {
-    sid       = "ReadExactToolchainPointerProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [aws_codebuild_project.toolchain_release_update_accepted_pointer[0].arn]
-  }
 
   statement {
     sid    = "UseToolchainReleaseAcceptedPointerArtifacts"
@@ -168,16 +174,10 @@ data "aws_iam_policy_document" "foundation_toolchain_release_update_accepted_poi
     ]
     resources = [
       local.foundation_toolchain_candidate_records_objects_arn,
-      local.foundation_toolchain_release_records_objects_arn,
     ]
   }
 
-  statement {
-    sid       = "PublishToolchainReleaseLedgerRecords"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
-    resources = [local.foundation_toolchain_release_records_objects_arn]
-  }
+
 
   statement {
     sid    = "PromoteAcceptedToolchainPointer"
@@ -188,22 +188,17 @@ data "aws_iam_policy_document" "foundation_toolchain_release_update_accepted_poi
       "s3:GetObjectVersion",
       "s3:PutObject",
     ]
-    resources = [local.foundation_toolchain_accepted_pointer_object_arn]
+    resources = [local.foundation_toolchain_promotion_object_arn]
   }
+
 
   statement {
-    sid    = "ListToolchainAcceptedPointerAuthority"
-    effect = "Allow"
-
-    actions   = ["s3:ListBucket"]
-    resources = [local.foundation_release_manifest_bucket_arn]
-
-    condition {
-      test     = "StringEqualsIfExists"
-      variable = "s3:prefix"
-      values   = [local.deployment_shared_names.toolchainAcceptedPointerKey]
-    }
+    sid       = "RevalidateToolchainPromotionImage"
+    effect    = "Allow"
+    actions   = ["ecr:DescribeImages", "ecr:DescribeImageScanFindings"]
+    resources = [local.foundation_risc0_toolchain_ecr_repository_arn]
   }
+
 }
 
 resource "aws_iam_role_policy" "foundation_toolchain_release_update_accepted_pointer_build" {

@@ -190,6 +190,57 @@ function targetStatus(kind: FinalizationTransitionCommand['kind']): Finalization
   }
 }
 
+const EXPECTED_OUTCOMES = {
+  none: {
+    queue: 'applied',
+    start: 'applied',
+    succeed: 'applied',
+    fail: 'applied',
+    time_out: 'applied',
+    cancel: 'rejected',
+  },
+  pending: {
+    queue: 'idempotent',
+    start: 'applied',
+    succeed: 'applied',
+    fail: 'applied',
+    time_out: 'applied',
+    cancel: 'applied',
+  },
+  running: {
+    queue: 'applied',
+    start: 'idempotent',
+    succeed: 'applied',
+    fail: 'applied',
+    time_out: 'applied',
+    cancel: 'applied',
+  },
+  succeeded: {
+    queue: 'rejected',
+    start: 'rejected',
+    succeed: 'idempotent',
+    fail: 'rejected',
+    time_out: 'rejected',
+    cancel: 'rejected',
+  },
+  failed: {
+    queue: 'rejected',
+    start: 'rejected',
+    succeed: 'rejected',
+    fail: 'idempotent',
+    time_out: 'rejected',
+    cancel: 'rejected',
+  },
+  timeout: {
+    queue: 'rejected',
+    start: 'rejected',
+    succeed: 'rejected',
+    fail: 'rejected',
+    time_out: 'idempotent',
+    cancel: 'rejected',
+  },
+} satisfies Record<(typeof STATES)[number][0], Record<FinalizationCommandKind, 'applied' | 'idempotent' | 'rejected'>>;
+
 describe('evaluateFinalizationTransition state/command table', () => {
   it.each(
     STATES.flatMap(([stateName, state]) =>
@@ -199,26 +250,14 @@ describe('evaluateFinalizationTransition state/command table', () => {
         commandKind,
       })),
     ),
-  )('$stateName + $commandKind preserves the characterized transition policy', ({ state, commandKind }) => {
+  )('$stateName + $commandKind preserves the characterized transition policy', ({ stateName, state, commandKind }) => {
     const outcome = evaluateFinalizationTransition({
       authority: createAuthority(state),
       command: createCommand(commandKind),
       evaluatedAtMs: EVALUATED_AT_MS,
     });
 
-    if (commandKind === 'cancel') {
-      expect(outcome.kind).toBe(state?.status === 'pending' || state?.status === 'running' ? 'applied' : 'rejected');
-      return;
-    }
-    if (state?.status === 'succeeded' || state?.status === 'failed' || state?.status === 'timeout') {
-      expect(outcome.kind).toBe(state.status === targetStatus(commandKind) ? 'idempotent' : 'rejected');
-      return;
-    }
-    if (state?.status === targetStatus(commandKind)) {
-      expect(outcome.kind).toBe('idempotent');
-      return;
-    }
-    expect(outcome.kind).toBe('applied');
+    expect(outcome.kind).toBe(EXPECTED_OUTCOMES[stateName][commandKind]);
     if (outcome.kind === 'applied') {
       expect(outcome.state.status).toBe(targetStatus(commandKind));
     }

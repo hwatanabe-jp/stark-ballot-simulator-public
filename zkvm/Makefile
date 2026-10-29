@@ -3,8 +3,6 @@
 
 .PHONY: help build build-release test test-dev test-prod clean verify-fixture fmt lint check all
 
-# Default ImageID for local x86_64 testing (override on ARM64 / AWS)
-EXPECTED_IMAGE_ID ?= 0x090ad73dbc6d3504b947ab5d41e7327f10d8bbcd649df141c47cfa1bb1610db6
 FIXTURE_VALID ?= test-data/test-fixture-valid.json
 FIXTURE_TAMPERED ?= test-data/test-fixture-tampered.json
 
@@ -25,7 +23,6 @@ help:
 	@echo "  make all              - Build, test, and verify"
 	@echo ""
 	@echo "Environment variables:"
-	@echo "  EXPECTED_IMAGE_ID     - ImageID for verification (default: 0x090a...10db6)"
 	@echo "  RISC0_DEV_MODE        - Set to 1 for dev mode (fake proofs)"
 
 build:

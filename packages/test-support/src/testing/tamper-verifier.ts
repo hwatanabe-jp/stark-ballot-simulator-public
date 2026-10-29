@@ -45,37 +45,14 @@ export class TamperVerifier {
       ? (metrics.claimedTallyMismatchSource ?? 'unknown')
       : 'none';
 
-    const reasons: string[] = [];
-    let severity: TamperSeverity = 'none';
-    const summaryParts: string[] = [];
-
-    if (missingSlots > 0) {
-      reasons.push('missingSlots');
-      severity = 'critical';
-      summaryParts.push(`${missingSlots} slots were never presented to the zkVM`);
-    }
-
-    if (invalidPresentedSlots > 0) {
-      reasons.push('invalidPresentedSlots');
-      if (severity === 'none') {
-        severity = 'warning';
-      }
-      summaryParts.push(`${invalidPresentedSlots} presented slots failed zkVM validation`);
-    }
-
-    if (excludedSlots > 0 && missingSlots === 0 && invalidPresentedSlots === 0) {
-      reasons.push('excludedSlots');
-      severity = 'critical';
-      summaryParts.push(`${excludedSlots} excluded slots were reported by the zkVM`);
-    }
-
-    if (claimedTallyMismatch) {
-      reasons.push('claimedTallyMismatch');
-      if (severity === 'none') {
-        severity = 'warning';
-      }
-      summaryParts.push('Published tally disagrees with the verified tally');
-    }
+    const indicators = tamperIndicators(missingSlots, invalidPresentedSlots, excludedSlots, claimedTallyMismatch);
+    const reasons = indicators.map((indicator) => indicator.reason);
+    const summaryParts = indicators.map((indicator) => indicator.summary);
+    const severity: TamperSeverity = indicators.some((indicator) => indicator.severity === 'critical')
+      ? 'critical'
+      : indicators.length > 0
+        ? 'warning'
+        : 'none';
 
     const tamperDetected = reasons.length > 0;
     const completenessRatio = this.computeCompletenessRatio(metrics.totalExpected, validVotes);
@@ -108,45 +85,11 @@ export class TamperVerifier {
       };
     }
 
-    const { missingSlots, invalidPresentedSlots, claimedTallyMismatch, claimedTallyMismatchSource } = assessment;
-
-    if (claimedTallyMismatch && missingSlots === 0 && invalidPresentedSlots === 0) {
-      if (claimedTallyMismatchSource === 'user') {
-        return {
-          likelyScenario: 'S2',
-          confidence: 0.8,
-          summary: 'Claimed tally mismatch affects the user vote - likely claimed-tally tampering.',
-        };
-      }
-
-      if (claimedTallyMismatchSource === 'bot') {
-        return {
-          likelyScenario: 'S4',
-          confidence: 0.75,
-          summary: 'Claimed tally mismatch affects a bot vote - likely claimed-tally tampering.',
-        };
-      }
-    }
-
-    if (missingSlots > 0 && invalidPresentedSlots === 0 && !claimedTallyMismatch) {
-      const likelyScenario = missingSlots === 1 ? 'S1' : 'S3';
-      const confidence = missingSlots === 1 ? 0.75 : 0.65;
-      return {
-        likelyScenario,
-        confidence,
-        summary: `${missingSlots} missing slot${missingSlots === 1 ? '' : 's'} detected - likely vote omission tampering.`,
-      };
-    }
-
-    if (invalidPresentedSlots > 0 && missingSlots === 0 && !claimedTallyMismatch) {
-      return {
-        likelyScenario: 'S5',
-        confidence: 0.55,
-        summary: `${invalidPresentedSlots} invalid presented slot${
-          invalidPresentedSlots === 1 ? '' : 's'
-        } detected - likely validation or random-error tampering.`,
-      };
-    }
+    const claimedTally = classifyClaimedTally(assessment);
+    if (claimedTally) return claimedTally;
+    if (hasOnlyMissingSlots(assessment)) return classifyMissingSlots(assessment.missingSlots);
+    if (hasOnlyInvalidPresentedSlots(assessment))
+      return classifyInvalidPresentedSlots(assessment.invalidPresentedSlots);
 
     // Mixed tampering or high-volume manipulation
     return {
@@ -194,4 +137,97 @@ export class TamperVerifier {
 
     return Math.max(0, Math.min(1, counted / totalExpected));
   }
+}
+
+interface TamperIndicator {
+  present: boolean;
+  reason: string;
+  severity: 'critical' | 'warning';
+  summary: string;
+}
+
+function tamperIndicators(
+  missingSlots: number,
+  invalidPresentedSlots: number,
+  excludedSlots: number,
+  claimedTallyMismatch: boolean,
+): TamperIndicator[] {
+  const indicators: TamperIndicator[] = [
+    {
+      present: missingSlots > 0,
+      reason: 'missingSlots',
+      severity: 'critical',
+      summary: `${missingSlots} slots were never presented to the zkVM`,
+    },
+    {
+      present: invalidPresentedSlots > 0,
+      reason: 'invalidPresentedSlots',
+      severity: 'warning',
+      summary: `${invalidPresentedSlots} presented slots failed zkVM validation`,
+    },
+    {
+      present: excludedSlots > 0 && missingSlots === 0 && invalidPresentedSlots === 0,
+      reason: 'excludedSlots',
+      severity: 'critical',
+      summary: `${excludedSlots} excluded slots were reported by the zkVM`,
+    },
+    {
+      present: claimedTallyMismatch,
+      reason: 'claimedTallyMismatch',
+      severity: 'warning',
+      summary: 'Published tally disagrees with the verified tally',
+    },
+  ];
+  return indicators.filter((indicator) => indicator.present);
+}
+
+function classifyClaimedTally(assessment: TamperAssessment): TamperClassification | undefined {
+  const { missingSlots, invalidPresentedSlots, claimedTallyMismatch, claimedTallyMismatchSource } = assessment;
+  if (claimedTallyMismatch && missingSlots === 0 && invalidPresentedSlots === 0) {
+    if (claimedTallyMismatchSource === 'user') {
+      return {
+        likelyScenario: 'S2',
+        confidence: 0.8,
+        summary: 'Claimed tally mismatch affects the user vote - likely claimed-tally tampering.',
+      };
+    }
+
+    if (claimedTallyMismatchSource === 'bot') {
+      return {
+        likelyScenario: 'S4',
+        confidence: 0.75,
+        summary: 'Claimed tally mismatch affects a bot vote - likely claimed-tally tampering.',
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function hasOnlyMissingSlots(assessment: TamperAssessment): boolean {
+  return assessment.missingSlots > 0 && assessment.invalidPresentedSlots === 0 && !assessment.claimedTallyMismatch;
+}
+
+function hasOnlyInvalidPresentedSlots(assessment: TamperAssessment): boolean {
+  return assessment.invalidPresentedSlots > 0 && assessment.missingSlots === 0 && !assessment.claimedTallyMismatch;
+}
+
+function classifyMissingSlots(missingSlots: number): TamperClassification {
+  const likelyScenario = missingSlots === 1 ? 'S1' : 'S3';
+  const confidence = missingSlots === 1 ? 0.75 : 0.65;
+  return {
+    likelyScenario,
+    confidence,
+    summary: `${missingSlots} missing slot${missingSlots === 1 ? '' : 's'} detected - likely vote omission tampering.`,
+  };
+}
+
+function classifyInvalidPresentedSlots(invalidPresentedSlots: number): TamperClassification {
+  return {
+    likelyScenario: 'S5',
+    confidence: 0.55,
+    summary: `${invalidPresentedSlots} invalid presented slot${
+      invalidPresentedSlots === 1 ? '' : 's'
+    } detected - likely validation or random-error tampering.`,
+  };
 }

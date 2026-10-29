@@ -1,5 +1,5 @@
 import { expect, type Page, type Locator } from '@playwright/test';
-import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { BasePage } from './BasePage';
 import { PLAYWRIGHT_RUNTIME_PROFILE } from '../runtime-profile';
 
@@ -70,7 +70,7 @@ export class AggregatePage extends BasePage {
       let errorCode: string | undefined;
       try {
         const errorPayload: unknown = JSON.parse(body);
-        errorCode = getStringProperty(getRecordProperty(errorPayload, 'error'), 'code');
+        errorCode = getStringProperty(getObjectProperty(errorPayload, 'error'), 'code');
       } catch {
         // The status and raw body below still make this a hard failure.
       }

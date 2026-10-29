@@ -1,3 +1,14 @@
+locals {
+  # Retired execution projects keep their original Terraform-owned log history.
+  app_codebuild_log_group_project_names = concat(local.app_codebuild_project_names, [
+    local.deployment_shared_names.appExecutionAuthorityProject,
+    ], local.deployment_target.environmentId == "main" ? [
+    local.deployment_shared_names.retainedAppSignaturePreflightApplyProject,
+    local.deployment_shared_names.retainedAppSignaturePreflightPlanProject,
+    local.deployment_shared_names.retainedAppSignaturePreflightVerifyProject,
+  ] : [])
+}
+
 module "bootstrap_pipeline_codebuild_log_groups" {
   source = "../../framework/terraform/modules/codebuild-log-groups"
 
@@ -9,13 +20,8 @@ module "bootstrap_pipeline_codebuild_log_groups" {
 module "app_pipeline_codebuild_log_groups" {
   source = "../../framework/terraform/modules/codebuild-log-groups"
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
-  ]
 
-  project_names     = local.app_pipeline_enabled ? toset(local.app_codebuild_project_names) : toset([])
+  project_names     = local.app_pipeline_enabled ? toset(local.app_codebuild_log_group_project_names) : toset([])
   retention_in_days = local.storage_retention.app_codebuild_log_days
   tags = merge(local.common_tags, {
     StateScope = "app"
@@ -25,7 +31,6 @@ module "app_pipeline_codebuild_log_groups" {
 module "terraform_drift_codebuild_log_groups" {
   source = "../../framework/terraform/modules/codebuild-log-groups"
 
-  depends_on = [terraform_data.terraform_baseline_authority_storage_authorization_propagation]
 
   project_names     = local.terraform_drift_enabled ? toset(local.terraform_drift_all_project_names) : toset([])
   retention_in_days = local.storage_retention.terraform_drift_codebuild_log_days

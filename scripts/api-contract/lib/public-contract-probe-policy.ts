@@ -23,6 +23,11 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
     probeIds: ['readonly.sessions-post.not-mounted', 'lambda.finalization-callback.not-mounted'],
   },
   {
+    caseId: 'head-rejected-before-get',
+    status: 'probed',
+    probeIds: ['lambda.current-finalization.head.not-supported'],
+  },
+  {
     caseId: 'cors-preflight-exposed-range-headers',
     status: 'probed',
     probeIds: ['lambda.bundle.cors-preflight.range-header'],
@@ -150,6 +155,24 @@ const MOUNTED_BEHAVIOR_COVERAGE: MountedBehaviorCoverageEntry[] = [
   },
 ];
 
+function validateMountedBehaviorCoverageEntry(
+  entry: MountedBehaviorCoverageEntry,
+  probeIds: ReadonlySet<string>,
+): void {
+  if (entry.status === 'probed') {
+    if (!entry.probeIds || entry.probeIds.length === 0) {
+      throw new Error(`Mounted behavior coverage case ${entry.caseId} has no probe IDs`);
+    }
+    for (const probeId of entry.probeIds) {
+      if (!probeIds.has(probeId)) {
+        throw new Error(`Mounted behavior coverage case ${entry.caseId} references missing probe ${probeId}`);
+      }
+    }
+  } else if (!entry.exemption || entry.exemption.trim().length === 0) {
+    throw new Error(`Mounted behavior coverage case ${entry.caseId} has no exemption`);
+  }
+}
+
 export function validateMountedBehaviorCoverage(
   probes: readonly MountedBehaviorProbeSnapshot[],
 ): MountedBehaviorCoverageEntry[] {
@@ -160,18 +183,7 @@ export function validateMountedBehaviorCoverage(
       throw new Error(`Duplicate mounted behavior coverage case: ${entry.caseId}`);
     }
     caseIds.add(entry.caseId);
-    if (entry.status === 'probed') {
-      if (!entry.probeIds || entry.probeIds.length === 0) {
-        throw new Error(`Mounted behavior coverage case ${entry.caseId} has no probe IDs`);
-      }
-      for (const probeId of entry.probeIds) {
-        if (!probeIds.has(probeId)) {
-          throw new Error(`Mounted behavior coverage case ${entry.caseId} references missing probe ${probeId}`);
-        }
-      }
-    } else if (!entry.exemption || entry.exemption.trim().length === 0) {
-      throw new Error(`Mounted behavior coverage case ${entry.caseId} has no exemption`);
-    }
+    validateMountedBehaviorCoverageEntry(entry, probeIds);
   }
   return [...MOUNTED_BEHAVIOR_COVERAGE].sort((left, right) => left.caseId.localeCompare(right.caseId));
 }
@@ -400,6 +412,12 @@ export function buildMountedBehaviorProbes(options: {
       },
     },
     {
+      probeId: 'lambda.current-finalization.head.not-supported',
+      mode: 'lambda',
+      method: 'HEAD',
+      url: `http://localhost/api/sessions/${sessionId}/finalizations/current`,
+    },
+    {
       probeId: 'lambda.bundle.missing-capability.error-envelope',
       mode: 'lambda',
       method: 'GET',
@@ -527,14 +545,27 @@ export function deterministicProbeRequestId(probeId: string): string {
   return `public-contract-baseline:${probeId}`;
 }
 
-export function buildMountedBehaviorProbeSnapshot(options: {
-  probe: MountedBehaviorProbe;
-  status: number;
-  headers: Headers;
-  bytes: Uint8Array;
-  expectedRequestId: string;
-}): MountedBehaviorProbeSnapshot {
-  const { probe, status, headers, bytes, expectedRequestId } = options;
+function readProbeJsonError(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const code = (value as Record<string, unknown>)['code'];
+    if (typeof code === 'string') return code;
+  }
+  return undefined;
+}
+
+function readProbeJsonRequestId(value: unknown): string | undefined {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const requestId = (value as Record<string, unknown>)['requestId'];
+    if (typeof requestId === 'string') return requestId;
+  }
+  return undefined;
+}
+
+function readProbeJsonEvidence(
+  headers: Headers,
+  bytes: Uint8Array,
+): { jsonError: string | undefined; jsonKeys: string[] | undefined; jsonRequestId: string | undefined } {
   const contentType = headers.get('content-type') ?? '';
   let jsonError: string | undefined;
   let jsonKeys: string[] | undefined;
@@ -545,25 +576,26 @@ export function buildMountedBehaviorProbeSnapshot(options: {
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const record = parsed as Record<string, unknown>;
         jsonKeys = Object.keys(record).sort();
-        if (typeof record['error'] === 'string') {
-          jsonError = record['error'];
-        } else if (record['error'] && typeof record['error'] === 'object' && !Array.isArray(record['error'])) {
-          const code = (record['error'] as Record<string, unknown>)['code'];
-          if (typeof code === 'string') {
-            jsonError = code;
-          }
-        }
-        if (record['meta'] && typeof record['meta'] === 'object' && !Array.isArray(record['meta'])) {
-          const requestId = (record['meta'] as Record<string, unknown>)['requestId'];
-          if (typeof requestId === 'string') {
-            jsonRequestId = requestId;
-          }
-        }
+        jsonError = readProbeJsonError(record['error']);
+        jsonRequestId = readProbeJsonRequestId(record['meta']);
       }
     } catch {
       jsonKeys = ['<invalid-json>'];
     }
   }
+
+  return { jsonError, jsonKeys, jsonRequestId };
+}
+
+export function buildMountedBehaviorProbeSnapshot(options: {
+  probe: MountedBehaviorProbe;
+  status: number;
+  headers: Headers;
+  bytes: Uint8Array;
+  expectedRequestId: string;
+}): MountedBehaviorProbeSnapshot {
+  const { probe, status, headers, bytes, expectedRequestId } = options;
+  const { jsonError, jsonKeys, jsonRequestId } = readProbeJsonEvidence(headers, bytes);
 
   const responseRequestId = headers.get('x-request-id');
   if (responseRequestId !== expectedRequestId) {

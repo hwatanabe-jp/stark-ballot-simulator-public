@@ -1,18 +1,12 @@
 locals {
-  expected_state_backend_key = local.bootstrap_lane_authority.backendKey
-  state_backend_prefix       = trimsuffix(local.bootstrap_lane_authority.backendKey, "terraform.tfstate")
-  state_lockfile_key         = "${local.bootstrap_lane_authority.backendKey}.tflock"
-  app_state_backend_key      = local.app_lane_authority.backendKey
-  app_state_backend_prefix   = trimsuffix(local.app_lane_authority.backendKey, "terraform.tfstate")
-  app_state_lockfile_key     = "${local.app_state_backend_key}.tflock"
-  pipeline_role_arns = var.enable_development_pipeline ? [
-    aws_iam_role.terraform_plan[0].arn,
-    aws_iam_role.terraform_apply[0].arn,
-    aws_iam_role.terraform_smoke[0].arn,
-  ] : []
-  pipeline_state_write_role_arns = var.enable_development_pipeline ? [
-    aws_iam_role.terraform_apply[0].arn,
-  ] : []
+  expected_state_backend_key     = local.bootstrap_lane_authority.backendKey
+  state_backend_prefix           = trimsuffix(local.bootstrap_lane_authority.backendKey, "terraform.tfstate")
+  state_lockfile_key             = "${local.bootstrap_lane_authority.backendKey}.tflock"
+  app_state_backend_key          = local.app_lane_authority.backendKey
+  app_state_backend_prefix       = trimsuffix(local.app_lane_authority.backendKey, "terraform.tfstate")
+  app_state_lockfile_key         = "${local.app_state_backend_key}.tflock"
+  pipeline_role_arns             = []
+  pipeline_state_write_role_arns = []
   app_pipeline_role_arns = var.enable_development_app_pipeline ? [
     aws_iam_role.app_terraform_plan[0].arn,
     aws_iam_role.app_terraform_apply[0].arn,
@@ -143,7 +137,7 @@ data "aws_iam_policy_document" "state_kms_key" {
 }
 
 resource "aws_kms_key" "state" {
-  depends_on = [terraform_data.bootstrap_apply_authorization_propagation]
+
 
   description             = "STARK Ballot Simulator Terraform state key for ${var.account_alias}/${var.deployment_environment}/${var.state_scope}"
   deletion_window_in_days = 30
@@ -200,7 +194,8 @@ resource "aws_s3_bucket_versioning" "state" {
 
 resource "aws_s3_bucket_lifecycle_configuration" "state" {
   depends_on = [
-    aws_iam_policy.terraform_apply_artifact_management,
+
+
     aws_s3_bucket_versioning.state,
   ]
 

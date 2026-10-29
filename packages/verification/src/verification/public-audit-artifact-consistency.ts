@@ -97,7 +97,15 @@ function resolveConsistentPublicInputArtifact(
     };
   }
 
-  const typedAuthority = artifact.typedAuthority;
+  const issues = comparePublicInputAuthority(artifact.typedAuthority, journal);
+
+  return admitConsistentArtifact(artifact, issues);
+}
+
+function comparePublicInputAuthority(
+  typedAuthority: SupportedPublicInputArtifact['typedAuthority'],
+  journal: ZkVMJournal,
+): PublicAuditArtifactConsistencyIssue[] {
   const issues: PublicAuditArtifactConsistencyIssue[] = [];
   if (typedAuthority.electionId !== journal.electionId) {
     issues.push({ artifact: 'publicInputArtifact', reason: 'election_id_mismatch' });
@@ -124,7 +132,7 @@ function resolveConsistentPublicInputArtifact(
     issues.push({ artifact: 'publicInputArtifact', reason: 'method_version_mismatch' });
   }
 
-  return issues.length > 0 ? { value: undefined, issues } : { value: artifact, issues: [] };
+  return issues;
 }
 
 function resolveConsistentElectionManifest(
@@ -140,6 +148,19 @@ function resolveConsistentElectionManifest(
   }
 
   const recomputedHash = recomputeElectionManifestHash(manifest);
+  const issues = [
+    ...collectManifestIdentityIssues(manifest, journal, publicInputArtifact),
+    ...collectManifestHashIssues(manifest, journal, publicInputArtifact, recomputedHash),
+  ];
+
+  return admitConsistentArtifact(manifest, issues);
+}
+
+function collectManifestIdentityIssues(
+  manifest: ElectionManifest,
+  journal: ZkVMJournal,
+  publicInputArtifact: SupportedPublicInputArtifact | undefined,
+): PublicAuditArtifactConsistencyIssue[] {
   const issues: PublicAuditArtifactConsistencyIssue[] = [];
 
   if (manifest.electionId !== journal.electionId) {
@@ -154,6 +175,17 @@ function resolveConsistentElectionManifest(
   if (publicInputArtifact && manifest.totalExpected !== publicInputArtifact.typedAuthority.totalExpected) {
     issues.push({ artifact: 'electionManifest', reason: 'public_input_total_expected_mismatch' });
   }
+
+  return issues;
+}
+
+function collectManifestHashIssues(
+  manifest: ElectionManifest,
+  journal: ZkVMJournal,
+  publicInputArtifact: SupportedPublicInputArtifact | undefined,
+  recomputedHash: string,
+): PublicAuditArtifactConsistencyIssue[] {
+  const issues: PublicAuditArtifactConsistencyIssue[] = [];
   if (!matchesHex(manifest.electionConfigHash, recomputedHash)) {
     issues.push({ artifact: 'electionManifest', reason: 'self_hash_mismatch' });
   }
@@ -167,7 +199,7 @@ function resolveConsistentElectionManifest(
     issues.push({ artifact: 'electionManifest', reason: 'public_input_hash_mismatch' });
   }
 
-  return issues.length > 0 ? { value: undefined, issues } : { value: manifest, issues: [] };
+  return issues;
 }
 
 function resolveConsistentCloseStatement(
@@ -191,6 +223,25 @@ function resolveConsistentCloseStatement(
     issues.push({ artifact: 'closeStatement', reason: 'bulletin_root_mismatch' });
   }
 
+  appendCloseStatementDigestIssues(closeStatement, journal, issues);
+  if (!matchesHex(closeStatement.sthDigest, journal.sthDigest)) {
+    issues.push({ artifact: 'closeStatement', reason: 'journal_sth_digest_mismatch' });
+  }
+  if (publicInputArtifact && !matchesHex(closeStatement.logId, publicInputArtifact.typedAuthority.logId)) {
+    issues.push({ artifact: 'closeStatement', reason: 'log_id_mismatch' });
+  }
+  if (publicInputArtifact && closeStatement.timestamp !== publicInputArtifact.typedAuthority.timestamp) {
+    issues.push({ artifact: 'closeStatement', reason: 'timestamp_mismatch' });
+  }
+
+  return admitConsistentArtifact(closeStatement, issues);
+}
+
+function appendCloseStatementDigestIssues(
+  closeStatement: CloseStatement,
+  journal: ZkVMJournal,
+  issues: PublicAuditArtifactConsistencyIssue[],
+): void {
   try {
     const recomputed = buildCloseStatement({
       logId: closeStatement.logId,
@@ -204,23 +255,23 @@ function resolveConsistentCloseStatement(
   } catch {
     issues.push({ artifact: 'closeStatement', reason: 'invalid_digest_inputs' });
   }
-  if (!matchesHex(closeStatement.sthDigest, journal.sthDigest)) {
-    issues.push({ artifact: 'closeStatement', reason: 'journal_sth_digest_mismatch' });
-  }
-  if (publicInputArtifact && !matchesHex(closeStatement.logId, publicInputArtifact.typedAuthority.logId)) {
-    issues.push({ artifact: 'closeStatement', reason: 'log_id_mismatch' });
-  }
-  if (publicInputArtifact && closeStatement.timestamp !== publicInputArtifact.typedAuthority.timestamp) {
-    issues.push({ artifact: 'closeStatement', reason: 'timestamp_mismatch' });
-  }
+}
 
-  return issues.length > 0 ? { value: undefined, issues } : { value: closeStatement, issues: [] };
+function admitConsistentArtifact<T>(
+  value: T,
+  issues: PublicAuditArtifactConsistencyIssue[],
+): { value: T | undefined; issues: PublicAuditArtifactConsistencyIssue[] } {
+  return issues.length > 0 ? { value: undefined, issues } : { value, issues: [] };
 }
 
 function matchesHex(left: string | undefined, right: string | undefined): boolean {
   return (
     typeof left === 'string' && typeof right === 'string' && normalizeHexString(left) === normalizeHexString(right)
   );
+}
+
+function matchesGeneratedProvenance(actual: string | undefined, expected: string | undefined): boolean {
+  return expected ? actual === expected : actual === undefined;
 }
 
 function hasAuthoritativePublicInputContext(
@@ -232,33 +283,14 @@ function hasAuthoritativePublicInputContext(
   },
 ): boolean {
   if (authority.hasLocalPublicInputAuthority) {
-    if (authority.finalizationId && provenance.finalizationId !== authority.finalizationId) {
-      return false;
-    }
-    if (authority.bundleKey && provenance.bundleKey !== authority.bundleKey) {
-      return false;
-    }
-    return true;
+    return matchesLocalPublicInputContext(provenance, authority);
   }
 
   if (provenance.source === 'generated') {
-    if (authority.finalizationId) {
-      if (provenance.finalizationId !== authority.finalizationId) {
-        return false;
-      }
-    } else if (provenance.finalizationId !== undefined) {
-      return false;
-    }
-
-    if (authority.bundleKey) {
-      if (provenance.bundleKey !== authority.bundleKey) {
-        return false;
-      }
-    } else if (provenance.bundleKey !== undefined) {
-      return false;
-    }
-
-    return true;
+    return (
+      matchesGeneratedProvenance(provenance.finalizationId, authority.finalizationId) &&
+      matchesGeneratedProvenance(provenance.bundleKey, authority.bundleKey)
+    );
   }
 
   if (!authority.bundleKey || !provenance.bundleKey || provenance.bundleKey !== authority.bundleKey) {
@@ -270,4 +302,17 @@ function hasAuthoritativePublicInputContext(
   }
 
   return provenance.finalizationId === authority.finalizationId;
+}
+
+function matchesLocalPublicInputContext(
+  provenance: SupportedPublicInputArtifact['provenance'],
+  authority: Parameters<typeof hasAuthoritativePublicInputContext>[1],
+): boolean {
+  if (authority.finalizationId && provenance.finalizationId !== authority.finalizationId) {
+    return false;
+  }
+  if (authority.bundleKey && provenance.bundleKey !== authority.bundleKey) {
+    return false;
+  }
+  return true;
 }

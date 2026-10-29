@@ -21,20 +21,19 @@ import { AppLink } from '@stark-ballot/web/navigation/appNavigation';
  */
 
 export interface LegalPageLayoutProps {
-  /** ページタイトル */
-  title: string;
-  /** 施行日（YYYY-MM-DD 形式） */
-  effectiveDate: string;
-  /** 施行日ラベル（例: "施行日", "Effective Date"） */
-  effectiveDateLabel: string;
+  /** Localized document heading and introduction. */
+  document: {
+    title: string;
+    effectiveDate: string;
+    effectiveDateLabel: string;
+    intro: string;
+  };
   /** ページコンテンツ */
   children: ReactNode;
 }
 
 export function LegalPageLayout({
-  title,
-  effectiveDate,
-  effectiveDateLabel,
+  document: { title, effectiveDate, effectiveDateLabel, intro },
   children,
 }: LegalPageLayoutProps): React.ReactElement {
   const { language } = useLanguageOptional();
@@ -70,7 +69,10 @@ export function LegalPageLayout({
         </header>
 
         {/* コンテンツ */}
-        <div className="legal-content space-y-8 font-primary leading-relaxed text-text-secondary">{children}</div>
+        <div className="legal-content space-y-8 font-primary leading-relaxed text-text-secondary">
+          <p>{intro}</p>
+          {children}
+        </div>
 
         {/* ナビゲーション */}
         <nav className="mt-12 space-y-3 border-bs border-paper-border pbs-8">

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { generateVoteId, isValidVoteId } from './voteId';
+import { generateVoteId } from './voteId';
+import { isValidVoteId } from '@stark-ballot/validation/vote-id';
 
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

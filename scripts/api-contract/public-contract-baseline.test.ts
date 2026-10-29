@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { capturePublicContractSnapshot, resolveCurrentSourceMetadata } from './public-contract-baseline';
 import { resolveCaptureOutputPath } from './lib/public-contract-cli';
 import {
@@ -54,7 +54,13 @@ function expectedProbeRequestId(probeId: string): string {
 }
 
 const BASELINE_CAPTURED_AT = '2026-06-17T00:00:00.000Z';
-const baselineSnapshot = await capturePublicContractSnapshot();
+// A capture includes multiple isolated Node evaluations plus a source/schema scan.
+// Keep a larger outer budget than the bounded subprocesses, including cleanup.
+const CAPTURE_TIMEOUT_MS = 60_000;
+let baselineSnapshot: PublicContractSnapshot;
+beforeAll(async () => {
+  baselineSnapshot = await capturePublicContractSnapshot();
+}, CAPTURE_TIMEOUT_MS);
 const reviewedBaselineInput: unknown = JSON.parse(
   readFileSync(path.join(process.cwd(), 'scripts/api-contract/baselines/reviewed-public-contract.json'), 'utf8'),
 );
@@ -100,12 +106,12 @@ async function createSourceRefMountedBehaviorFixture(): Promise<{
   request: (
     input: string,
     init?: RequestInit,
-    env?: { requestContext?: { requestId?: string } },
+    env?: { requestContext?: { extendedRequestId?: string } },
   ) => Promise<Response>;
 } {
   return {
     request: async (_input, _init, env) => {
-      const requestId = env?.requestContext?.requestId ?? 'missing-source-ref-request-id';
+      const requestId = env?.requestContext?.extendedRequestId ?? 'missing-source-ref-request-id';
       return new Response(
         JSON.stringify({
           data: { sourceMarker: 'source-ref-mounted-workspace' },
@@ -124,6 +130,7 @@ async function createSourceRefMountedBehaviorFixture(): Promise<{
 }
 `,
   );
+  await writeSourceFile(repoRoot, 'apps/api/src/server/api/routes/honoBindings.ts', `export {};\n`);
   await writeSourceFile(repoRoot, 'apps/api/src/server/api/routes/definitions.ts', `export const SOURCE_REF = true;\n`);
   await writeSourceFile(
     repoRoot,
@@ -187,7 +194,7 @@ describe('public contract baseline comparator', () => {
     }
   });
 
-  it('captures route contracts, schema exports, and mounted route modes', () => {
+  it('captures route-bound request contracts', () => {
     const snapshot = cloneSnapshot(baselineSnapshot);
 
     expect(snapshot.comparatorType).toBe('public-contract-baseline');
@@ -319,6 +326,10 @@ describe('public contract baseline comparator', () => {
         routeId,
       ).toEqual(['body.turnstileToken']);
     }
+  });
+
+  it('captures schema exports, authority, and semantic fingerprints', () => {
+    const snapshot = cloneSnapshot(baselineSnapshot);
     expect(snapshot.schemaExports).toContain('StandardErrorResponseSchema');
     expect(snapshot.schemaExports).toContain('PathSessionCapabilityHeadersSchema');
     expect(strictDefined(snapshot.schemaFingerprints['StandardErrorResponseSchema'])).toMatch(/^[a-f0-9]{64}$/);
@@ -339,6 +350,10 @@ describe('public contract baseline comparator', () => {
         /^[a-f0-9]{64}$/,
       );
     }
+  });
+
+  it('captures mounted route modes and HTTP evidence', () => {
+    const snapshot = cloneSnapshot(baselineSnapshot);
     for (const mode of snapshot.mountedRoutes) {
       expect(
         mode.routes.some((route) => route.authScope === 'callback-authenticity'),
@@ -540,35 +555,51 @@ describe('public contract baseline comparator', () => {
     expect(resolveCaptureOutputPath({ sourceRef: 'HEAD', out: '/tmp/review.json' })).toBe('/tmp/review.json');
   });
 
-  it('captures identical mounted behavior for the same source tree', async () => {
-    const snapshot = await capturePublicContractSnapshot();
+  it(
+    'captures identical bundle bytes, ETags, and contract hashes under restrictive and ordinary umasks',
+    async () => {
+      const previousUmask = process.umask(0o077);
+      try {
+        for (const umask of [0o077, 0o022]) {
+          process.umask(umask);
+          const snapshot = await capturePublicContractSnapshot();
 
-    expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
-    expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
-  }, 15_000);
+          expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
+          expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
+        }
+      } finally {
+        process.umask(previousUmask);
+      }
+    },
+    CAPTURE_TIMEOUT_MS,
+  );
 
-  it('isolates mounted behavior from conflicting callback environment values', async () => {
-    const previousSecret = process.env['FINALIZE_CALLBACK_SECRET'];
-    const previousBodyLimit = process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'];
-    const previousSkew = process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'];
-    try {
-      process.env['FINALIZE_CALLBACK_SECRET'] = 'ambient-secret-that-must-not-affect-the-baseline';
-      process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'] = '1';
-      process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = '1';
-      const snapshot = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
+  it(
+    'isolates mounted behavior from conflicting callback environment values',
+    async () => {
+      const previousSecret = process.env['FINALIZE_CALLBACK_SECRET'];
+      const previousBodyLimit = process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'];
+      const previousSkew = process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'];
+      try {
+        process.env['FINALIZE_CALLBACK_SECRET'] = 'ambient-secret-that-must-not-affect-the-baseline';
+        process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'] = '1';
+        process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = '1';
+        const snapshot = await capturePublicContractSnapshot({ capturedAt: BASELINE_CAPTURED_AT });
 
-      expect(snapshot.capturedAt).toBe(BASELINE_CAPTURED_AT);
-      expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
-      expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
-    } finally {
-      if (previousSecret === undefined) delete process.env['FINALIZE_CALLBACK_SECRET'];
-      else process.env['FINALIZE_CALLBACK_SECRET'] = previousSecret;
-      if (previousBodyLimit === undefined) delete process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'];
-      else process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'] = previousBodyLimit;
-      if (previousSkew === undefined) delete process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'];
-      else process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = previousSkew;
-    }
-  }, 15_000);
+        expect(snapshot.capturedAt).toBe(BASELINE_CAPTURED_AT);
+        expect(snapshot.mountedBehavior).toEqual(baselineSnapshot.mountedBehavior);
+        expect(snapshot.contractHash).toBe(baselineSnapshot.contractHash);
+      } finally {
+        if (previousSecret === undefined) delete process.env['FINALIZE_CALLBACK_SECRET'];
+        else process.env['FINALIZE_CALLBACK_SECRET'] = previousSecret;
+        if (previousBodyLimit === undefined) delete process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'];
+        else process.env['FINALIZE_CALLBACK_BODY_LIMIT_BYTES'] = previousBodyLimit;
+        if (previousSkew === undefined) delete process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'];
+        else process.env['FINALIZE_CALLBACK_MAX_SKEW_MS'] = previousSkew;
+      }
+    },
+    CAPTURE_TIMEOUT_MS,
+  );
 
   it('fails unclassified drift', () => {
     const baseline = cloneSnapshot(baselineSnapshot);
@@ -662,35 +693,39 @@ describe('public contract baseline comparator', () => {
     );
   });
 
-  it('captures source-ref mounted behavior and workspace packages from the materialized source tree', async () => {
-    const fixture = await createSourceRefMountedBehaviorFixture();
-    try {
-      const snapshot = await capturePublicContractSnapshot({
-        sourceRef: fixture.sourceRef,
-        sourceRepoRoot: fixture.repoRoot,
-        capturedAt: '2026-06-17T00:00:00.000Z',
-      });
-      expect(snapshot.dirtyStatus).toBe('source-ref');
-      expect(snapshot.mountedBehavior).not.toEqual([]);
-      expect(snapshot.mountedBehavior.every((probe) => probe.status === 218)).toBe(true);
-      for (const probe of snapshot.mountedBehavior) {
-        const requestId = expectedProbeRequestId(probe.probeId);
-        const sourceRefBodyHash = createHash('sha256')
-          .update(
-            JSON.stringify({
-              data: { sourceMarker: 'source-ref-mounted-workspace' },
-              meta: { requestId },
-            }),
-          )
-          .digest('hex');
-        expect(probe.headers['x-request-id']).toBe(requestId);
-        expect(probe.body.jsonRequestId).toBe(requestId);
-        expect(probe.body.sha256).toBe(sourceRefBodyHash);
+  it(
+    'captures source-ref mounted behavior and workspace packages from the materialized source tree',
+    async () => {
+      const fixture = await createSourceRefMountedBehaviorFixture();
+      try {
+        const snapshot = await capturePublicContractSnapshot({
+          sourceRef: fixture.sourceRef,
+          sourceRepoRoot: fixture.repoRoot,
+          capturedAt: '2026-06-17T00:00:00.000Z',
+        });
+        expect(snapshot.dirtyStatus).toBe('source-ref');
+        expect(snapshot.mountedBehavior).not.toEqual([]);
+        expect(snapshot.mountedBehavior.every((probe) => probe.status === 218)).toBe(true);
+        for (const probe of snapshot.mountedBehavior) {
+          const requestId = expectedProbeRequestId(probe.probeId);
+          const sourceRefBodyHash = createHash('sha256')
+            .update(
+              JSON.stringify({
+                data: { sourceMarker: 'source-ref-mounted-workspace' },
+                meta: { requestId },
+              }),
+            )
+            .digest('hex');
+          expect(probe.headers['x-request-id']).toBe(requestId);
+          expect(probe.body.jsonRequestId).toBe(requestId);
+          expect(probe.body.sha256).toBe(sourceRefBodyHash);
+        }
+      } finally {
+        await fixture.cleanup();
       }
-    } finally {
-      await fixture.cleanup();
-    }
-  }, 15_000);
+    },
+    CAPTURE_TIMEOUT_MS,
+  );
 
   it('allows explicitly classified drift paths', () => {
     const baseline = cloneSnapshot(baselineSnapshot);

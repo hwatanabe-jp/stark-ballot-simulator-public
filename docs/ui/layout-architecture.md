@@ -78,7 +78,9 @@ storageへのアクセスが拒否される場合は、別タブで開く既存�
 
 [投票画面](../../apps/web/src/routes/vote/page.tsx) は最大420pxの選択欄を中央に配置する。
 [RadioGroup](../../apps/web/src/components/ui/RadioGroup.tsx) は実際のラジオボタンを表示し、
-既存ラベルと説明を関連付ける。初期状態は未選択で、選択後もページを強制スクロールしない。
+既存ラベルと説明を関連付ける。保存済みの投票 opening がない場合は未選択で始まり、
+opening がある場合は選択を復元し、同じ投票を再送するため選択変更を無効にする。
+選択後もページを強制スクロールしない。
 投票の送信・無効状態・CAPTCHA・セッション固定の条件は
 [VoteForm](../../apps/web/src/components/vote/VoteForm.tsx) が維持する。
 

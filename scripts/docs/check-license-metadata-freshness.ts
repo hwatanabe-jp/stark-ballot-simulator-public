@@ -147,8 +147,7 @@ function gitPathStatus(repoRoot: string, args: readonly string[]): number | null
   return result.status;
 }
 
-function auditLicenseArtifactManifest(repoRoot: string): string[] {
-  const findings: string[] = [];
+function inspectLicenseArtifactFiles(repoRoot: string, findings: string[]): Set<string> {
   const presentArtifacts = new Set<string>();
 
   for (const artifact of LICENSE_ARTIFACT_MANIFEST) {
@@ -161,6 +160,13 @@ function auditLicenseArtifactManifest(repoRoot: string): string[] {
       presentArtifacts.add(artifact.path);
     }
   }
+
+  return presentArtifacts;
+}
+
+function auditLicenseArtifactManifest(repoRoot: string): string[] {
+  const findings: string[] = [];
+  const presentArtifacts = inspectLicenseArtifactFiles(repoRoot, findings);
 
   if (!hasOwnGitWorktree(repoRoot)) {
     if (!existsSync(path.join(repoRoot, '.public-repository'))) {
@@ -203,20 +209,42 @@ function packageIdentity(name: string, version: string): string {
   return `${name}@${version}`;
 }
 
+function readCargoPackageField(
+  line: string,
+  location: string,
+  entry: { name: string | undefined; version: string | undefined },
+): void {
+  const field = /^(name|version)\s*=\s*(.+)$/.exec(line);
+  if (!field) {
+    return;
+  }
+  const value = parseTomlString(field[2] ?? '', location);
+  if (field[1] === 'name') {
+    if (entry.name !== undefined) {
+      throw new Error(`${location}: duplicate package name`);
+    }
+    entry.name = value;
+  } else {
+    if (entry.version !== undefined) {
+      throw new Error(`${location}: duplicate package version`);
+    }
+    entry.version = value;
+  }
+}
+
 function parseCargoLock(content: string, relativePath: string): Set<string> {
   const packages = new Set<string>();
   let inPackage = false;
-  let packageName: string | undefined;
-  let packageVersion: string | undefined;
+  const entry: { name: string | undefined; version: string | undefined } = { name: undefined, version: undefined };
 
   const finishPackage = (lineNumber: number): void => {
     if (!inPackage) {
       return;
     }
-    if (packageName === undefined || packageVersion === undefined) {
+    if (entry.name === undefined || entry.version === undefined) {
       throw new Error(`${relativePath}:${lineNumber}: package entry is missing name or version`);
     }
-    packages.add(packageIdentity(packageName, packageVersion));
+    packages.add(packageIdentity(entry.name, entry.version));
   };
 
   const lines = content.replaceAll('\r\n', '\n').split('\n');
@@ -224,30 +252,15 @@ function parseCargoLock(content: string, relativePath: string): Set<string> {
     if (line === '[[package]]') {
       finishPackage(index + 1);
       inPackage = true;
-      packageName = undefined;
-      packageVersion = undefined;
+      entry.name = undefined;
+      entry.version = undefined;
       continue;
     }
     if (!inPackage) {
       continue;
     }
 
-    const field = /^(name|version)\s*=\s*(.+)$/.exec(line);
-    if (!field) {
-      continue;
-    }
-    const value = parseTomlString(field[2] ?? '', `${relativePath}:${index + 1}`);
-    if (field[1] === 'name') {
-      if (packageName !== undefined) {
-        throw new Error(`${relativePath}:${index + 1}: duplicate package name`);
-      }
-      packageName = value;
-    } else {
-      if (packageVersion !== undefined) {
-        throw new Error(`${relativePath}:${index + 1}: duplicate package version`);
-      }
-      packageVersion = value;
-    }
+    readCargoPackageField(line, `${relativePath}:${index + 1}`, entry);
   }
   finishPackage(lines.length);
 
@@ -257,6 +270,18 @@ function parseCargoLock(content: string, relativePath: string): Set<string> {
   return packages;
 }
 
+function requirePackageName(
+  entry: unknown,
+  location: string,
+): asserts entry is Record<string, unknown> & { name: string } {
+  if (!isJsonObject(entry)) {
+    throw new Error(`${location} must be an object`);
+  }
+  if (typeof entry['name'] !== 'string' || entry['name'].length === 0) {
+    throw new Error(`${location}.name must be a non-empty string`);
+  }
+}
+
 function parseCargoMetadata(value: unknown, relativePath: string): CargoMetadataPackage[] {
   if (!isJsonObject(value) || !Array.isArray(value['packages'])) {
     throw new Error(`${relativePath}.packages must be an array`);
@@ -264,12 +289,7 @@ function parseCargoMetadata(value: unknown, relativePath: string): CargoMetadata
 
   return value['packages'].map((entry: unknown, index: number): CargoMetadataPackage => {
     const location = `${relativePath}.packages[${index}]`;
-    if (!isJsonObject(entry)) {
-      throw new Error(`${location} must be an object`);
-    }
-    if (typeof entry['name'] !== 'string' || entry['name'].length === 0) {
-      throw new Error(`${location}.name must be a non-empty string`);
-    }
+    requirePackageName(entry, location);
     if (typeof entry['version'] !== 'string' || entry['version'].length === 0) {
       throw new Error(`${location}.version must be a non-empty string`);
     }
@@ -288,12 +308,12 @@ function parseCsv(content: string, relativePath: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = '';
-  let state: 'unquoted' | 'quoted' | 'after-quote' = 'unquoted';
+  const cursor: { state: 'unquoted' | 'quoted' | 'after-quote' } = { state: 'unquoted' };
 
   const finishField = (): void => {
     row.push(field);
     field = '';
-    state = 'unquoted';
+    cursor.state = 'unquoted';
   };
   const finishRow = (): void => {
     finishField();
@@ -301,35 +321,34 @@ function parseCsv(content: string, relativePath: string): string[][] {
     row = [];
   };
 
-  for (let index = 0; index < content.length; index += 1) {
+  const consumeQuotedCharacter = (index: number): number => {
     const character = content[index] ?? '';
-    if (state === 'quoted') {
-      if (character === '"') {
-        if (content[index + 1] === '"') {
-          field += '"';
-          index += 1;
-        } else {
-          state = 'after-quote';
-        }
+    if (character === '"') {
+      if (content[index + 1] === '"') {
+        field += '"';
+        index += 1;
       } else {
-        field += character;
+        cursor.state = 'after-quote';
       }
-      continue;
+    } else {
+      field += character;
     }
+    return index;
+  };
 
-    if (state === 'after-quote') {
-      if (character === ',') {
-        finishField();
-      } else if (character === '\n') {
-        finishRow();
-      } else if (character !== '\r') {
-        throw new Error(`${relativePath}: unexpected character after closing quote`);
-      }
-      continue;
+  const consumeAfterQuote = (character: string): void => {
+    if (character === ',') {
+      finishField();
+    } else if (character === '\n') {
+      finishRow();
+    } else if (character !== '\r') {
+      throw new Error(`${relativePath}: unexpected character after closing quote`);
     }
+  };
 
+  const consumeUnquotedCharacter = (character: string): void => {
     if (character === '"' && field.length === 0) {
-      state = 'quoted';
+      cursor.state = 'quoted';
     } else if (character === ',') {
       finishField();
     } else if (character === '\n') {
@@ -337,9 +356,24 @@ function parseCsv(content: string, relativePath: string): string[][] {
     } else if (character !== '\r') {
       field += character;
     }
+  };
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index] ?? '';
+    if (cursor.state === 'quoted') {
+      index = consumeQuotedCharacter(index);
+      continue;
+    }
+
+    if (cursor.state === 'after-quote') {
+      consumeAfterQuote(character);
+      continue;
+    }
+
+    consumeUnquotedCharacter(character);
   }
 
-  if (state === 'quoted') {
+  if (cursor.state === 'quoted') {
     throw new Error(`${relativePath}: unterminated quoted field`);
   }
   if (field.length > 0 || row.length > 0) {
@@ -566,6 +600,28 @@ function resolvedPnpmDependencyIdentity(name: string, rawVersion: string, locati
   return packageIdentity(name, version);
 }
 
+function readProductionDependencyLine(
+  line: string,
+  dependencyName: string | undefined,
+  location: string,
+  packages: Set<string>,
+): string | undefined {
+  const dependency = /^ {6}(\S.*):\s*$/.exec(line);
+  if (dependency) {
+    return decodeYamlScalar(dependency[1] ?? '', location);
+  }
+
+  const version = /^ {8}version:\s+(.+)$/.exec(line);
+  if (version && dependencyName !== undefined) {
+    const identity = resolvedPnpmDependencyIdentity(dependencyName, version[1] ?? '', location);
+    if (identity !== undefined) {
+      packages.add(identity);
+    }
+    dependencyName = undefined;
+  }
+  return dependencyName;
+}
+
 function parseDirectProductionPnpmPackages(importersSection: string): Set<string> {
   const packages = new Set<string>();
   let inProductionDependencies = false;
@@ -589,24 +645,12 @@ function parseDirectProductionPnpmPackages(importersSection: string): Set<string
       continue;
     }
 
-    const dependency = /^ {6}(\S.*):\s*$/.exec(line);
-    if (dependency) {
-      dependencyName = decodeYamlScalar(dependency[1] ?? '', `pnpm-lock.yaml importers:${index + 1}`);
-      continue;
-    }
-
-    const version = /^ {8}version:\s+(.+)$/.exec(line);
-    if (version && dependencyName !== undefined) {
-      const identity = resolvedPnpmDependencyIdentity(
-        dependencyName,
-        version[1] ?? '',
-        `pnpm-lock.yaml importers:${index + 1}`,
-      );
-      if (identity !== undefined) {
-        packages.add(identity);
-      }
-      dependencyName = undefined;
-    }
+    dependencyName = readProductionDependencyLine(
+      line,
+      dependencyName,
+      `pnpm-lock.yaml importers:${index + 1}`,
+      packages,
+    );
   }
   return packages;
 }
@@ -631,6 +675,26 @@ function parsePnpmLock(content: string): PnpmLockPackages {
   };
 }
 
+function admitPnpmMetadataPackage(
+  entry: unknown,
+  licenseGroup: string,
+  location: string,
+): { name: string; versions: unknown[]; license: string } {
+  requirePackageName(entry, location);
+  if (
+    !Array.isArray(entry['versions']) ||
+    entry['versions'].length === 0 ||
+    entry['versions'].some((version: unknown) => typeof version !== 'string' || version.length === 0)
+  ) {
+    throw new Error(`${location}.versions must be a non-empty string array`);
+  }
+  if (typeof entry['license'] !== 'string' || entry['license'] !== licenseGroup) {
+    throw new Error(`${location}.license must equal its ${licenseGroup} license group`);
+  }
+
+  return { name: entry['name'], versions: entry['versions'], license: entry['license'] };
+}
+
 function parsePnpmMetadata(value: unknown, relativePath: string): PnpmMetadataPackage[] {
   if (!isJsonObject(value)) {
     throw new Error(`${relativePath} must be an object grouped by license`);
@@ -644,25 +708,9 @@ function parsePnpmMetadata(value: unknown, relativePath: string): PnpmMetadataPa
     }
     for (const [index, entry] of entries.entries()) {
       const location = `${relativePath}.${licenseGroup}[${index}]`;
-      if (!isJsonObject(entry)) {
-        throw new Error(`${location} must be an object`);
-      }
-      if (typeof entry['name'] !== 'string' || entry['name'].length === 0) {
-        throw new Error(`${location}.name must be a non-empty string`);
-      }
-      if (
-        !Array.isArray(entry['versions']) ||
-        entry['versions'].length === 0 ||
-        entry['versions'].some((version: unknown) => typeof version !== 'string' || version.length === 0)
-      ) {
-        throw new Error(`${location}.versions must be a non-empty string array`);
-      }
-      if (typeof entry['license'] !== 'string' || entry['license'] !== licenseGroup) {
-        throw new Error(`${location}.license must equal its ${licenseGroup} license group`);
-      }
-
-      const name = entry['name'];
-      const versions = entry['versions'].map((version: unknown) => {
+      const admitted = admitPnpmMetadataPackage(entry, licenseGroup, location);
+      const name = admitted.name;
+      const versions = admitted.versions.map((version: unknown) => {
         if (typeof version !== 'string') {
           throw new Error(`${location}.versions must contain only strings`);
         }
@@ -673,7 +721,7 @@ function parsePnpmMetadata(value: unknown, relativePath: string): PnpmMetadataPa
         identities.add(identity);
         return version;
       });
-      packages.push({ name, versions, license: entry['license'] });
+      packages.push({ name, versions, license: admitted.license });
     }
   }
   if (packages.length === 0) {

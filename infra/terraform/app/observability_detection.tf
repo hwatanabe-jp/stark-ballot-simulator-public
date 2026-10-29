@@ -242,10 +242,10 @@ resource "aws_cloudwatch_metric_alarm" "target_lambda_throttles" {
 
 resource "aws_cloudwatch_metric_alarm" "target_api_gateway_5xx" {
   alarm_name          = "${local.name_prefix}-api-gateway-5xx"
-  alarm_description   = "Passive detector for target HTTP API 5xx responses. Inspect access logs, the public API Lambda, and the accepted deployment before retrying."
+  alarm_description   = "Passive detector for target REST API 5xx responses. Inspect access logs, the public API Lambda, and the accepted deployment before retrying."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  metric_name         = "5xx"
+  metric_name         = "5XXError"
   namespace           = "AWS/ApiGateway"
   period              = 60
   statistic           = "Sum"
@@ -253,8 +253,8 @@ resource "aws_cloudwatch_metric_alarm" "target_api_gateway_5xx" {
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    ApiId = aws_apigatewayv2_api.target.id
-    Stage = aws_apigatewayv2_stage.default.name
+    ApiName = aws_api_gateway_rest_api.target.name
+    Stage   = aws_api_gateway_stage.live.stage_name
   }
 
   tags = local.common_tags
@@ -327,7 +327,7 @@ resource "aws_cloudwatch_metric_alarm" "actionable_work_queue_age" {
 
 resource "aws_cloudwatch_metric_alarm" "actionable_api_5xx" {
   alarm_name          = "${local.name_prefix}-actionable-api-gateway-5xx"
-  alarm_description   = "Actionable sustained target HTTP API 5xx detector requiring at least 20 requests, five 5xx responses, and a greater-than-five-percent rate in each evaluated period."
+  alarm_description   = "Actionable sustained target REST API 5xx detector requiring at least 20 requests, five 5xx responses, and a greater-than-five-percent rate in each evaluated period."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
   datapoints_to_alarm = 3
@@ -342,11 +342,11 @@ resource "aws_cloudwatch_metric_alarm" "actionable_api_5xx" {
       metric_name = "Count"
       namespace   = "AWS/ApiGateway"
       period      = 300
-      stat        = "Sum"
+      stat        = "SampleCount"
 
       dimensions = {
-        ApiId = aws_apigatewayv2_api.target.id
-        Stage = aws_apigatewayv2_stage.default.name
+        ApiName = aws_api_gateway_rest_api.target.name
+        Stage   = aws_api_gateway_stage.live.stage_name
       }
     }
   }
@@ -356,14 +356,14 @@ resource "aws_cloudwatch_metric_alarm" "actionable_api_5xx" {
     return_data = false
 
     metric {
-      metric_name = "5xx"
+      metric_name = "5XXError"
       namespace   = "AWS/ApiGateway"
       period      = 300
       stat        = "Sum"
 
       dimensions = {
-        ApiId = aws_apigatewayv2_api.target.id
-        Stage = aws_apigatewayv2_stage.default.name
+        ApiName = aws_api_gateway_rest_api.target.name
+        Stage   = aws_api_gateway_stage.live.stage_name
       }
     }
   }
@@ -780,14 +780,16 @@ resource "aws_cloudwatch_dashboard" "observability" {
         width  = 12
         height = 6
         properties = {
-          title   = "HTTP API volume, 5xx, and inspect-only p99 latency"
+          title   = "REST API volume, 5xx, and inspect-only p99 latency"
           region  = var.aws_region
           view    = "timeSeries"
           stacked = false
           metrics = [
-            ["AWS/ApiGateway", "Count", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { label = "Requests", stat = "Sum" }],
-            ["AWS/ApiGateway", "5xx", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { label = "5xx", stat = "Sum" }],
-            ["AWS/ApiGateway", "Latency", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { label = "p99 latency", stat = "p99" }],
+            ["AWS/ApiGateway", "Count", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { label = "Requests", stat = "SampleCount" }],
+            ["AWS/ApiGateway", "5XXError", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { label = "5XXError", stat = "Sum" }],
+            ["AWS/ApiGateway", "4XXError", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { label = "4xx", stat = "Sum" }],
+            ["AWS/ApiGateway", "IntegrationLatency", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { label = "integration latency", stat = "Average" }],
+            ["AWS/ApiGateway", "Latency", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { label = "p99 latency", stat = "p99" }],
           ]
         }
       },
@@ -875,8 +877,8 @@ resource "aws_cloudwatch_dashboard" "observability" {
           setPeriodToTimeRange = true
           stacked              = false
           metrics = [
-            ["AWS/ApiGateway", "Count", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { id = "m_total", label = "sample size: total requests", stat = "Sum" }],
-            ["AWS/ApiGateway", "5xx", "ApiId", aws_apigatewayv2_api.target.id, "Stage", aws_apigatewayv2_stage.default.name, { id = "m_5xx", label = "5xx responses", stat = "Sum", visible = false }],
+            ["AWS/ApiGateway", "Count", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { id = "m_total", label = "sample size: total requests", stat = "SampleCount" }],
+            ["AWS/ApiGateway", "5XXError", "ApiName", aws_api_gateway_rest_api.target.name, "Stage", aws_api_gateway_stage.live.stage_name, { id = "m_5xx", label = "5xx responses", stat = "Sum", visible = false }],
             [{ expression = "m_total - m_5xx", id = "e_good", label = "good responses" }],
             [{ expression = "IF(m_total > 0, 100 * (m_total - m_5xx) / m_total)", id = "e_success", label = "provisional serving success (%)" }],
           ]

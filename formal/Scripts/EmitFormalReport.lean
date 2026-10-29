@@ -2,6 +2,7 @@ import StarkBallotFormal.Bitmap
 import StarkBallotFormal.GuestModel
 import StarkBallotFormal.InputCommitment
 import StarkBallotFormal.VerificationSummary
+import StarkBallotFormal.WorkerConcurrency
 
 namespace Scripts.EmitFormalReport
 
@@ -78,6 +79,26 @@ def renderGeneratedVectorArtifact (artifact : GeneratedVectorArtifact) : String 
   ] ++ "\n    }"
 
 def theoremReports : List TheoremReport := [
+  {
+    name := "batch_step_preserves_invariant"
+    source := "formal/StarkBallotFormal/WorkerConcurrency.lean"
+    claim := "each modeled Batch transition preserves distinct admitted attempts and the shared two-unit capacity bound"
+  },
+  {
+    name := "batch_reachable_invariant"
+    source := "formal/StarkBallotFormal/WorkerConcurrency.lean"
+    claim := "all finite Batch traces from empty capacity contain distinct admitted attempts and at most two occupied units"
+  },
+  {
+    name := "batch_workers_at_most_two"
+    source := "formal/StarkBallotFormal/WorkerConcurrency.lean"
+    claim := "under the managed two-unit resource admission and termination contract, all reachable Batch states have at most two admitted attempts"
+  },
+  {
+    name := "batch_can_run_two_and_drain"
+    source := "formal/StarkBallotFormal/WorkerConcurrency.lean"
+    claim := "two distinct on-demand Batch attempts can be admitted together and then drain to zero workers; no fairness or eventual completion is claimed"
+  },
   {
     name := "excluded_zero_implies_no_slot_loss"
     source := "formal/StarkBallotFormal/JournalCounts.lean"
@@ -181,6 +202,7 @@ def theoremReports : List TheoremReport := [
 ]
 
 def assumptions : List String := [
+  "The Batch model starts with no admitted attempts and trusts provider resource accounting from STARTING through SUCCEEDED or FAILED after actual computation stops; every single-container attempt must require one unit of the same two-unit replenishable resource, without bypass or detached computation; cancellation requests and application callbacks do not release capacity; there are no worker correspondence vectors or liveness proofs",
   "SHA-256 collision resistance is assumed, not proved by Lean",
   "RISC Zero receipt soundness is assumed, not proved by Lean",
   "Rust and TypeScript implementation correspondence is checked by generated vectors and tests",
@@ -226,7 +248,7 @@ def generatedVectorArtifacts : List GeneratedVectorArtifact := [
 def formalReportJson : String :=
   "{\n" ++ jsonObjectBody [
     "  \"schema\": " ++ jsonString "stark-ballot:formal-report|v1",
-    "  \"leanToolchain\": " ++ jsonString "leanprover/lean4:v4.33.1",
+    "  \"leanToolchain\": " ++ jsonString "leanprover/lean4:v4.35.0",
     "  \"reportKind\": " ++ jsonString "stable",
     "  \"generatedVectorEnvelopeType\": " ++ jsonString "stark-ballot.formal-vector.current",
     "  \"modelModules\": " ++ renderStringArray [
@@ -234,7 +256,8 @@ def formalReportJson : String :=
       "formal/StarkBallotFormal/VerificationSummary.lean",
       "formal/StarkBallotFormal/InputCommitment.lean",
       "formal/StarkBallotFormal/Bitmap.lean",
-      "formal/StarkBallotFormal/GuestModel.lean"
+      "formal/StarkBallotFormal/GuestModel.lean",
+      "formal/StarkBallotFormal/WorkerConcurrency.lean"
     ],
     "  \"theorems\": " ++ jsonArray (theoremReports.map renderTheorem),
     "  \"generatedVectorArtifacts\": " ++ jsonArray (generatedVectorArtifacts.map renderGeneratedVectorArtifact),

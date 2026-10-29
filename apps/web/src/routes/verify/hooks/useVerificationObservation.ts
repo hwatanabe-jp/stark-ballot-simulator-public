@@ -25,6 +25,17 @@ function isTerminalVerificationStatus(status: VerificationStatus): boolean {
   return status === 'success' || status === 'failed' || status === 'dev_mode';
 }
 
+function canSubmitObservation(
+  options: Omit<UseVerificationObservationOptions, 'data' | 'sessionIdentityRef'>,
+): boolean {
+  return (
+    options.sequenceComplete &&
+    !options.hasCheckPending &&
+    options.serverValidated &&
+    isTerminalVerificationStatus(options.verificationStatus)
+  );
+}
+
 function observationFingerprint(sessionId: string, submission: VerificationObservationSubmission): string {
   const statuses = submission.request.castChecks;
   return [
@@ -49,13 +60,7 @@ export function useVerificationObservation({
   const inFlightFingerprintsRef = useRef(new Set<string>());
 
   useEffect(() => {
-    if (
-      !data ||
-      !sequenceComplete ||
-      hasCheckPending ||
-      !serverValidated ||
-      !isTerminalVerificationStatus(verificationStatus)
-    ) {
+    if (!data || !canSubmitObservation({ sequenceComplete, hasCheckPending, serverValidated, verificationStatus })) {
       return;
     }
 

@@ -1,7 +1,7 @@
 import type { VoteChoice } from '@stark-ballot/web/session/types';
 import type { VerificationStatus } from '@stark-ballot/verification/shared/types';
 import type { VerificationStepId, VerificationStepStatus } from '@stark-ballot/web/knowledge';
-import { isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { addHexPrefix } from '@stark-ballot/crypto-primitives';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
 import { VOTE_CHOICES } from '@stark-ballot/verification/shared/constants';
@@ -30,7 +30,7 @@ import {
 } from '@stark-ballot/verification/public-result';
 import type { VerificationReport } from '@stark-ballot/verification/shared/types';
 import { deriveFinalizationProgress } from '@stark-ballot/application/finalize/finalization-progress';
-import type { MockState } from './state';
+import { resolveMockFinalizationTiming, type MockState } from './state';
 import type { ScenarioId } from './types';
 import sessionFixture from './fixtures/json/sessions.post.json';
 import voteFixture from './fixtures/json/sessions.votes.post.json';
@@ -82,15 +82,23 @@ const resolveBotCommitment = (electionId: string, botId: number): string => {
   return computeCommitment(electionId, choiceIndex, resolveBotRandom(botId));
 };
 
-const ensureVoteData = (state: MockState, overrides?: { bulletinRootAtCast?: string; now?: number }) => ({
+type MockVoteOverrides = { bulletinRootAtCast?: string; now?: number };
+
+const ensureVoteData = (state: MockState, overrides?: MockVoteOverrides) => ({
   choice: state.voteChoice ?? 'A',
   random: state.random ?? createHex('d'),
   commitment: state.commitment ?? createHex('e'),
   voteId: state.voteId ?? '00000000-0000-4000-8000-000000000001',
   bulletinIndex: state.bulletinIndex ?? 0,
-  bulletinRootAtCast: overrides?.bulletinRootAtCast ?? state.bulletinRootAtCast ?? createHex('f'),
-  timestamp: state.voteTimestamp ?? overrides?.now ?? Date.now(),
+  ...resolveMockVoteObservation(state, overrides),
 });
+
+function resolveMockVoteObservation(state: MockState, overrides: MockVoteOverrides | undefined) {
+  return {
+    bulletinRootAtCast: overrides?.bulletinRootAtCast ?? state.bulletinRootAtCast ?? createHex('f'),
+    timestamp: state.voteTimestamp ?? overrides?.now ?? Date.now(),
+  };
+}
 
 const buildCommitments = (state: MockState, vote: ReturnType<typeof ensureVoteData>): string[] =>
   Array.from({ length: BASE_TOTAL }, (_, index) => {
@@ -136,10 +144,10 @@ const verifyFixtures: Record<ScenarioId, unknown> = {
 
 const cloneFixture = <T>(value: T): T => structuredClone(value);
 
-const ensureRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
+const ensureRecord = (value: unknown): Record<string, unknown> => (isNonNullObject(value) ? value : {});
 
 const ensureData = (payload: Record<string, unknown>): Record<string, unknown> => {
-  if (isRecord(payload['data'])) {
+  if (isNonNullObject(payload['data'])) {
     return payload['data'];
   }
   const data: Record<string, unknown> = {};
@@ -232,46 +240,15 @@ export function buildMockBitmapEvidence(state: MockState, treeSize: number): Moc
   }
 
   const userVoteIndex = ensureVoteData(state).bulletinIndex;
-  const missingIndices = new Set<number>();
-  const addMissingIndex = (index: number): void => {
-    if (Number.isSafeInteger(index) && index >= 0 && index < treeSize && missingIndices.size < metrics.missingSlots) {
-      missingIndices.add(index);
-    }
-  };
-
-  if (state.scenarioId === 'S1') {
-    addMissingIndex(userVoteIndex);
-  } else {
-    getAffectedBotIds(state.scenarioId).forEach(addMissingIndex);
-  }
-  for (let index = 0; index < treeSize && missingIndices.size < metrics.missingSlots; index += 1) {
-    if (index !== userVoteIndex) {
-      addMissingIndex(index);
-    }
-  }
-  for (let index = 0; index < treeSize && missingIndices.size < metrics.missingSlots; index += 1) {
-    addMissingIndex(index);
-  }
-  if (missingIndices.size !== metrics.missingSlots) {
-    throw new Error(`[mock-api] Bitmap missing-slot projection failed for scenario ${state.scenarioId}`);
-  }
+  const missingIndices = projectMockMissingIndices(state, userVoteIndex, treeSize, metrics.missingSlots);
 
   const seenBitmap = Array.from({ length: treeSize }, (_, index) => !missingIndices.has(index));
-  const includedBitmap = [...seenBitmap];
-  let invalidSlotsRemaining = metrics.invalidPresentedSlots;
-  for (let index = treeSize - 1; index >= 0 && invalidSlotsRemaining > 0; index -= 1) {
-    if (index !== userVoteIndex && includedBitmap[index]) {
-      includedBitmap[index] = false;
-      invalidSlotsRemaining -= 1;
-    }
-  }
-  if (invalidSlotsRemaining > 0 && includedBitmap[userVoteIndex]) {
-    includedBitmap[userVoteIndex] = false;
-    invalidSlotsRemaining -= 1;
-  }
-  if (invalidSlotsRemaining !== 0) {
-    throw new Error(`[mock-api] Bitmap invalid-slot projection failed for scenario ${state.scenarioId}`);
-  }
+  const includedBitmap = projectMockIncludedBitmap(
+    seenBitmap,
+    userVoteIndex,
+    metrics.invalidPresentedSlots,
+    state.scenarioId,
+  );
 
   const validVotes = resolveScenarioVerifiedTally(state.scenarioId).reduce((sum, count) => sum + count, 0);
   if (includedBitmap.filter(Boolean).length !== validVotes) {
@@ -285,6 +262,65 @@ export function buildMockBitmapEvidence(state: MockState, treeSize: number): Moc
     seenBitmapRoot: computeIncludedBitmapRootHex(seenBitmap),
     treeSize,
   };
+}
+
+function projectMockMissingIndices(
+  state: MockState,
+  userVoteIndex: number,
+  treeSize: number,
+  missingSlots: number,
+): Set<number> {
+  const missingIndices = new Set<number>();
+  const addMissingIndex = (index: number): void => {
+    if (Number.isSafeInteger(index) && index >= 0 && index < treeSize && missingIndices.size < missingSlots) {
+      missingIndices.add(index);
+    }
+  };
+
+  if (state.scenarioId === 'S1') {
+    addMissingIndex(userVoteIndex);
+  } else {
+    getAffectedBotIds(state.scenarioId).forEach(addMissingIndex);
+  }
+  for (let index = 0; index < treeSize && missingIndices.size < missingSlots; index += 1) {
+    if (index !== userVoteIndex) {
+      addMissingIndex(index);
+    }
+  }
+  for (let index = 0; index < treeSize && missingIndices.size < missingSlots; index += 1) {
+    addMissingIndex(index);
+  }
+  if (missingIndices.size !== missingSlots) {
+    throw new Error(`[mock-api] Bitmap missing-slot projection failed for scenario ${state.scenarioId}`);
+  }
+
+  return missingIndices;
+}
+
+function projectMockIncludedBitmap(
+  seenBitmap: boolean[],
+  userVoteIndex: number,
+  invalidPresentedSlots: number,
+  scenarioId: ScenarioId,
+): boolean[] {
+  const treeSize = seenBitmap.length;
+  const includedBitmap = [...seenBitmap];
+  let invalidSlotsRemaining = invalidPresentedSlots;
+  for (let index = treeSize - 1; index >= 0 && invalidSlotsRemaining > 0; index -= 1) {
+    if (index !== userVoteIndex && includedBitmap[index]) {
+      includedBitmap[index] = false;
+      invalidSlotsRemaining -= 1;
+    }
+  }
+  if (invalidSlotsRemaining > 0 && includedBitmap[userVoteIndex]) {
+    includedBitmap[userVoteIndex] = false;
+    invalidSlotsRemaining -= 1;
+  }
+  if (invalidSlotsRemaining !== 0) {
+    throw new Error(`[mock-api] Bitmap invalid-slot projection failed for scenario ${scenarioId}`);
+  }
+
+  return includedBitmap;
 }
 
 function buildScenarioJournal(
@@ -343,6 +379,10 @@ const normalizeVerificationStatus = (value: unknown): VerificationStatus => {
   return 'not_run';
 };
 
+function resolveMockReportErrors(overrides: MockState['verificationReport']): string[] | undefined {
+  return overrides?.errors && overrides.errors.length > 0 ? overrides.errors : undefined;
+}
+
 function buildMockPublicVerificationReport(
   status: Exclude<VerificationStatus, 'not_run' | 'running'>,
   imageId: string,
@@ -371,7 +411,7 @@ function buildMockPublicVerificationReport(
         ...common,
         receipt_image_id: imageId,
         dev_mode_receipt: true,
-        ...(overrides?.errors && overrides.errors.length > 0 ? { errors: overrides.errors } : {}),
+        ...omitUndefinedProperties({ errors: resolveMockReportErrors(overrides) }),
       };
       break;
     case 'failed':
@@ -380,7 +420,7 @@ function buildMockPublicVerificationReport(
         ...common,
         receipt_image_id: null,
         dev_mode_receipt: false,
-        errors: overrides?.errors && overrides.errors.length > 0 ? overrides.errors : ['Verification failed'],
+        errors: resolveMockReportErrors(overrides) ?? ['Verification failed'],
       };
       break;
   }
@@ -496,15 +536,23 @@ export const buildFinalizationResult = (state: MockState): Record<string, unknow
   return buildFinalizationSyncData(state, Date.now());
 };
 
+function resolveMockCandidateReport(
+  state: MockState,
+  status: VerificationStatus,
+  imageId: string,
+  now: number,
+): PublicVerificationReport | undefined {
+  return state.verificationReport && status !== 'not_run' && status !== 'running'
+    ? buildMockPublicVerificationReport(status, imageId, now, state.verificationReport)
+    : undefined;
+}
+
 function buildSucceededFinalizationResult(state: MockState, now: number): Record<string, unknown> {
   const result = buildFinalizationSyncData(state, now);
   const journal = result['journal'] as CurrentZkVMJournal;
   const imageId = typeof result['imageId'] === 'string' ? result['imageId'] : createHex('4');
   const candidateStatus = normalizeVerificationStatus(state.verificationStatus ?? result['verificationStatus']);
-  const candidateReport =
-    state.verificationReport && candidateStatus !== 'not_run' && candidateStatus !== 'running'
-      ? buildMockPublicVerificationReport(candidateStatus, imageId, now, state.verificationReport)
-      : undefined;
+  const candidateReport = resolveMockCandidateReport(state, candidateStatus, imageId, now);
   const resolvedStatus =
     resolveFailClosedVerificationStatus({
       currentStatus: candidateStatus,
@@ -564,30 +612,26 @@ function buildSucceededFinalizationResult(state: MockState, now: number): Record
   };
 }
 
+function buildMockFinalizationDiagnostics(
+  timing: ReturnType<typeof resolveMockFinalizationTiming>,
+  now: number,
+): Record<string, unknown> {
+  const { status, startedAtMs, completedAtMs } = timing;
+  const estimatedDurationMs = completedAtMs - startedAtMs;
+  const queue = status === 'pending' || status === 'running' ? { concurrencyLimit: 2, estimatedDurationMs } : null;
+  const diagnostics: Record<string, unknown> = { asyncMode: 'enabled', queue };
+  const progress = deriveFinalizationProgress({ state: { status, startedAtMs }, estimatedDurationMs, now });
+  if (progress) diagnostics['progress'] = progress;
+  return diagnostics;
+}
+
 export const buildFinalizationResource = (state: MockState, now: number): Record<string, unknown> | null => {
   if (!state.finalizationId) {
     return null;
   }
-  const queuedAtMs = state.finalizationQueuedAtMs ?? now;
-  const startedAtMs = state.finalizationStartedAtMs ?? queuedAtMs + 2000;
-  const completedAtMs = state.finalizationCompletedAtMs ?? startedAtMs + 20000;
-  const estimatedDurationMs = completedAtMs - startedAtMs;
-  const hasFailure = typeof state.finalizationFailedAtMs === 'number';
-  const status = hasFailure ? 'failed' : now < startedAtMs ? 'pending' : now < completedAtMs ? 'running' : 'succeeded';
-  const queue = status === 'pending' || status === 'running' ? { concurrencyLimit: 2, estimatedDurationMs } : null;
-  const runtimeDiagnostics: Record<string, unknown> = {
-    asyncMode: 'enabled',
-    queue,
-    orchestrator: null,
-  };
-  const progress = deriveFinalizationProgress({
-    state: { status, startedAtMs },
-    estimatedDurationMs,
-    now,
-  });
-  if (progress) {
-    runtimeDiagnostics['progress'] = progress;
-  }
+  const timing = resolveMockFinalizationTiming(state, now);
+  const { queuedAtMs, startedAtMs, completedAtMs, status } = timing;
+  const runtimeDiagnostics = buildMockFinalizationDiagnostics(timing, now);
 
   const base = {
     finalizationId: state.finalizationId,
@@ -638,6 +682,30 @@ const FAILED_CHECK_IDS_BY_SCENARIO: Readonly<Record<ScenarioId, ReadonlySet<Veri
   S5: new Set(['counted_missing_indices_zero']),
 };
 
+function resolveMockCheckStatus(
+  definition: (typeof VERIFICATION_CHECK_DEFINITIONS)[number],
+  context: {
+    starkStatus: VerificationStepStatus;
+    excludedSlots: number;
+    zkGateStatus: ReturnType<typeof resolveZkGateStatus>;
+    failedCheckIds: ReadonlySet<VerificationCheckId>;
+  },
+): VerificationStepStatus {
+  let status: VerificationStepStatus;
+  if (definition.category === 'cast_as_intended') {
+    status = 'not_run';
+  } else if (definition.category === 'stark_verification') {
+    status = context.starkStatus;
+  } else if (definition.id === 'counted_missing_indices_zero') {
+    status = context.excludedSlots > 0 ? 'failed' : (context.zkGateStatus ?? 'success');
+  } else if (context.zkGateStatus !== undefined && isCheckStatusZkGateControlled(definition.id)) {
+    status = context.zkGateStatus;
+  } else {
+    status = context.failedCheckIds.has(definition.id) ? 'failed' : 'success';
+  }
+  return status;
+}
+
 export const buildVerificationResourceResponse = (
   state: MockState,
   now: number,
@@ -683,18 +751,12 @@ export const buildVerificationResourceResponse = (
   const scenarioMetrics = resolveScenarioMetrics(state.scenarioId);
   const zkGateStatus = resolveZkGateStatus(stepStatusMap.stark_verification);
   const verificationChecks: VerificationCheck[] = VERIFICATION_CHECK_DEFINITIONS.map((definition) => {
-    let status: VerificationStepStatus;
-    if (definition.category === 'cast_as_intended') {
-      status = 'not_run';
-    } else if (definition.category === 'stark_verification') {
-      status = stepStatusMap.stark_verification;
-    } else if (definition.id === 'counted_missing_indices_zero') {
-      status = scenarioMetrics.excludedSlots > 0 ? 'failed' : (zkGateStatus ?? 'success');
-    } else if (zkGateStatus !== undefined && isCheckStatusZkGateControlled(definition.id)) {
-      status = zkGateStatus;
-    } else {
-      status = failedCheckIds.has(definition.id) ? 'failed' : 'success';
-    }
+    const status = resolveMockCheckStatus(definition, {
+      starkStatus: stepStatusMap.stark_verification,
+      excludedSlots: scenarioMetrics.excludedSlots,
+      zkGateStatus,
+      failedCheckIds,
+    });
     return {
       id: definition.id,
       status,

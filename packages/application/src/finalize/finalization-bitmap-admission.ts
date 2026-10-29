@@ -1,5 +1,10 @@
+import { isNonArrayObject as isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import type { FinalizationRecord } from './finalization-record';
-import type { FinalizationBitmapData, FinalizationBitmapDisposition } from './finalization-types';
+import type {
+  FinalizationBitmapData,
+  FinalizationBitmapDisposition,
+  FinalizationResultAuthority,
+} from './finalization-types';
 import type { FinalizationBitmapRecord } from './finalization-store';
 import { finalizationBitmapDataCodec } from './finalization-storage';
 import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
@@ -7,10 +12,6 @@ import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitm
 
 const AVAILABLE_DISPOSITION_KEYS = new Set(['availability', 'data']);
 const UNAVAILABLE_DISPOSITION_KEYS = new Set(['availability']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
@@ -31,9 +32,21 @@ function sameBitmapData(left: FinalizationBitmapData, right: FinalizationBitmapD
     normalizeHex32(left.includedBitmapRoot) === normalizeHex32(right.includedBitmapRoot) &&
     left.includedBitmap.length === right.includedBitmap.length &&
     left.includedBitmap.every((value, index) => value === right.includedBitmap[index]) &&
-    (left.seenBitmapRoot === undefined) === (right.seenBitmapRoot === undefined) &&
-    (left.seenBitmapRoot === undefined ||
-      normalizeHex32(left.seenBitmapRoot) === normalizeHex32(right.seenBitmapRoot ?? '')) &&
+    sameSeenBitmapData(left, right)
+  );
+}
+
+function sameSeenBitmapData(left: FinalizationBitmapData, right: FinalizationBitmapData): boolean {
+  return sameOptionalBitmapRoot(left.seenBitmapRoot, right.seenBitmapRoot) && sameSeenBitmapValues(left, right);
+}
+
+function sameOptionalBitmapRoot(left: string | undefined, right: string | undefined): boolean {
+  if (left === undefined) return right === undefined;
+  return right !== undefined && normalizeHex32(left) === normalizeHex32(right ?? '');
+}
+
+function sameSeenBitmapValues(left: FinalizationBitmapData, right: FinalizationBitmapData): boolean {
+  return (
     (left.seenBitmap === undefined) === (right.seenBitmap === undefined) &&
     (left.seenBitmap?.length ?? 0) === (right.seenBitmap?.length ?? 0) &&
     (left.seenBitmap?.every((value, index) => value === right.seenBitmap?.[index]) ?? true)
@@ -79,15 +92,7 @@ export function admitFinalizationBitmapDisposition(
   if (!isRecord(value)) {
     throw new Error('Invalid finalization bitmap evidence');
   }
-  if (value['availability'] === 'unavailable') {
-    if (!hasOnlyKeys(value, UNAVAILABLE_DISPOSITION_KEYS)) {
-      throw new Error('Invalid finalization bitmap evidence');
-    }
-    if (record.finalizationResult.artifacts.bitmap.availability === 'available') {
-      throw new Error('Successful finalization bitmap disposition contradicts embedded evidence');
-    }
-    return { availability: 'unavailable' };
-  }
+  if (value['availability'] === 'unavailable') return admitUnavailableBitmap(record, value);
   if (value['availability'] !== 'available' || !hasOnlyKeys(value, AVAILABLE_DISPOSITION_KEYS)) {
     throw new Error('Invalid finalization bitmap evidence');
   }
@@ -101,32 +106,8 @@ export function admitFinalizationBitmapDisposition(
   const finalizedAtMs = data.finalizedAtMs;
   const seenBitmap = data.seenBitmap;
   const journal = record.finalizationResult.journal;
-  const journalIncludedRoot = normalizeHex32(journal.includedBitmapRoot);
-  const includedRoot = normalizeHex32(data.includedBitmapRoot);
-  const computedIncludedRoot = normalizeHex32(computeIncludedBitmapRoot(includedBitmap));
-  if (
-    !journalIncludedRoot ||
-    includedRoot !== journalIncludedRoot ||
-    computedIncludedRoot !== journalIncludedRoot ||
-    treeSize !== journal.treeSize ||
-    includedBitmap.length !== journal.treeSize
-  ) {
-    throw new Error('Invalid finalization bitmap evidence');
-  }
-
-  let seenRoot: string | undefined;
-  if (seenBitmap !== undefined) {
-    const journalSeenRoot = journal.seenBitmapRoot ? normalizeHex32(journal.seenBitmapRoot) : null;
-    seenRoot = normalizeHex32(data.seenBitmapRoot) ?? undefined;
-    if (
-      seenBitmap.length !== journal.treeSize ||
-      !journalSeenRoot ||
-      seenRoot !== journalSeenRoot ||
-      normalizeHex32(computeIncludedBitmapRoot(seenBitmap)) !== journalSeenRoot
-    ) {
-      throw new Error('Invalid finalization bitmap evidence');
-    }
-  }
+  const includedRoot = admitIncludedBitmapRoot(data, journal);
+  const seenRoot = admitSeenBitmapRoot(data, journal);
 
   const admittedData: FinalizationBitmapData = {
     includedBitmap: [...includedBitmap],
@@ -145,4 +126,58 @@ export function admitFinalizationBitmapDisposition(
     availability: 'available',
     data: admittedData,
   };
+}
+
+function admitUnavailableBitmap(
+  record: Extract<FinalizationRecord, { state: { status: 'succeeded' } }>,
+  value: Record<string, unknown>,
+): FinalizationBitmapDisposition {
+  if (!hasOnlyKeys(value, UNAVAILABLE_DISPOSITION_KEYS)) throw new Error('Invalid finalization bitmap evidence');
+  if (record.finalizationResult.artifacts.bitmap.availability === 'available') {
+    throw new Error('Successful finalization bitmap disposition contradicts embedded evidence');
+  }
+  return { availability: 'unavailable' };
+}
+
+function admitIncludedBitmapRoot(
+  data: FinalizationBitmapData,
+  journal: FinalizationResultAuthority['journal'],
+): string {
+  const { includedBitmap, treeSize } = data;
+  const journalIncludedRoot = normalizeHex32(journal.includedBitmapRoot);
+  const includedRoot = normalizeHex32(data.includedBitmapRoot);
+  const computedIncludedRoot = normalizeHex32(computeIncludedBitmapRoot(includedBitmap));
+  if (
+    !journalIncludedRoot ||
+    includedRoot !== journalIncludedRoot ||
+    computedIncludedRoot !== journalIncludedRoot ||
+    treeSize !== journal.treeSize ||
+    includedBitmap.length !== journal.treeSize
+  ) {
+    throw new Error('Invalid finalization bitmap evidence');
+  }
+
+  return includedRoot;
+}
+
+function admitSeenBitmapRoot(
+  data: FinalizationBitmapData,
+  journal: FinalizationResultAuthority['journal'],
+): string | undefined {
+  const { seenBitmap } = data;
+  let seenRoot: string | undefined;
+  if (seenBitmap !== undefined) {
+    const journalSeenRoot = journal.seenBitmapRoot ? normalizeHex32(journal.seenBitmapRoot) : null;
+    seenRoot = normalizeHex32(data.seenBitmapRoot) ?? undefined;
+    if (
+      seenBitmap.length !== journal.treeSize ||
+      !journalSeenRoot ||
+      seenRoot !== journalSeenRoot ||
+      normalizeHex32(computeIncludedBitmapRoot(seenBitmap)) !== journalSeenRoot
+    ) {
+      throw new Error('Invalid finalization bitmap evidence');
+    }
+  }
+
+  return seenRoot;
 }

@@ -343,7 +343,8 @@ verifier-service verify --bundle <zip> --image-id <expected>
 
 ## Verification Coverage
 
-The CLI does not assert the full UI verification matrix. It enforces this current CLI subset:
+The CLI enforces the Counted-as-Recorded and STARK subset below. The browser's
+Cast-as-Intended checks and full UI verdict are outside this harness's assertions:
 
 - Required step IDs: `counted_as_recorded`, `stark_verification`.
 - Required check IDs are derived from the canonical check registry for those

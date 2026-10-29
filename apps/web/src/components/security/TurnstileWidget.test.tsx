@@ -4,9 +4,9 @@ import type { Mock } from 'vitest';
 import { TurnstileWidget } from './TurnstileWidget';
 import { CspNonceProvider } from './CspNonceProvider';
 import {
-  clearBrowserPublicEnvForTests,
-  setBrowserPublicEnvForTests,
-} from '@stark-ballot/runtime-config/env/browserPublic';
+  clearPublicRuntimeEnvForTests,
+  setPublicRuntimeEnvForTests,
+} from '@stark-ballot/runtime-config/env/public-runtime-config';
 
 type MockTurnstileProps = {
   siteKey: string;
@@ -61,16 +61,16 @@ describe('TurnstileWidget', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
-    setBrowserPublicEnvForTests('VITE_APP_ENV', 'main');
-    setBrowserPublicEnvForTests('VITE_TURNSTILE_SITE_KEY', 'site-key');
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'target-aws-async');
+    setPublicRuntimeEnvForTests('VITE_APP_ENV', 'main');
+    setPublicRuntimeEnvForTests('VITE_TURNSTILE_SITE_KEY', 'site-key');
     resetMock = turnstileMockState.resetMock;
     resetMock.mockClear();
     turnstileMockState.latestProps = null;
   });
 
   afterEach(() => {
-    clearBrowserPublicEnvForTests();
+    clearPublicRuntimeEnvForTests();
     vi.unstubAllEnvs();
   });
 
@@ -109,9 +109,9 @@ describe('TurnstileWidget', () => {
   });
 
   it('shows bypass banner and auto emits token when bypass enabled', () => {
-    clearBrowserPublicEnvForTests();
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'local-demo');
-    setBrowserPublicEnvForTests('VITE_TURNSTILE_SITE_KEY', 'site-key');
+    clearPublicRuntimeEnvForTests();
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'local-demo');
+    setPublicRuntimeEnvForTests('VITE_TURNSTILE_SITE_KEY', 'site-key');
     const onTokenChange = vi.fn();
     render(<TurnstileWidget action="vote" onTokenChange={onTokenChange} />);
 

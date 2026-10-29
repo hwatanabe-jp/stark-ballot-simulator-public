@@ -132,3 +132,24 @@ void identityWithCapability;
 // @ts-expect-error - a session identifier is not an authenticated capability credential.
 const capabilityFromSession: CapabilityToken = sessionId;
 void capabilityFromSession;
+
+// Record shape is a compiler contract, independent of interface/type spelling.
+type RequiredKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? never : K }[keyof T];
+type Expect<T extends true> = T;
+type IdentityKeys = 'sessionId' | 'electionId' | 'electionConfigHash' | 'electionConfig' | 'logId' | 'createdAtMs';
+type VotingKeys =
+  | 'sessionId'
+  | 'votes'
+  | 'bulletin'
+  | 'bulletinRootHistory'
+  | 'botCount'
+  | 'userParticipation'
+  | 'lastActivityMs';
+type IdentityRequired = Expect<IdentityKeys extends RequiredKeys<SessionIdentityRecord> ? true : false>;
+type VotingRequired = Expect<VotingKeys extends RequiredKeys<SessionVotingRecord> ? true : false>;
+type IdentityAuthority = Expect<keyof SessionIdentityRecord extends IdentityKeys ? true : false>;
+type VotingAuthority = Expect<keyof SessionVotingRecord extends VotingKeys ? true : false>;
+const identityValues: { electionId: string; electionConfigHash: string; logId: string; createdAtMs: number } = identity;
+void identityValues;
+declare const recordContracts: [IdentityRequired, VotingRequired, IdentityAuthority, VotingAuthority];
+void recordContracts;

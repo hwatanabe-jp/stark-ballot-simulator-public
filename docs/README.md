@@ -1,23 +1,25 @@
 # Documentation
 
-The Public Specs explain the protocol and verification model for readers of the
-demo. This tree complements them with implementation-oriented contracts,
+The [Public Specs](../public-book/src/introduction.md) define the protocol,
+verification conditions, public evidence formats, and AWS architecture.
+The [system overview](../public-book/src/overview.md) describes the verification
+stages and their execution responsibilities. This tree complements the Public Specs with implementation-oriented contracts,
 architecture notes, operating guides, and evidence produced alongside the
 code. When documentation and implementation disagree, current code and tests
 win.
 
-The public snapshot intentionally omits account-specific procedures, live
-inventory, approval records, and historical working notes. Its generated
+The public snapshot omits account-specific procedures, live inventory, approval
+records, and private historical working notes. Retained public decision records
+and formal phase plans are identified by their documentation indexes. Its generated
 `docs/PUBLIC_REPOSITORY.md` records the source revision and documentation
 footprint of that snapshot.
 
-The thin Backstage-facing overview is intentionally outside this tree at
-[`techdocs/docs/`](../techdocs/docs/index.md), where its MkDocs configuration
-cannot discover private documentation. The catalog API entity reads the
-deterministic [OpenAPI reference](../openapi/stark-ballot-api.openapi.json);
-neither artifact replaces the normative Public Specs or runtime validators.
+The Backstage overview uses the dedicated [`techdocs/docs/`](../techdocs/docs/index.md)
+tree, which limits MkDocs to public portal content. The catalog API entity reads
+the deterministic [OpenAPI reference](../openapi/stark-ballot-api.openapi.json).
+Public Specs define the normative rules; runtime validators enforce accepted data shapes.
 
-## 15-Minute Review Path
+## Review Path
 
 1. [Verification pipeline](./verification/README.md) — the fail-closed checks,
    verdict rules, and public/private artifact boundary.

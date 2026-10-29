@@ -1,5 +1,7 @@
 import path from 'node:path';
+import { rmSync } from 'node:fs';
 import { configureLogger } from '@stark-ballot/diagnostics/logger';
+import { createFileMockStoreDirectory } from '../workspace/test-support/file-mock-store';
 
 configureLogger({ level: 'warn' });
 
@@ -9,13 +11,9 @@ function configureDefaultTestImageIdVariant(): void {
   }
 }
 
-function safeDirectorySegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]/gu, '_');
-}
-
 function configureFileMockStoreDirectory(): void {
   const workerId = process.env['VITEST_WORKER_ID'];
-  if (process.env['FILE_MOCK_STORE_DIR'] || !workerId) {
+  if (!workerId) {
     return;
   }
 
@@ -23,14 +21,21 @@ function configureFileMockStoreDirectory(): void {
   if (!projectName) {
     throw new Error('STARK_BALLOT_VITEST_PROJECT is required for file-backed tests');
   }
-  process.env['FILE_MOCK_STORE_DIR'] = path.join(
-    process.cwd(),
-    '.tmp',
-    'vitest',
-    safeDirectorySegment(projectName),
-    `worker-${safeDirectorySegment(workerId)}`,
-    'mock-sessions',
+  const originalDirectory = process.env['FILE_MOCK_STORE_DIR'];
+  const directory = createFileMockStoreDirectory(
+    originalDirectory || path.join(process.cwd(), '.tmp', 'vitest'),
+    projectName,
+    workerId,
   );
+  process.env['FILE_MOCK_STORE_DIR'] = directory;
+  afterAll(() => {
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } finally {
+      if (originalDirectory === undefined) delete process.env['FILE_MOCK_STORE_DIR'];
+      else process.env['FILE_MOCK_STORE_DIR'] = originalDirectory;
+    }
+  });
 }
 
 configureDefaultTestImageIdVariant();

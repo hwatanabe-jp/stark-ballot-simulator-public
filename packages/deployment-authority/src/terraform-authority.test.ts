@@ -7,10 +7,8 @@ import {
   resolveAllowedDeploymentTarget,
 } from '@stark-ballot/deployment-authority';
 import {
-  buildTerraformBaselineSecretReferences,
   buildTerraformBaselineNonsecretInputs,
   decodeTerraformBaselineNonsecretInputValues,
-  validateCodeBuildRuntimeEvidence,
   validateTerraformBaselineIdentityEvidence,
   validateTerraformBaselineInputIdentity,
   validateTerraformBaselineNonsecretInputs,
@@ -55,7 +53,6 @@ const bootstrapInputKeys = [
   'enable_development_pipeline',
   'github_full_repository_id',
   'project_name',
-  'protected_production_aws_account_id',
   'source_branch',
   'state_backend_key',
   'state_bucket_name',
@@ -86,25 +83,18 @@ const appInputKeys = [
   'deployment_environment',
   'deployment_id',
   'develop_operator_gate_enabled',
-  'dynamodb_recovery_activation',
-  'dynamodb_recovery_phase',
+
   'enable_dynamodb_deletion_protection',
   'expected_image_id',
   'fargate_vcpu_alarm_threshold',
   'image_id_mapping_evidence',
-  'image_signature_preflight_prover_image_uri',
   'image_signature_status_attempt_timeout_ms',
   'image_signature_status_max_attempts',
   'image_signature_status_retry_delay_ms',
-  'image_signature_verifier_base_prover_image_uri',
   'image_signature_verifier_handler_deadline_ms',
   'image_signature_verifier_lambda_timeout_seconds',
   'image_signature_verifier_permissions_boundary_arn',
   'image_signature_verifier_process_timeout_ms',
-  'image_signature_verifier_reconciliation_desired_json',
-  'image_signature_verifier_reconciliation_desired_sha256',
-  'image_signature_verifier_reconciled_function_version',
-  'image_signature_verifier_selected_authority',
   'image_signature_verifier_step_timeout_seconds',
   'lambda_artifacts',
   'lambda_runtime',
@@ -146,11 +136,9 @@ function nonsecretInputs(root: TerraformRoot) {
           ? [`arn:aws:iam::${target.accountId}:role/operator`]
           : key.startsWith('enable_')
             ? true
-            : key === 'protected_production_aws_account_id'
+            : key === 'development_app_cloudfront_acm_certificate_arn'
               ? null
-              : key === 'development_app_cloudfront_acm_certificate_arn'
-                ? null
-                : 'fixture',
+              : 'fixture',
       ]),
     );
   } else if (root === 'foundation') {
@@ -161,19 +149,13 @@ function nonsecretInputs(root: TerraformRoot) {
     inputs['develop_operator_gate_enabled'] = true;
     inputs['enable_dynamodb_deletion_protection'] = true;
     inputs['fargate_vcpu_alarm_threshold'] = 40;
-    inputs['image_signature_preflight_prover_image_uri'] = null;
     inputs['image_signature_status_attempt_timeout_ms'] = 4000;
     inputs['image_signature_status_max_attempts'] = 4;
     inputs['image_signature_status_retry_delay_ms'] = 5000;
-    inputs['image_signature_verifier_base_prover_image_uri'] = null;
     inputs['image_signature_verifier_handler_deadline_ms'] = 100000;
     inputs['image_signature_verifier_lambda_timeout_seconds'] = 120;
     inputs['image_signature_verifier_process_timeout_ms'] = 60000;
-    inputs['image_signature_verifier_reconciliation_desired_json'] = null;
-    inputs['image_signature_verifier_reconciliation_desired_sha256'] = null;
-    inputs['image_signature_verifier_reconciled_function_version'] = null;
     inputs['image_signature_verifier_step_timeout_seconds'] = 130;
-    inputs['image_signature_verifier_selected_authority'] = null;
     inputs['proof_artifact_lifecycle_days'] = 7;
     inputs['prover_cpu'] = 16384;
     inputs['prover_max_concurrent_provers'] = 2;
@@ -212,8 +194,6 @@ function nonsecretInputs(root: TerraformRoot) {
         },
       ]),
     );
-    inputs['dynamodb_recovery_activation'] = null;
-    inputs['dynamodb_recovery_phase'] = 'primary_active';
   }
   const body = canonicalRecordJson(inputs);
   return {
@@ -345,69 +325,6 @@ function providerLock() {
   );
 }
 
-function runtimeEvidence(root: TerraformRoot) {
-  const context = laneContext(root);
-  return {
-    evidenceType: 'codebuild-runtime',
-    targetKey: 'stark-dev/develop',
-    lane: root,
-    stateIdentity: context.root.stateIdentity,
-    sourceSha: context.source.frameworkSourceSha,
-    project: {
-      key: 'terraformPlanProject',
-      name: context.names.terraformPlanProject,
-      arn: `arn:${context.target.partition}:codebuild:${context.target.region}:${context.target.accountId}:project/${context.names.terraformPlanProject}`,
-      buildId: `${context.names.terraformPlanProject}:11111111-2222-3333-4444-555555555555`,
-    },
-    runtime: {
-      configuredImage: 'aws/codebuild/standard:8.0',
-      observedImage: 'aws/codebuild/standard:8.0',
-      computeType: 'BUILD_GENERAL1_SMALL',
-      environmentType: 'LINUX_CONTAINER',
-      privilegedMode: false,
-    },
-  } as const;
-}
-
-describe('Terraform baseline secret-reference projection', () => {
-  it.each(['bootstrap', 'foundation'] as const)('returns no provider-read secrets for %s', (root) => {
-    expect(buildTerraformBaselineSecretReferences(root, laneContext(root))).toEqual([]);
-  });
-
-  it('returns the exact ordered App provider-read authority without secret values', () => {
-    const context = laneContext('app');
-
-    const references = buildTerraformBaselineSecretReferences('app', context);
-
-    expect(references).toEqual([
-      {
-        inputName: 'api_origin_verify_header',
-        source: 'secrets-manager-secret',
-        reference: `${context.names.runtimeSecretReferencePrefix}/expected-origin-verify-header`,
-      },
-      {
-        inputName: 'verification_invariant_email',
-        source: 'ssm-parameter',
-        reference: `/${context.project.stateNamespace}/observability/invariant-email/endpoint`,
-      },
-      {
-        inputName: 'ops_actionable_email',
-        source: 'ssm-parameter',
-        reference: `/${context.project.stateNamespace}/observability/ops-actionable-email/endpoint`,
-      },
-    ]);
-    expect(Object.isFrozen(references)).toBe(true);
-    expect(references.every((reference) => Object.isFrozen(reference))).toBe(true);
-    expect(Object.keys(references[2] ?? {}).sort()).toEqual(['inputName', 'reference', 'source']);
-  });
-
-  it('rejects a root that does not match the admitted lane context', () => {
-    expect(() => buildTerraformBaselineSecretReferences('app', laneContext('foundation'))).toThrow(
-      'Terraform baseline secret-reference context does not match its root.',
-    );
-  });
-});
-
 describe('Terraform baseline nonsecret input authority', () => {
   it.each(Object.keys(roots) as TerraformRoot[])('admits exact reconstructable %s inputs', (root) => {
     const parsed = validateTerraformBaselineNonsecretInputs(nonsecretInputs(root));
@@ -426,16 +343,19 @@ describe('Terraform baseline nonsecret input authority', () => {
     ).toThrow('Terraform baseline nonsecret inputs must use the exact current shape.');
   });
 
-  it('rejects an unknown input inside an otherwise admitted file', () => {
-    const value = structuredClone(nonsecretInputs('bootstrap'));
-    const parsed = parseInputVariables(value);
-    const body = canonicalRecordJson({ ...parsed, operator_token: 'sentinel-secret-value' });
-    value.files[0] = encodedInput('pipeline.auto.tfvars.json', body);
+  it.each(['operator_token', 'protected_production_aws_account_id'])(
+    'rejects unsupported Bootstrap input %s inside an otherwise admitted file',
+    (key) => {
+      const value = structuredClone(nonsecretInputs('bootstrap'));
+      const parsed = parseInputVariables(value);
+      const body = canonicalRecordJson({ ...parsed, [key]: 'sentinel-secret-value' });
+      value.files[0] = encodedInput('pipeline.auto.tfvars.json', body);
 
-    expect(() => validateTerraformBaselineNonsecretInputs(value)).toThrow(
-      'Bootstrap Terraform baseline inputs must use the exact current shape.',
-    );
-  });
+      expect(() => validateTerraformBaselineNonsecretInputs(value)).toThrow(
+        'Bootstrap Terraform baseline inputs must use the exact current shape.',
+      );
+    },
+  );
 
   it('rejects duplicate JSON fields even when the effective final value is admitted', () => {
     const value = structuredClone(nonsecretInputs('bootstrap'));
@@ -649,105 +569,11 @@ describe('Terraform baseline input identity', () => {
 
     expect(() =>
       validateTerraformBaselineInputIdentity(value, laneContext('app'), { deploymentMode: 'normal' }),
-    ).toThrow('App Terraform baseline deployment mode does not match the deployment context authority.');
+    ).toThrow('App Terraform baseline deployment mode is invalid.');
   });
 });
 
-describe('Terraform baseline runtime and provider inputs', () => {
-  it.each(Object.keys(roots) as TerraformRoot[])('admits the exact %s Plan runtime', (root) => {
-    expect(validateCodeBuildRuntimeEvidence(runtimeEvidence(root), laneContext(root))).toEqual(runtimeEvidence(root));
-  });
-
-  it('retains distinct configured and observed AWS-managed image identities without a source channel equality', () => {
-    const original = runtimeEvidence('bootstrap');
-    const value = {
-      ...original,
-      runtime: {
-        ...original.runtime,
-        configuredImage: 'aws/codebuild/standard:9.0',
-        observedImage: 'aws/codebuild/standard:7.0',
-      },
-    };
-
-    expect(validateCodeBuildRuntimeEvidence(value, laneContext('bootstrap'))).toEqual(value);
-  });
-
-  it('admits the exact App verifier-preflight Plan project only through its closed authority option', () => {
-    const context = laneContext('app');
-    const value = {
-      ...runtimeEvidence('app'),
-      project: {
-        key: 'appSignaturePreflightPlanProject',
-        name: context.names.appSignaturePreflightPlanProject,
-        arn:
-          `arn:${context.target.partition}:codebuild:${context.target.region}:${context.target.accountId}:project/` +
-          context.names.appSignaturePreflightPlanProject,
-        buildId: `${context.names.appSignaturePreflightPlanProject}:11111111-2222-3333-4444-555555555555`,
-      },
-    };
-
-    expect(
-      validateCodeBuildRuntimeEvidence(value, context, {
-        projectKey: 'appSignaturePreflightPlanProject',
-      }),
-    ).toEqual(value);
-    expect(() => validateCodeBuildRuntimeEvidence(value, context)).toThrow(
-      'CodeBuild runtime evidence does not match the Terraform Plan project authority.',
-    );
-  });
-
-  it('rejects the verifier-preflight Plan project outside the App lane', () => {
-    const context = laneContext('bootstrap');
-    const projectName = context.names.appSignaturePreflightPlanProject;
-    const value = {
-      ...runtimeEvidence('bootstrap'),
-      project: {
-        key: 'appSignaturePreflightPlanProject',
-        name: projectName,
-        arn:
-          `arn:${context.target.partition}:codebuild:${context.target.region}:${context.target.accountId}:project/` +
-          projectName,
-        buildId: `${projectName}:11111111-2222-3333-4444-555555555555`,
-      },
-    };
-
-    expect(() =>
-      validateCodeBuildRuntimeEvidence(value, context, {
-        projectKey: 'appSignaturePreflightPlanProject',
-      }),
-    ).toThrow('CodeBuild runtime project authority is invalid.');
-  });
-
-  it('rejects a Plan build ID whose suffix is not the exact CodeBuild attempt UUID', () => {
-    const admitted = runtimeEvidence('bootstrap');
-    const value = {
-      ...admitted,
-      project: {
-        ...admitted.project,
-        buildId: `${admitted.project.name}:not-a-codebuild-attempt`,
-      },
-    };
-
-    expect(() => validateCodeBuildRuntimeEvidence(value, laneContext('bootstrap'))).toThrow(
-      'CodeBuild runtime evidence does not match the Terraform Plan project authority.',
-    );
-  });
-
-  it.each([
-    ['configuredImage', 'registry.example.invalid/custom:latest'],
-    ['observedImage', 'detached-image'],
-    ['computeType', 'BUILD_GENERAL1_MEDIUM'],
-    ['environmentType', 'ARM_CONTAINER'],
-    ['privilegedMode', true],
-  ] as const)('rejects an unsupported runtime field %s', (name, replacement) => {
-    const value = structuredClone(runtimeEvidence('bootstrap'));
-    Object.assign(value.runtime, { [name]: replacement });
-
-    expect(() => validateCodeBuildRuntimeEvidence(value, laneContext('bootstrap'))).toThrow(
-      'CodeBuild runtime evidence does not match the admitted Terraform Plan runtime.',
-    );
-  });
-
+describe('Terraform provider inputs', () => {
   it('admits one exact Terraform/AWS-provider identity', () => {
     const identity = validateTerraformBaselineIdentityEvidence(terraformIdentity());
 
@@ -779,7 +605,7 @@ describe('Terraform baseline runtime and provider inputs', () => {
 });
 
 describe('Terraform authority target separation', () => {
-  it('binds each configured target backend and build runtime without changing development evidence', async () => {
+  it('binds each configured target backend without changing development evidence', async () => {
     const { configuration } = productionConfigurationFixture();
     vi.resetModules();
     vi.doMock('../deployment-targets.json', () => ({ default: configuration }));
@@ -817,94 +643,206 @@ describe('Terraform authority target separation', () => {
         for (const invalidTarget of ['stark-dev/develop', 'unreviewed/main', undefined]) {
           expect(() => configuredAuthority.validateTerraformBackendAuthority(backend, root, invalidTarget)).toThrow();
         }
-        const evidence = {
-          ...runtimeEvidence(root),
-          targetKey: production.targetKey,
-          stateIdentity: context.root.stateIdentity,
-          project: {
-            key: 'terraformPlanProject',
-            name: context.names.terraformPlanProject,
-            arn: `arn:${production.partition}:codebuild:${production.region}:${production.accountId}:project/${context.names.terraformPlanProject}`,
-            buildId: `${context.names.terraformPlanProject}:11111111-2222-3333-4444-555555555555`,
-          },
-        };
-        expect(configuredAuthority.validateCodeBuildRuntimeEvidence(evidence, context)).toEqual(evidence);
-        expect(
-          canonicalRecordJson(
-            configuredAuthority.validateCodeBuildRuntimeEvidence(runtimeEvidence(root), laneContext(root)),
-          ),
-        ).toBe(canonicalRecordJson(runtimeEvidence(root)));
-        for (const invalid of [
-          { ...evidence, targetKey: target.targetKey },
-          { ...evidence, stateIdentity: laneContext(root).root.stateIdentity },
-          { ...evidence, sourceSha: 'b'.repeat(40) },
-          { ...evidence, project: { ...evidence.project, arn: runtimeEvidence(root).project.arn } },
-          { ...evidence, project: { ...evidence.project, buildId: runtimeEvidence(root).project.buildId } },
-          { ...evidence, runtime: { ...evidence.runtime, privilegedMode: true } },
-        ]) {
-          expect(() => configuredAuthority.validateCodeBuildRuntimeEvidence(invalid, context)).toThrow();
-        }
-        expect(() => configuredAuthority.validateCodeBuildRuntimeEvidence(evidence, laneContext(root))).toThrow();
-        if (root === 'bootstrap' || root === 'app') {
-          const hostnameKey = root === 'bootstrap' ? 'development_app_public_hostname' : 'public_hostname';
-          const certificateKey =
-            root === 'bootstrap' ? 'development_app_cloudfront_acm_certificate_arn' : 'cloudfront_acm_certificate_arn';
-          const valid = contextBoundInputs(root, context);
-          const validVariables = parseInputVariables(valid);
-          if (root === 'app') validVariables['develop_operator_gate_enabled'] = false;
-          valid.files[0] = encodedInput('pipeline.auto.tfvars.json', canonicalRecordJson(validVariables));
-          expect(configuredAuthority.validateTerraformBaselineInputIdentity(valid, context)).toEqual(valid);
-          const invalidInputs: Record<string, unknown>[] = [
-            { [hostnameKey]: 'develop.stark-ballot-sim.hwatanabe.dev' },
-            { [hostnameKey]: 'Develop.stark-ballot-sim.hwatanabe.dev' },
-            { [hostnameKey]: 'https://production.example.invalid' },
-            { [certificateKey]: null },
-            {
-              [certificateKey]: `arn:aws:acm:us-east-1:${target.accountId}:certificate/11111111-2222-3333-4444-555555555555`,
-            },
-          ];
-          if (root === 'app')
-            invalidInputs.push(
-              { public_hostname_disposition: 'generated-cloudfront-hostname' },
-              { verifier_public_base_url: 'https://develop.stark-ballot-sim.hwatanabe.dev' },
-              { verifier_public_base_url: 'https://production.example.invalid:443/path' },
-            );
-          else invalidInputs.push({ backend_principal_arns: [`arn:aws:iam::${target.accountId}:role/operator`] });
-          for (const overrides of invalidInputs) {
-            const invalid = structuredClone(valid);
-            invalid.files[0] = encodedInput(
-              'pipeline.auto.tfvars.json',
-              canonicalRecordJson({ ...validVariables, ...overrides }),
-            );
-            expect(() => configuredAuthority.validateTerraformBaselineInputIdentity(invalid, context)).toThrow();
-          }
-        }
-        if (root === 'app') {
-          const inputs = contextBoundInputs(root, context);
-          const variables = parseInputVariables(inputs);
-          variables['develop_operator_gate_enabled'] = false;
-          inputs.files[0] = encodedInput('pipeline.auto.tfvars.json', canonicalRecordJson(variables));
-          expect(configuredAuthority.validateTerraformBaselineInputIdentity(inputs, context)).toEqual(inputs);
-          variables['develop_operator_gate_enabled'] = true;
-          inputs.files[0] = encodedInput('pipeline.auto.tfvars.json', canonicalRecordJson(variables));
-          expect(() => configuredAuthority.validateTerraformBaselineInputIdentity(inputs, context)).toThrow(
-            'App Terraform baseline develop operator gate',
-          );
-          const developmentInputs = contextBoundInputs(root);
-          const developmentVariables = parseInputVariables(developmentInputs);
-          developmentVariables['develop_operator_gate_enabled'] = false;
-          developmentInputs.files[0] = encodedInput(
-            'pipeline.auto.tfvars.json',
-            canonicalRecordJson(developmentVariables),
-          );
-          expect(() =>
-            configuredAuthority.validateTerraformBaselineInputIdentity(developmentInputs, laneContext(root)),
-          ).toThrow('App Terraform baseline develop operator gate');
-        }
       }
     } finally {
       vi.doUnmock('../deployment-targets.json');
       vi.resetModules();
     }
   });
+});
+
+it('requires every App Lambda package in the immutable drift recipe and binds checkpoint image identity', async () => {
+  const { admitTerraformRecipe, PLAN_TERRAFORM_RUNTIME, deriveFrontendArtifactCoordinates } =
+    await import('./plan-package.js');
+  const { admitRootCheckpoint } = await import('./root-checkpoint.js');
+  const { resolveDeploymentLaneAuthority } = await import('./index.js');
+  const { createAppReleaseSelectionFixture } = await import('./test-support/app-release-selection-fixture');
+  const foundation = createAppReleaseSelectionFixture().foundation.checkpoint;
+  const lane = resolveDeploymentLaneAuthority(target, 'app');
+  const values = parseInputVariables(nonsecretInputs('app'));
+  Object.assign(values, {
+    account_alias: target.accountLabel,
+    aws_account_id: target.accountId,
+    aws_region: target.region,
+    deployment_environment: target.environmentId,
+    project_name: target.projectId,
+    state_backend_key: lane.backendKey,
+    state_scope: lane.scope,
+    app_source_sha: foundation.sourceSha,
+    deployment_id: `dep_${'c'.repeat(32)}`,
+    expected_image_id: `0x${'2'.repeat(64)}`,
+    prover_image_uri: `${target.accountId}.dkr.ecr.${target.region}.amazonaws.com/${lane.names.proverRepository}@sha256:${'b'.repeat(64)}`,
+  });
+  const lambdas = values['lambda_artifacts'] as Record<
+    string,
+    { s3_bucket: string; s3_key: string; s3_object_version: string; source_code_hash: string }
+  >;
+  for (const artifact of Object.values(lambdas)) artifact.s3_bucket = lane.names.appRetainedArtifactBucket;
+  const recipe = {
+    runtime: PLAN_TERRAFORM_RUNTIME,
+    providerLock: foundation.recipe.providerLock,
+    nonsecretInputs: buildTerraformBaselineNonsecretInputs('app', {
+      variables: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { value }])),
+    }),
+    artifacts: Object.entries(lambdas).map(([name, artifact]) => ({
+      path: `.artifacts/${name}.zip`,
+      bucket: artifact.s3_bucket,
+      reference: {
+        key: artifact.s3_key,
+        versionId: artifact.s3_object_version,
+        sha256: Buffer.from(artifact.source_code_hash, 'base64').toString('hex'),
+      },
+    })),
+  };
+  recipe.artifacts.push(
+    ...deriveFrontendArtifactCoordinates(target.targetKey, values['app_source_sha'], values['deployment_id']).map(
+      ({ path, bucket, key }) => ({
+        path,
+        bucket,
+        reference: { key, versionId: 'frontend-version', sha256: 'f'.repeat(64) },
+      }),
+    ),
+  );
+  expect(admitTerraformRecipe(recipe, target.targetKey, 'app').artifacts).toHaveLength(9);
+  expect(() =>
+    admitTerraformRecipe({ ...recipe, artifacts: recipe.artifacts.slice(0, 6) }, target.targetKey, 'app'),
+  ).toThrow('omits');
+  const wrongFrontendBucket = structuredClone(recipe);
+  const frontendEntry = wrongFrontendBucket.artifacts.at(-1);
+  if (!frontendEntry) throw new Error('Missing frontend fixture');
+  frontendEntry.bucket = lane.names.artifactBucket;
+  expect(() => admitTerraformRecipe(wrongFrontendBucket, target.targetKey, 'app')).toThrow(
+    'reviewed source/deployment',
+  );
+  for (const field of ['key', 'versionId', 'sha256'] as const) {
+    const tampered = structuredClone(recipe);
+    const entry = tampered.artifacts.at(-1);
+    if (!entry) throw new Error('Missing frontend fixture');
+    entry.reference[field] = field === 'key' ? 'unrelated/config.json' : '';
+    expect(() => admitTerraformRecipe(tampered, target.targetKey, 'app')).toThrow();
+  }
+  expect(() => admitTerraformRecipe({ ...recipe, artifacts: [] }, target.targetKey, 'app')).toThrow('omits');
+  expect(() =>
+    admitTerraformRecipe(
+      {
+        ...recipe,
+        artifacts: recipe.artifacts.map((artifact, index) =>
+          index === 0 ? { ...artifact, reference: { ...artifact.reference, versionId: 'changed' } } : artifact,
+        ),
+      },
+      target.targetKey,
+      'app',
+    ),
+  ).toThrow('immutable Terraform Lambda input');
+  const checkpoint = {
+    ...foundation,
+    root: 'app',
+    backend: { ...foundation.backend, backendKey: lane.backendKey },
+    execution: {
+      ...foundation.execution,
+      kind: 'pipeline',
+      pipelineName: lane.names.pipeline,
+      planActionExecutionId: foundation.execution.executionId,
+      buildId: `${lane.names.terraformPlanProject}:${foundation.execution.executionId}`,
+    },
+    planPackage: {
+      ...foundation.planPackage,
+      key: `deployment/${target.targetKey}/app/plan-packages/${foundation.execution.executionId}.json`,
+    },
+    recipe,
+    outputs: {
+      deploymentId: `dep_${'c'.repeat(32)}`,
+      proverImageDigest: `sha256:${'b'.repeat(64)}`,
+      imageId: `0x${'2'.repeat(64)}`,
+      methodVersion: 1,
+      planDisposition: 'changed',
+      runtimeIdentity: { outputsSha256: 'd'.repeat(64), frontendManifestSha256: 'e'.repeat(64) },
+    },
+  };
+  expect(admitRootCheckpoint(checkpoint, target.targetKey, 'app').root).toBe('app');
+  // Exercise delivery against the real admitted App checkpoint/recipe, including
+  // delayed notifications, duplicate delivery and both independent CAS races.
+  const { publishCurrentAppDeploymentStatus } = await import('./app-deployment-status-publication.js');
+  const { assertObjectPrecondition } = await import('./mutation-owner.js');
+  type Stored = { body: string; observation: import('./plan-package.js').ObjectObservation };
+  const stored = (key: string, body: string, versionId = 'opaque-version'): Stored => ({
+    body,
+    observation: { key, versionId, etag: `"${versionId}"`, sha256: createHash('sha256').update(body).digest('hex') },
+  });
+  const checkpointObject = stored(
+    `deployment/${target.targetKey}/app/checkpoint.json`,
+    canonicalRecordJson(admitRootCheckpoint(checkpoint, target.targetKey, 'app')),
+  );
+  const objects = new Map<string, Stored>([[checkpointObject.observation.key, checkpointObject]]);
+  const store = {
+    read: (key: string) => objects.get(key) ?? null,
+    write: vi.fn((key: string, body: string, expected: Stored['observation'] | null) => {
+      assertObjectPrecondition(expected, objects.get(key)?.observation ?? null);
+      const result = stored(key, body, 'status-version');
+      objects.set(key, result);
+      return result;
+    }),
+  };
+  const expected = {
+    targetKey: target.targetKey,
+    sourceSha: checkpoint.sourceSha,
+    executionId: checkpoint.execution.executionId,
+  };
+  await expect(publishCurrentAppDeploymentStatus(store, expected)).resolves.toMatchObject({ status: 'published' });
+  const statusBytes = objects.get('status/current.json')?.body;
+  await expect(publishCurrentAppDeploymentStatus(store, expected)).resolves.toMatchObject({ status: 'unchanged' });
+  await expect(
+    publishCurrentAppDeploymentStatus(store, { ...expected, executionId: '99999999-2222-3333-4444-555555555555' }),
+  ).resolves.toMatchObject({ status: 'superseded' });
+  expect(store.write).toHaveBeenCalledTimes(1);
+  expect(objects.get('status/current.json')?.body).toBe(statusBytes);
+  objects.delete('status/current.json');
+  let checkpointReads = 0;
+  await expect(
+    publishCurrentAppDeploymentStatus(
+      {
+        ...store,
+        read(key) {
+          if (key === checkpointObject.observation.key && ++checkpointReads === 2)
+            return stored(key, checkpointObject.body, 'advanced-checkpoint');
+          return store.read(key);
+        },
+      },
+      expected,
+    ),
+  ).rejects.toThrow();
+  expect(store.write).toHaveBeenCalledTimes(1);
+  await expect(
+    publishCurrentAppDeploymentStatus(
+      {
+        ...store,
+        write(key, body, previous) {
+          objects.set(key, stored(key, body, 'concurrent-status'));
+          return store.write(key, body, previous);
+        },
+      },
+      expected,
+    ),
+  ).rejects.toThrow();
+  objects.delete('status/current.json');
+  await expect(
+    publishCurrentAppDeploymentStatus(
+      {
+        ...store,
+        write() {
+          throw new Error('publication denied');
+        },
+      },
+      expected,
+    ),
+  ).rejects.toThrow('publication denied');
+  expect(objects.has('status/current.json')).toBe(false);
+
+  expect(() =>
+    admitRootCheckpoint(
+      { ...checkpoint, outputs: { ...checkpoint.outputs, imageId: `0x${'f'.repeat(64)}` } },
+      target.targetKey,
+      'app',
+    ),
+  ).toThrow('approved inputs');
 });

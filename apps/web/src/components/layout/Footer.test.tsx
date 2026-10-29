@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Footer } from './Footer';
@@ -51,8 +52,7 @@ describe('Footer', () => {
 
   it('opens legal links in new tab when session is active', () => {
     mockGetSessionData.mockReturnValue({
-      sessionId: 'test-session',
-      capabilityToken: 'test-capability-token',
+      ...admitSessionIdentity({ sessionId: 'test-session', capabilityToken: 'test-capability-token' }),
       electionId: '550e8400-e29b-41d4-a716-446655440000',
       electionConfigHash: `0x${'a'.repeat(64)}`,
       logId: `0x${'b'.repeat(64)}`,

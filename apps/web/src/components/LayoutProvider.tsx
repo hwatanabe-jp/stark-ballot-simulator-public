@@ -29,11 +29,23 @@ const ROUTE_GROUPS: Partial<Record<string, Array<KnowledgeGroupDefinition['id']>
   '/result': ['session', 'vote', 'result', 'public'],
 };
 
+function isRouteOrChild(pathname: string, route: string): boolean {
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
+
+function resolveLayoutRoute(pathname: string) {
+  if (pathname === '/') return { page: 'home', isLegal: false, showFlowDetails: false };
+  if (isRouteOrChild(pathname, '/verify')) return { page: 'verify', isLegal: false, showFlowDetails: true };
+  if (isRouteOrChild(pathname, '/privacy') || isRouteOrChild(pathname, '/terms'))
+    return { page: 'legal', isLegal: true, showFlowDetails: false };
+  return { page: 'flow', isLegal: false, showFlowDetails: true };
+}
+
 const getVisibleKeys = (pathname: string, verifyTab: VerificationTabId): Array<keyof KnowledgeData> => {
   if (pathname === '/') {
     return [];
   }
-  if (pathname === '/verify' || pathname.startsWith('/verify/')) {
+  if (isRouteOrChild(pathname, '/verify')) {
     return verifyTab === 'bot' ? [...VERIFY_BOT_KNOWLEDGE_KEYS] : [...VERIFY_MY_KNOWLEDGE_KEYS];
   }
   const groupIds = ROUTE_GROUPS[pathname];
@@ -86,25 +98,16 @@ function LayoutShell({ children }: { children: React.ReactNode }): React.ReactEl
     router.push('/');
   }, [router, setActiveTab]);
 
-  const isVerifyRoute = pathname === '/verify' || pathname.startsWith('/verify/');
-  const isHomeRoute = pathname === '/';
-  const isLegalRoute =
-    pathname === '/privacy' ||
-    pathname.startsWith('/privacy/') ||
-    pathname === '/terms' ||
-    pathname.startsWith('/terms/');
-  const layoutPage = isHomeRoute ? 'home' : isVerifyRoute ? 'verify' : isLegalRoute ? 'legal' : 'flow';
-  const showKnowledgePanel = pathname !== '/' && !isLegalRoute;
-  const showStepIndicator = !isHomeRoute && !isLegalRoute;
+  const layout = resolveLayoutRoute(pathname);
   const visibleKeys = useMemo(() => getVisibleKeys(pathname, activeTab), [pathname, activeTab]);
 
   return (
-    <div className="app-layout" data-layout-page={layoutPage}>
-      <Header onReset={handleReset} showReset={!isLegalRoute} />
-      {showStepIndicator && <StepIndicatorHorizontal language={language} onReset={handleReset} />}
+    <div className="app-layout" data-layout-page={layout.page}>
+      <Header onReset={handleReset} showReset={!layout.isLegal} />
+      {layout.showFlowDetails && <StepIndicatorHorizontal language={language} onReset={handleReset} />}
       <main className="app-layout__main">
         {children}
-        {showKnowledgePanel && <KnowledgePanel className="app-layout__knowledge" filterKeys={visibleKeys} />}
+        {layout.showFlowDetails && <KnowledgePanel className="app-layout__knowledge" filterKeys={visibleKeys} />}
       </main>
       <Footer />
     </div>

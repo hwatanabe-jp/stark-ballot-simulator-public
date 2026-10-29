@@ -3,17 +3,17 @@
 ## Overview
 
 The mock zkVM (`packages/node-adapters/src/zkvm/mock-executor.ts`) is a
-JavaScript implementation of the tally-side input checks and aggregation used
-for fast development and testing. It verifies and tallies the supplied input,
-but it does not execute the RISC Zero guest or generate a STARK proof.
+JavaScript implementation of commitment checks, basic vote-shape checks, and
+aggregation for fast development and testing. It computes the tally and bitmap
+roots from the supplied input. Guest execution, Merkle inclusion-proof checks,
+and STARK proof generation are outside this mock path.
 
 ## Runtime Profiles
 
-The application does not select the executor from independent environment
-flags. `packages/runtime-config/src/env/runtimeProfile.ts` resolves one
-immutable server profile before adapter construction, and
-`packages/node-adapters/src/zkvm/executor-factory.ts` receives its
-`proof` choice.
+`packages/runtime-config/src/env/runtimeProfile.ts` resolves one immutable
+server profile before adapter construction.
+`packages/node-adapters/src/zkvm/executor-factory.ts` receives that profile's
+`proof` choice; independent environment flags do not select the executor.
 
 Two profiles select the mock executor:
 

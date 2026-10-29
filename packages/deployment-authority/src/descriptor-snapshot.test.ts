@@ -1,5 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
-import { snapshotDataTree, snapshotDenseArray, snapshotExactRecord } from './descriptor-snapshot.js';
+import { rejectProxyTree, snapshotDataTree, snapshotDenseArray, snapshotExactRecord } from './descriptor-snapshot.js';
+
+describe('proxy rejection across repeated admissions', () => {
+  it('rechecks mutable descendants of an already inspected frozen shell without invoking traps', () => {
+    const traps = vi.fn();
+    const entries: unknown[] = [Object.freeze({ value: 'safe' })];
+    const shell = Object.freeze({ entries });
+    rejectProxyTree(shell, 'authority');
+    entries.push(new Proxy({}, { ownKeys: traps, getPrototypeOf: traps }));
+    expect(() => rejectProxyTree(shell, 'authority')).toThrow('Proxy');
+    expect(traps).not.toHaveBeenCalled();
+  });
+
+  it('does not invoke accessors or treat their frozen shell as an immutable data tree', () => {
+    const getter = vi.fn();
+    const shell = Object.freeze(Object.defineProperty({}, 'value', { get: getter }));
+    expect(rejectProxyTree(shell, 'authority')).toBe(false);
+    expect(rejectProxyTree(shell, 'authority')).toBe(false);
+    expect(getter).not.toHaveBeenCalled();
+    expect(() => snapshotDataTree(shell, 'authority')).toThrow();
+  });
+
+  it('keeps cycle admission with the snapshot boundary and still inspects later proxy children', () => {
+    const shell: Record<string, unknown> = {};
+    shell['cycle'] = shell;
+    rejectProxyTree(shell, 'authority');
+    expect(() => snapshotDataTree(shell, 'authority')).toThrow('cycle');
+    shell['proxy'] = new Proxy({}, {});
+    expect(() => rejectProxyTree(shell, 'authority')).toThrow('Proxy');
+  });
+});
 
 describe('descriptor snapshots', () => {
   it('captures an exact record from data descriptors without property reads', () => {

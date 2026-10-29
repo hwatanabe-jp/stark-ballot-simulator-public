@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type RefObject } from 'react';
 import { useAppRouter } from '@stark-ballot/web/navigation/appNavigation';
 import { InlineAlert } from '@stark-ballot/web/components/ui/InlineAlert';
 import { useTranslation } from '@stark-ballot/web/hooks';
@@ -24,6 +24,13 @@ interface BotVotingProgressProps {
   onComplete?: () => void;
   /** Auto-navigate to aggregate page */
   autoNavigate?: boolean;
+}
+
+function clearProgressInterval(intervalRef: RefObject<ReturnType<typeof setInterval> | null>): void {
+  if (intervalRef.current) {
+    clearInterval(intervalRef.current);
+    intervalRef.current = null;
+  }
 }
 
 export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVotingProgressProps): React.ReactElement {
@@ -79,8 +86,54 @@ export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVoting
     let active = true;
     let inFlight = false;
     const controller = new AbortController();
+    const canFetchProgress = () => !inFlight && active && !hasNavigated.current;
+    const applyProgress = (data: Awaited<ReturnType<typeof getProgress>>) => {
+      // Check completion
+      const { completed: completedFlag, count, total } = data;
+      const completed = completedFlag || count >= total;
+
+      if (completed && !hasNavigated.current) {
+        hasNavigated.current = true;
+        saveKnowledgeData(
+          {
+            botVotesStatus: {
+              status: 'completed',
+              total,
+            },
+          },
+          omitUndefinedProperties({ expectedSessionId }),
+        );
+
+        clearProgressInterval(intervalRef);
+
+        onComplete?.();
+
+        if (autoNavigate) {
+          if (!getExpectedSession()) {
+            setSessionError(resolveSessionErrorMessage());
+            return;
+          }
+          router.push('/aggregate');
+        }
+      }
+
+      if (!completed && typeof total === 'number') {
+        saveKnowledgeData(
+          { botVotesStatus: { status: 'pending', total } },
+          omitUndefinedProperties({ expectedSessionId }),
+        );
+      }
+    };
+    const handleProgressRequestError = (requestError: unknown) => {
+      if (!active) return;
+      const errorCode = resolveApiClientErrorCode(requestError);
+      if (isSessionUnavailableErrorCode(errorCode)) {
+        clearProgressInterval(intervalRef);
+        setSessionError(resolveSessionErrorMessage());
+      }
+    };
     const fetchProgress = async () => {
-      if (inFlight || !active || hasNavigated.current) return;
+      if (!canFetchProgress()) return;
       inFlight = true;
       try {
         const sessionData = getExpectedSession();
@@ -93,15 +146,7 @@ export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVoting
         try {
           data = await getProgress(sessionData, { signal: controller.signal });
         } catch (requestError) {
-          if (!active) return;
-          const errorCode = resolveApiClientErrorCode(requestError);
-          if (isSessionUnavailableErrorCode(errorCode)) {
-            if (intervalRef.current) {
-              clearInterval(intervalRef.current);
-              intervalRef.current = null;
-            }
-            setSessionError(resolveSessionErrorMessage());
-          }
+          handleProgressRequestError(requestError);
           return;
         }
 
@@ -111,44 +156,7 @@ export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVoting
           return;
         }
 
-        // Check completion
-        const { completed: completedFlag, count, total } = data;
-        const completed = completedFlag || count >= total;
-
-        if (completed && !hasNavigated.current) {
-          hasNavigated.current = true;
-          saveKnowledgeData(
-            {
-              botVotesStatus: {
-                status: 'completed',
-                total,
-              },
-            },
-            omitUndefinedProperties({ expectedSessionId }),
-          );
-
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-
-          onComplete?.();
-
-          if (autoNavigate) {
-            if (!getExpectedSession()) {
-              setSessionError(resolveSessionErrorMessage());
-              return;
-            }
-            router.push('/aggregate');
-          }
-        }
-
-        if (!completed && typeof total === 'number') {
-          saveKnowledgeData(
-            { botVotesStatus: { status: 'pending', total } },
-            omitUndefinedProperties({ expectedSessionId }),
-          );
-        }
+        applyProgress(data);
       } catch (error) {
         // Continue polling on error
         if (active) console.error('[BotVotingProgress] Poll error:', error);
@@ -165,10 +173,7 @@ export function BotVotingProgress({ onComplete, autoNavigate = true }: BotVoting
     return () => {
       active = false;
       controller.abort();
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+      clearProgressInterval(intervalRef);
     };
   }, [
     autoNavigate,

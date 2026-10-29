@@ -801,7 +801,13 @@ fn load_receipt_from_zip(path: &Path) -> Result<LoadedReceipt, ServiceError> {
                     path: path.to_path_buf(),
                     source,
                 })?;
-            entry.name().to_string()
+            entry
+                .name()
+                .map_err(|source| ServiceError::BundleArchive {
+                    path: path.to_path_buf(),
+                    source,
+                })?
+                .into_owned()
         };
 
         if entry_name.to_lowercase().ends_with("receipt.json") {

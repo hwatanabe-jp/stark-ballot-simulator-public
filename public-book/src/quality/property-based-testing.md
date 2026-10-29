@@ -1,10 +1,10 @@
-# 入力を生成して、性質を試す
+# プロパティベーステスト
 
-64 票で通った包含証明が、63 票や 65 票でも正しく動くとは限りません。Merkle ツリーの枝分かれや、ビットをバイトに詰める処理には、大きさが一つ変わっただけで別の分岐を通る箇所があります。
+Property-based Testing（PBT）は入力を多数生成し、すべての入力で成り立つと期待する性質を実装に対して試す方法です。TypeScript には `fast-check`、Rust には `proptest` を使います。失敗が見つかると、原因を追いやすい小さな入力へ縮めます。
 
-Property-based Testing（PBT）は、こうした入力を多数生成し、「どの入力でも成り立ってほしい性質」を実装に対して試す方法です。TypeScript には `fast-check`、Rust には `proptest` を使います。失敗が見つかると、原因を追いやすい小さな入力へ縮めます。
+Merkle ツリーの分岐やビットのバイト配列への格納処理には、大きさが一つ変わるだけで処理が変わる箇所があります。64 票で包含証明が通っても、63 票や 65 票で正しく動くとは限りません。
 
-## 順番を変えても、同じ入力を表すか
+## 入力コミットメントの順序不変性
 
 [入力コミットメント](../protocol/input-commitment.md) は、同じ票の集合なら入力順を変えても同じ値になる設計です。PBT では票を生成して並べ替え、元の入力と計算結果を比較します。
 
@@ -12,7 +12,7 @@ Property-based Testing（PBT）は、こうした入力を多数生成し、「�
 
 このテストは実装の並べ替えやバイト列化の誤りを探します。SHA-256 の衝突困難性を証明するものではありません。
 
-## 一つのビットが境界を越えるとき
+## ビットマップの境界値
 
 自票が採用されたかを示すビットマップでは、7 と 8 の間でバイトが変わり、255 と 256 の間で 256 ビットの区画が変わります。境界の前後でビットを取り違えると、別の票の採用状況を表示してしまいます。
 
@@ -41,10 +41,10 @@ excludedSlots = missingSlots + invalidPresentedSlots
 
 Rust 側の `zkvm/methods/guest/src/property_tests.rs` でも、入力の並べ替え、Merkle 証明、ビットマップ、ゲストの集計数と重複処理を検査します。Merkle ツリーやビットマップは比較用の実装と照合し、同じ誤りをそのまま期待値にしてしまう可能性を減らします。
 
-## 生成テストから証明へ
+## 生成テストの範囲と形式証明
 
 PBT が確認できるのは、生成器が作り、実際に実行したケースです。実行時間を増やしても、生成器が作らない種類の入力は試せません。
 
-同じ性質をすべてのモデル入力について述べたい場合は、[Lean による形式化](lean-formalization.md) を使います。そこで証明したモデルと実装の対応も、生成したテストケースを介して確かめます。
+すべてのモデル入力について同じ性質が成り立つことを示す場合は、[Lean による形式化](lean-formalization.md)を使います。入力コミットメントやビットマップなど、対応する生成テストケースを持つモデルでは、そのケースを介して実装との対応も確かめます。
 
 <!-- source: packages/merkle/src/rfc6962-merkle-tree.property.test.ts, packages/verification/src/merkle/bitmap-merkle-tree.property.test.ts, packages/zkvm-contract/src/zkvm/input-commitment.property.test.ts, packages/node-adapters/src/zkvm/journal-invariants.property.test.ts, zkvm/methods/guest/src/property_tests.rs, docs/formal/README.md -->

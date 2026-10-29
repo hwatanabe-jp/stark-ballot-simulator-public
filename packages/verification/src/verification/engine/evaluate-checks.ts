@@ -264,7 +264,7 @@ export function resolveRecordedInclusionProof(ctx: VerificationCheckContext<'rec
     return { status: 'not_run' };
   }
 
-  if (!Number.isInteger(voteReceipt.bulletinIndex) || voteReceipt.bulletinIndex < 0) {
+  if (!isValidCount(voteReceipt.bulletinIndex)) {
     return { status: 'not_run' };
   }
   let receiptBulletinIndex: ReturnType<typeof asBulletinIndex>;
@@ -329,25 +329,15 @@ export function resolveRecordedIndexInRange(
     : { status: 'failed', error: 'Invalid bulletin index' };
 }
 
-function resolveRecordedConsistencyProof(input: VerificationCheckContext<'recorded_consistency_proof'>): CheckResult {
-  const { consistencyProof, voteReceipt, bulletinRoot, treeSize, userVote } = input;
-  if (!voteReceipt || !voteReceipt.bulletinRootAtCast || !bulletinRoot || typeof treeSize !== 'number') {
-    return { status: 'not_run' };
-  }
+function isPositiveTreeSize(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
+}
 
-  const newSize = treeSize;
-  if (!Number.isInteger(newSize) || newSize <= 0) {
-    return { status: 'not_run' };
-  }
-
-  const proof = toCanonicalRfc6962Proof(userVote?.proof);
-  if (!proof) {
-    return { status: 'not_run' };
-  }
-
-  if (!Number.isInteger(voteReceipt.bulletinIndex) || voteReceipt.bulletinIndex < 0) {
-    return { status: 'not_run' };
-  }
+function validateConsistencySnapshot(
+  proof: NonNullable<ReturnType<typeof toCanonicalRfc6962Proof>>,
+  voteReceipt: NonNullable<VerificationCheckContext<'recorded_consistency_proof'>['voteReceipt']>,
+  newSize: number,
+): CheckResult | undefined {
   if (!Number.isInteger(proof.leafIndex) || proof.leafIndex < 0) {
     return { status: 'failed', error: 'Consistency proof leaf index is invalid.' };
   }
@@ -369,6 +359,49 @@ function resolveRecordedConsistencyProof(input: VerificationCheckContext<'record
     return { status: 'failed', error: 'Consistency proof tree size exceeds final bulletin size.' };
   }
 
+  return undefined;
+}
+
+function hasReceiptCastRoot(
+  receipt: VerificationCheckContext<'recorded_consistency_proof'>['voteReceipt'],
+): receipt is NonNullable<typeof receipt> {
+  return !!receipt && !!receipt.bulletinRootAtCast;
+}
+
+function resolveRecordedConsistencyProof(input: VerificationCheckContext<'recorded_consistency_proof'>): CheckResult {
+  const { consistencyProof, voteReceipt, bulletinRoot, treeSize, userVote } = input;
+  if (!hasReceiptCastRoot(voteReceipt) || !bulletinRoot || typeof treeSize !== 'number') {
+    return { status: 'not_run' };
+  }
+
+  const newSize = treeSize;
+  if (!isPositiveTreeSize(newSize)) {
+    return { status: 'not_run' };
+  }
+
+  const proof = toCanonicalRfc6962Proof(userVote?.proof);
+  if (!proof) {
+    return { status: 'not_run' };
+  }
+
+  if (!isValidCount(voteReceipt.bulletinIndex)) {
+    return { status: 'not_run' };
+  }
+  const snapshotError = validateConsistencySnapshot(proof, voteReceipt, newSize);
+  if (snapshotError) return snapshotError;
+
+  return verifyAdmittedConsistencyProof(consistencyProof, {
+    fromTreeSize: proof.treeSize,
+    toTreeSize: newSize,
+    rootAtFromTreeSize: voteReceipt.bulletinRootAtCast,
+    rootAtToTreeSize: bulletinRoot,
+  });
+}
+
+function verifyAdmittedConsistencyProof(
+  consistencyProof: VerificationCheckContext<'recorded_consistency_proof'>['consistencyProof'],
+  snapshot: Parameters<typeof verifyConsistencyProof>[1],
+): CheckResult {
   if (consistencyProof.kind === 'unavailable') {
     return { status: 'not_run' };
   }
@@ -379,24 +412,21 @@ function resolveRecordedConsistencyProof(input: VerificationCheckContext<'record
     };
   }
 
-  const result = verifyConsistencyProof(consistencyProof.value, {
-    fromTreeSize: proof.treeSize,
-    toTreeSize: newSize,
-    rootAtFromTreeSize: voteReceipt.bulletinRootAtCast,
-    rootAtToTreeSize: bulletinRoot,
-  });
+  const result = verifyConsistencyProof(consistencyProof.value, snapshot);
   return result.isValid
     ? { status: 'success' }
     : { status: 'failed', error: result.error ?? 'Consistency proof verification failed.' };
 }
 
-function resolveRecordedSthThirdParty(input: VerificationCheckContext<'recorded_sth_third_party'>): CheckResult {
+function hasPublicSthEvidence(input: VerificationCheckContext<'recorded_sth_third_party'>): boolean {
   const sthDigest = input.journal?.sthDigest ?? input.sthDigest;
   const bulletinRoot = input.journal?.bulletinRoot ?? input.bulletinRoot;
   const treeSize = input.journal?.treeSize ?? input.treeSize;
-  if (!sthDigest || !bulletinRoot || typeof treeSize !== 'number') {
-    return { status: 'not_run' };
-  }
+  return !!sthDigest && !!bulletinRoot && typeof treeSize === 'number';
+}
+
+function resolveRecordedSthThirdParty(input: VerificationCheckContext<'recorded_sth_third_party'>): CheckResult {
+  if (!hasPublicSthEvidence(input)) return { status: 'not_run' };
 
   if (input.sthSourcesConfigured !== true) {
     return { status: 'not_run' };
@@ -462,21 +492,33 @@ export function resolveCountedTallyConsistent(
   const totalVotes = input.tally?.totalVotes;
   const verifiedTally = input.verifiedTally;
   if (counts && typeof totalVotes === 'number' && Array.isArray(verifiedTally)) {
-    const countsArray = VOTE_CHOICES.map((choice) => counts[choice]);
-    if (countsArray.some((value) => typeof value !== 'number')) {
-      return { status: 'not_run' };
-    }
-
-    if (verifiedTally.length < countsArray.length || verifiedTally.some((value) => typeof value !== 'number')) {
-      return { status: 'not_run' };
-    }
-
-    const normalizedVerified = verifiedTally.slice(0, countsArray.length);
-    const tallyMatches = countsArray.every((value, index) => value === normalizedVerified[index]);
-    const sum = normalizedVerified.reduce((total, value) => total + value, 0);
-    return tallyMatches && sum === totalVotes ? { status: 'success' } : { status: 'failed' };
+    return comparePublishedTally(counts, totalVotes, verifiedTally);
   }
 
+  return validateJournalTally(journal);
+}
+
+function comparePublishedTally(
+  counts: NonNullable<NonNullable<VerificationCheckContext<'counted_tally_consistent'>['tally']>['counts']>,
+  totalVotes: number,
+  verifiedTally: number[],
+): CheckResult {
+  const countsArray = VOTE_CHOICES.map((choice) => counts[choice]);
+  if (countsArray.some((value) => typeof value !== 'number')) {
+    return { status: 'not_run' };
+  }
+
+  if (verifiedTally.length < countsArray.length || verifiedTally.some((value) => typeof value !== 'number')) {
+    return { status: 'not_run' };
+  }
+
+  const normalizedVerified = verifiedTally.slice(0, countsArray.length);
+  const tallyMatches = countsArray.every((value, index) => value === normalizedVerified[index]);
+  const sum = normalizedVerified.reduce((total, value) => total + value, 0);
+  return tallyMatches && sum === totalVotes ? { status: 'success' } : { status: 'failed' };
+}
+
+function validateJournalTally(journal: VerificationCheckContext<'counted_tally_consistent'>['journal']): CheckResult {
   if (!journal) {
     return { status: 'not_run' };
   }
@@ -594,6 +636,14 @@ function resolveCountedElectionManifestConsistent(
     return { status: 'failed', error: 'Election manifest hash does not match its declared configuration.' };
   }
 
+  return compareElectionManifestInputs(input, manifest, recomputedHash);
+}
+
+function compareElectionManifestInputs(
+  input: VerificationCheckContext<'counted_election_manifest_consistent'>,
+  manifest: NonNullable<VerificationCheckContext<'counted_election_manifest_consistent'>['electionManifest']>,
+  recomputedHash: string,
+): CheckResult {
   const candidateElectionIds = [
     manifest.electionId,
     input.electionId,
@@ -617,23 +667,9 @@ function resolveCountedElectionManifestConsistent(
   return { status: 'success' };
 }
 
-function resolveCountedCloseStatementConsistent(
-  input: VerificationCheckContext<'counted_close_statement_consistent'>,
-  zkGateStatus?: VerificationStepStatus,
-): CheckResult {
-  if (zkGateStatus) {
-    return { status: zkGateStatus };
-  }
-
-  const closeStatement = input.closeStatement;
-  if (!closeStatement) {
-    return { status: 'not_run' };
-  }
-  const publicInputTimestamp = input.publicInputAuthority?.timestamp;
-  if (typeof publicInputTimestamp !== 'number' || !Number.isInteger(publicInputTimestamp)) {
-    return { status: 'not_run' };
-  }
-
+function validateCloseStatementArtifact(
+  closeStatement: NonNullable<VerificationCheckContext<'counted_close_statement_consistent'>['closeStatement']>,
+): CheckResult | undefined {
   let recomputed;
   try {
     recomputed = buildCloseStatement({
@@ -651,10 +687,40 @@ function resolveCountedCloseStatementConsistent(
   if (normalizeHexString(recomputed.sthDigest) !== normalizeHexString(closeStatement.sthDigest)) {
     return { status: 'failed', error: 'Close statement digest does not match its declared snapshot.' };
   }
+  return undefined;
+}
+
+function resolveCountedCloseStatementConsistent(
+  input: VerificationCheckContext<'counted_close_statement_consistent'>,
+  zkGateStatus?: VerificationStepStatus,
+): CheckResult {
+  if (zkGateStatus) {
+    return { status: zkGateStatus };
+  }
+
+  const closeStatement = input.closeStatement;
+  if (!closeStatement) {
+    return { status: 'not_run' };
+  }
+  const publicInputTimestamp = input.publicInputAuthority?.timestamp;
+  if (typeof publicInputTimestamp !== 'number' || !Number.isInteger(publicInputTimestamp)) {
+    return { status: 'not_run' };
+  }
+
+  const artifactError = validateCloseStatementArtifact(closeStatement);
+  if (artifactError) return artifactError;
   if (closeStatement.timestamp !== publicInputTimestamp) {
     return { status: 'failed', error: 'Close statement timestamp does not match public input.' };
   }
 
+  return compareCloseStatementInputs(input, closeStatement, closeStatement.sthDigest);
+}
+
+function compareCloseStatementInputs(
+  input: VerificationCheckContext<'counted_close_statement_consistent'>,
+  closeStatement: NonNullable<VerificationCheckContext<'counted_close_statement_consistent'>['closeStatement']>,
+  admittedDigest: string,
+): CheckResult {
   const candidateLogIds = [closeStatement.logId, input.logId].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
@@ -679,7 +745,7 @@ function resolveCountedCloseStatementConsistent(
   const candidateDigests = [closeStatement.sthDigest, input.sthDigest, input.journal?.sthDigest].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
-  if (candidateDigests.some((value) => normalizeHexString(value) !== normalizeHexString(recomputed.sthDigest))) {
+  if (candidateDigests.some((value) => normalizeHexString(value) !== normalizeHexString(admittedDigest))) {
     return { status: 'failed', error: 'Close statement STH digest does not match verification inputs.' };
   }
 
@@ -721,17 +787,13 @@ function isValidCount(value: number | undefined): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
-function resolveCountedMyVoteIncluded(
-  input: VerificationCheckContext<'counted_my_vote_included'>,
-  zkGateStatus?: VerificationStepStatus,
-): CheckResult {
-  if (zkGateStatus) {
-    return { status: zkGateStatus };
-  }
+function hasBitmapReceiptPosition(index: number | undefined): index is number {
+  return typeof index === 'number' && Number.isInteger(index);
+}
 
-  const includedBitmapRoot = input.journal?.includedBitmapRoot ?? input.includedBitmapRoot;
-  const seenBitmapRoot = input.journal?.seenBitmapRoot ?? input.seenBitmapRoot;
-  const treeSizeCandidate = input.journal?.treeSize ?? input.treeSize;
+function admitBitmapTreeSize(
+  treeSizeCandidate: number | undefined,
+): ReturnType<typeof asAuthenticatedBitmapTreeSize> | undefined {
   let authenticatedTreeSize: ReturnType<typeof asAuthenticatedBitmapTreeSize> | undefined;
   if (typeof treeSizeCandidate === 'number') {
     try {
@@ -740,27 +802,76 @@ function resolveCountedMyVoteIncluded(
       authenticatedTreeSize = undefined;
     }
   }
+  return authenticatedTreeSize;
+}
+
+function unresolvedMyVoteCheck(input: VerificationCheckContext<'counted_my_vote_included'>): CheckResult {
+  const noteKey = resolveCountedMyVoteIncludedNoteKey(input);
+  return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+}
+
+function resolveBitmapProofAuthority(input: VerificationCheckContext<'counted_my_vote_included'>) {
+  return {
+    includedBitmapRoot: input.journal?.includedBitmapRoot ?? input.includedBitmapRoot,
+    seenBitmapRoot: input.journal?.seenBitmapRoot ?? input.seenBitmapRoot,
+    treeSizeCandidate: input.journal?.treeSize ?? input.treeSize,
+  };
+}
+
+function hasAdmittedBitmapProofSource(input: VerificationCheckContext<'counted_my_vote_included'>): boolean {
+  return input.bitmapProofSource === 'mock' || input.bitmapProofSource === 'real';
+}
+
+function resolveCountedMyVoteIncluded(
+  input: VerificationCheckContext<'counted_my_vote_included'>,
+  zkGateStatus?: VerificationStepStatus,
+): CheckResult {
+  if (zkGateStatus) {
+    return { status: zkGateStatus };
+  }
+
+  const { includedBitmapRoot, seenBitmapRoot, treeSizeCandidate } = resolveBitmapProofAuthority(input);
+  const authenticatedTreeSize = admitBitmapTreeSize(treeSizeCandidate);
   const bulletinIndex = input.voteReceipt?.bulletinIndex;
-  if (!includedBitmapRoot || typeof bulletinIndex !== 'number' || !Number.isInteger(bulletinIndex)) {
-    const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
-    return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+  if (!includedBitmapRoot || !hasBitmapReceiptPosition(bulletinIndex)) {
+    return unresolvedMyVoteCheck(input);
   }
 
   if (authenticatedTreeSize === undefined) {
-    const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
-    return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+    return unresolvedMyVoteCheck(input);
   }
 
-  if (input.bitmapProofSource !== 'mock' && input.bitmapProofSource !== 'real') {
-    const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
-    return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+  if (!hasAdmittedBitmapProofSource(input)) {
+    return unresolvedMyVoteCheck(input);
   }
 
   if (input.includedBitmapProof.kind !== 'admitted') {
-    const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
-    return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+    return unresolvedMyVoteCheck(input);
   }
 
+  return evaluateMyVoteBitmapProof(input, {
+    bulletinIndex,
+    includedBitmapRoot,
+    seenBitmapRoot,
+    authenticatedTreeSize,
+    includedProof: input.includedBitmapProof.value,
+  });
+}
+
+function evaluateMyVoteBitmapProof(
+  input: VerificationCheckContext<'counted_my_vote_included'>,
+  evidence: {
+    bulletinIndex: number;
+    includedBitmapRoot: string;
+    seenBitmapRoot: string | undefined;
+    authenticatedTreeSize: ReturnType<typeof asAuthenticatedBitmapTreeSize>;
+    includedProof: Extract<
+      VerificationCheckContext<'counted_my_vote_included'>['includedBitmapProof'],
+      { kind: 'admitted' }
+    >['value'];
+  },
+): CheckResult {
+  const { bulletinIndex, includedBitmapRoot, seenBitmapRoot, authenticatedTreeSize, includedProof } = evidence;
   try {
     const result = seenBitmapRoot
       ? explainVoteInclusionStatus(
@@ -770,49 +881,45 @@ function resolveCountedMyVoteIncluded(
             seenBitmapRoot,
           },
           {
-            includedProof: input.includedBitmapProof.value,
+            includedProof,
             ...(input.seenBitmapProof.kind === 'admitted' ? { seenProof: input.seenBitmapProof.value } : {}),
             treeSize: authenticatedTreeSize,
           },
         )
       : verifyMyVoteWasCounted(bulletinIndex, includedBitmapRoot, {
-          proof: input.includedBitmapProof.value,
+          proof: includedProof,
           treeSize: authenticatedTreeSize,
         });
-    if (!result.valid) {
-      return { status: 'failed' };
-    }
-    const status: VerificationStepStatus = result.included ? 'success' : 'failed';
-    if (status === 'failed' && 'statusDetail' in result) {
-      const noteKey =
-        result.statusDetail === 'not_presented'
-          ? 'pages.verify.stepsCard.notes.myVoteIncluded.notPresented'
-          : result.statusDetail === 'presented_but_invalid'
-            ? 'pages.verify.stepsCard.notes.myVoteIncluded.presentedButInvalid'
-            : result.statusDetail === 'unknown_excluded'
-              ? 'pages.verify.stepsCard.notes.myVoteIncluded.excluded'
-              : undefined;
-      return noteKey ? { status, noteKey } : { status };
-    }
-    return { status };
+    return projectMyVoteProofResult(result);
   } catch {
-    const noteKey = resolveCountedMyVoteIncludedNoteKey(input, 'not_run', zkGateStatus);
-    return noteKey ? { status: 'not_run', noteKey } : { status: 'not_run' };
+    return unresolvedMyVoteCheck(input);
   }
+}
+
+function projectMyVoteProofResult(
+  result: ReturnType<typeof explainVoteInclusionStatus> | ReturnType<typeof verifyMyVoteWasCounted>,
+): CheckResult {
+  if (!result.valid) {
+    return { status: 'failed' };
+  }
+  const status: VerificationStepStatus = result.included ? 'success' : 'failed';
+  if (status === 'failed' && 'statusDetail' in result) {
+    const noteKey =
+      result.statusDetail === 'not_presented'
+        ? 'pages.verify.stepsCard.notes.myVoteIncluded.notPresented'
+        : result.statusDetail === 'presented_but_invalid'
+          ? 'pages.verify.stepsCard.notes.myVoteIncluded.presentedButInvalid'
+          : result.statusDetail === 'unknown_excluded'
+            ? 'pages.verify.stepsCard.notes.myVoteIncluded.excluded'
+            : undefined;
+    return noteKey ? { status, noteKey } : { status };
+  }
+  return { status };
 }
 
 function resolveCountedMyVoteIncludedNoteKey(
   input: VerificationCheckContext<'counted_my_vote_included'>,
-  status: VerificationStepStatus | undefined,
-  zkGateStatus?: VerificationStepStatus,
 ): VerificationCheckNoteKey | undefined {
-  if (status !== 'not_run') {
-    return undefined;
-  }
-  if (zkGateStatus) {
-    return undefined;
-  }
-
   const resolvedExcludedSlots = resolveExcludedCount({
     ...omitUndefinedProperties({
       journal: input.journal,
@@ -827,11 +934,11 @@ function resolveCountedMyVoteIncludedNoteKey(
 
   const includedBitmapRoot = input.journal?.includedBitmapRoot ?? input.includedBitmapRoot;
   const bulletinIndex = input.voteReceipt?.bulletinIndex;
-  if (!includedBitmapRoot || typeof bulletinIndex !== 'number' || !Number.isInteger(bulletinIndex)) {
+  if (!includedBitmapRoot || !hasBitmapReceiptPosition(bulletinIndex)) {
     return 'pages.verify.stepsCard.notes.myVoteIncluded.missingReceipt';
   }
 
-  if (input.bitmapProofSource !== 'mock' && input.bitmapProofSource !== 'real') {
+  if (!hasAdmittedBitmapProofSource(input)) {
     return 'pages.verify.stepsCard.notes.myVoteIncluded.proofUnavailable';
   }
 
@@ -850,20 +957,11 @@ function resolveStarkImageIdMatch(
     return { status };
   }
 
-  const report = ctx.verificationReport;
   const claimedImageId = ctx.claimedImageId;
   const comparisonImageId = ctx.comparisonImageId;
 
-  if (
-    (claimedImageId !== undefined && !isValidImageId(claimedImageId)) ||
-    (comparisonImageId !== undefined && !isValidImageId(comparisonImageId)) ||
-    (report?.expected_image_id !== undefined && !isValidImageId(report.expected_image_id)) ||
-    (report?.receipt_image_id !== undefined &&
-      report.receipt_image_id !== null &&
-      !isValidImageId(report.receipt_image_id))
-  ) {
+  if (!hasValidImageIdEvidence(ctx))
     return { status: 'failed', error: 'ImageID evidence must be a 32-byte hexadecimal value.' };
-  }
 
   if (claimedImageId && comparisonImageId) {
     if (normalizeHexString(claimedImageId) !== normalizeHexString(comparisonImageId)) {
@@ -871,32 +969,57 @@ function resolveStarkImageIdMatch(
     }
   }
 
-  if (report?.expected_image_id && report.receipt_image_id !== undefined) {
-    if (!report.receipt_image_id) {
-      return { status: 'failed' };
-    }
-
-    const expected = normalizeHexString(report.expected_image_id);
-    const receipt = normalizeHexString(report.receipt_image_id);
-    if (expected !== receipt) {
-      return { status: 'failed' };
-    }
-    if (claimedImageId && normalizeHexString(claimedImageId) !== receipt) {
-      return { status: 'failed', error: 'Claimed ImageID does not match verifier-confirmed receipt ImageID.' };
-    }
-    if (comparisonImageId && normalizeHexString(comparisonImageId) !== receipt) {
-      return {
-        status: 'failed',
-        error: 'Comparison-only journal ImageID does not match verifier-confirmed receipt ImageID.',
-      };
-    }
-    return { status: 'success' };
-  }
-
-  return { status: 'not_run' };
+  return compareVerifierImageIds(ctx);
 }
 
-export function resolveStarkStatus(
+function hasValidImageIdEvidence(ctx: VerificationCheckContext<'stark_image_id_match'>): boolean {
+  const report = ctx.verificationReport;
+  const values = [ctx.claimedImageId, ctx.comparisonImageId, report?.expected_image_id];
+  if (values.some((value) => value !== undefined && !isValidImageId(value))) return false;
+  return (
+    report?.receipt_image_id === undefined ||
+    report.receipt_image_id === null ||
+    isValidImageId(report.receipt_image_id)
+  );
+}
+
+function compareVerifierImageIds(ctx: VerificationCheckContext<'stark_image_id_match'>): CheckResult {
+  const { verificationReport: report, claimedImageId, comparisonImageId } = ctx;
+  if (!report?.expected_image_id || report.receipt_image_id === undefined) return { status: 'not_run' };
+  if (!report.receipt_image_id) return { status: 'failed' };
+  return compareConfirmedReceiptImageId(
+    { ...report, expected_image_id: report.expected_image_id, receipt_image_id: report.receipt_image_id },
+    claimedImageId,
+    comparisonImageId,
+  );
+}
+
+function compareConfirmedReceiptImageId(
+  report: NonNullable<VerificationCheckContext<'stark_image_id_match'>['verificationReport']> & {
+    expected_image_id: string;
+    receipt_image_id: string;
+  },
+  claimedImageId: string | undefined,
+  comparisonImageId: string | undefined,
+): CheckResult {
+  const expected = normalizeHexString(report.expected_image_id);
+  const receipt = normalizeHexString(report.receipt_image_id);
+  if (expected !== receipt) {
+    return { status: 'failed' };
+  }
+  if (claimedImageId && normalizeHexString(claimedImageId) !== receipt) {
+    return { status: 'failed', error: 'Claimed ImageID does not match verifier-confirmed receipt ImageID.' };
+  }
+  if (comparisonImageId && normalizeHexString(comparisonImageId) !== receipt) {
+    return {
+      status: 'failed',
+      error: 'Comparison-only journal ImageID does not match verifier-confirmed receipt ImageID.',
+    };
+  }
+  return { status: 'success' };
+}
+
+function resolveStarkStatus(
   outcome: AdmittedVerifierOutcome,
   allowDevModeVerification?: boolean,
 ): VerificationStepStatus {

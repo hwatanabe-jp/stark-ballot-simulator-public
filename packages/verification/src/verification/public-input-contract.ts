@@ -7,9 +7,9 @@ import {
 import {
   getArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -174,7 +174,7 @@ export function parsePublicInputArtifact(
     uniqueCommitments: true,
   };
 
-  if (!isRecord(raw)) {
+  if (!isNonNullObject(raw)) {
     return finalizeParsedPublicInput({
       format,
       provenance: options,
@@ -184,6 +184,48 @@ export function parsePublicInputArtifact(
   }
   errors.push(...unexpectedKeys(raw, PUBLIC_INPUT_KEYS));
 
+  observePublicInputFormat(raw, format, errors);
+  const electionId = observeElectionId(raw, observed, errors);
+  observePublicInputHash(raw, 'electionConfigHash', observed, errors);
+  observePublicInputHash(raw, 'bulletinRoot', observed, errors);
+  observePublicInputInteger(raw, 'treeSize', observed, errors);
+  observePublicInputInteger(raw, 'totalExpected', observed, errors);
+  observePublicInputHash(raw, 'logId', observed, errors);
+  observePublicInputInteger(raw, 'timestamp', observed, errors);
+  observePublicInputInteger(raw, 'methodVersion', observed, errors);
+
+  const votes = getArrayProperty(raw, 'votes');
+  if (!votes) {
+    return finalizeParsedPublicInput({
+      format,
+      provenance: options,
+      observed,
+      errors: [...errors, 'votes'],
+    });
+  }
+
+  observed.votesCount = votes.length;
+
+  const parsedVotes = observePublicInputVotes(votes, observed, errors);
+
+  observePublicInputCommitment(observed, errors, parsedVotes, votes.length, electionId);
+
+  const typedAuthority = derivePublicInputAuthority(observed, errors);
+
+  return finalizeParsedPublicInput({
+    format,
+    provenance: options,
+    observed,
+    ...omitUndefinedProperties({ typedAuthority: typedAuthority }),
+    errors,
+  });
+}
+
+function observePublicInputFormat(
+  raw: Record<string, unknown>,
+  format: PublicInputArtifactFormat,
+  errors: string[],
+): void {
   const schema = getStringProperty(raw, 'schema');
   if (schema) {
     format.schema = schema;
@@ -199,7 +241,13 @@ export function parsePublicInputArtifact(
   if (version !== PUBLIC_INPUT_VERSION) {
     errors.push('version');
   }
+}
 
+function observeElectionId(
+  raw: Record<string, unknown>,
+  observed: PublicInputObservedFields,
+  errors: string[],
+): string | undefined {
   const electionId = getStringProperty(raw, 'electionId');
   if (!electionId) {
     errors.push('electionId');
@@ -207,106 +255,97 @@ export function parsePublicInputArtifact(
     observed.electionId = electionId;
   }
 
-  const electionConfigHash = getStringProperty(raw, 'electionConfigHash');
-  if (!electionConfigHash || !isValidHexString(electionConfigHash, 32)) {
-    errors.push('electionConfigHash');
-  } else {
-    observed.electionConfigHash = addHexPrefix(normalizeHexString(electionConfigHash));
+  return electionId;
+}
+
+function isPublicInputHash(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && isValidHexString(value, 32);
+}
+
+function isPublicInputInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value);
+}
+
+function observePublicInputHash(
+  raw: Record<string, unknown>,
+  field: 'electionConfigHash' | 'bulletinRoot' | 'logId',
+  observed: PublicInputObservedFields,
+  errors: string[],
+): void {
+  const value = getStringProperty(raw, field);
+  if (!isPublicInputHash(value)) errors.push(field);
+  else observed[field] = addHexPrefix(normalizeHexString(value));
+}
+
+function observePublicInputInteger(
+  raw: Record<string, unknown>,
+  field: 'treeSize' | 'totalExpected' | 'timestamp' | 'methodVersion',
+  observed: PublicInputObservedFields,
+  errors: string[],
+): void {
+  const value = getNumberProperty(raw, field);
+  if (!isPublicInputInteger(value)) errors.push(field);
+  else observed[field] = value;
+}
+
+function admitPublicInputVotePath(voteEntry: Record<string, unknown>, errors: string[]): string[] | undefined {
+  const merklePath = getArrayProperty(voteEntry, 'merklePath');
+  if (!Array.isArray(merklePath) || !merklePath.every((node) => typeof node === 'string')) {
+    errors.push('vote_merkle_path');
+    return undefined;
   }
 
-  const bulletinRoot = getStringProperty(raw, 'bulletinRoot');
-  if (!bulletinRoot || !isValidHexString(bulletinRoot, 32)) {
-    errors.push('bulletinRoot');
-  } else {
-    observed.bulletinRoot = addHexPrefix(normalizeHexString(bulletinRoot));
+  if (!merklePath.every((node) => isValidHexString(node, 32))) {
+    errors.push('vote_merkle_path_hex');
+    return undefined;
   }
 
-  const treeSize = getNumberProperty(raw, 'treeSize');
-  if (typeof treeSize !== 'number' || !Number.isInteger(treeSize)) {
-    errors.push('treeSize');
-  } else {
-    observed.treeSize = treeSize;
+  return merklePath;
+}
+
+function admitPublicInputVote(voteEntry: unknown, errors: string[]): PublicInputArtifactVote | undefined {
+  if (!isNonNullObject(voteEntry)) {
+    errors.push('vote_record');
+    return undefined;
+  }
+  errors.push(...unexpectedKeys(voteEntry, PUBLIC_INPUT_VOTE_KEYS));
+
+  const index = getNumberProperty(voteEntry, 'index');
+  if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+    errors.push('vote_index');
+    return undefined;
   }
 
-  const totalExpected = getNumberProperty(raw, 'totalExpected');
-  if (typeof totalExpected !== 'number' || !Number.isInteger(totalExpected)) {
-    errors.push('totalExpected');
-  } else {
-    observed.totalExpected = totalExpected;
+  const commitment = getStringProperty(voteEntry, 'commitment');
+  if (!commitment || !isValidHexString(commitment, 32)) {
+    errors.push('vote_commitment');
+    return undefined;
   }
 
-  const logId = getStringProperty(raw, 'logId');
-  if (!logId || !isValidHexString(logId, 32)) {
-    errors.push('logId');
-  } else {
-    observed.logId = addHexPrefix(normalizeHexString(logId));
-  }
+  const merklePath = admitPublicInputVotePath(voteEntry, errors);
+  if (!merklePath) return undefined;
 
-  const timestamp = getNumberProperty(raw, 'timestamp');
-  if (typeof timestamp !== 'number' || !Number.isInteger(timestamp)) {
-    errors.push('timestamp');
-  } else {
-    observed.timestamp = timestamp;
-  }
+  return {
+    index,
+    commitment,
+    merklePath,
+  };
+}
 
-  const methodVersion = getNumberProperty(raw, 'methodVersion');
-  if (typeof methodVersion !== 'number' || !Number.isInteger(methodVersion)) {
-    errors.push('methodVersion');
-  } else {
-    observed.methodVersion = methodVersion;
-  }
-
-  const votes = getArrayProperty(raw, 'votes');
-  if (!votes) {
-    return finalizeParsedPublicInput({
-      format,
-      provenance: options,
-      observed,
-      errors: [...errors, 'votes'],
-    });
-  }
-
-  observed.votesCount = votes.length;
-
+function observePublicInputVotes(
+  votes: unknown[],
+  observed: PublicInputObservedFields,
+  errors: string[],
+): PublicInputArtifactVote[] {
   const parsedVotes: PublicInputArtifactVote[] = [];
   const seenIndices = new Set<number>();
   const seenCommitments = new Set<string>();
 
   for (const voteEntry of votes) {
-    if (!isRecord(voteEntry)) {
-      errors.push('vote_record');
-      continue;
-    }
-    errors.push(...unexpectedKeys(voteEntry, PUBLIC_INPUT_VOTE_KEYS));
-
-    const index = getNumberProperty(voteEntry, 'index');
-    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
-      errors.push('vote_index');
-      continue;
-    }
-
-    const commitment = getStringProperty(voteEntry, 'commitment');
-    if (!commitment || !isValidHexString(commitment, 32)) {
-      errors.push('vote_commitment');
-      continue;
-    }
-
-    const merklePath = getArrayProperty(voteEntry, 'merklePath');
-    if (!Array.isArray(merklePath) || !merklePath.every((node) => typeof node === 'string')) {
-      errors.push('vote_merkle_path');
-      continue;
-    }
-
-    if (!merklePath.every((node) => isValidHexString(node, 32))) {
-      errors.push('vote_merkle_path_hex');
-      continue;
-    }
-
-    parsedVotes.push({
-      index,
-      commitment,
-      merklePath,
-    });
+    const vote = admitPublicInputVote(voteEntry, errors);
+    if (!vote) continue;
+    parsedVotes.push(vote);
+    const { index, commitment } = vote;
 
     if (seenIndices.has(index)) {
       observed.uniqueIndices = false;
@@ -322,12 +361,17 @@ export function parsePublicInputArtifact(
     }
   }
 
-  if (
-    errors.length === 0 &&
-    parsedVotes.length === votes.length &&
-    electionId &&
-    observed.totalExpected !== undefined
-  ) {
+  return parsedVotes;
+}
+
+function observePublicInputCommitment(
+  observed: PublicInputObservedFields,
+  errors: string[],
+  parsedVotes: PublicInputArtifactVote[],
+  votesCount: number,
+  electionId: string | undefined,
+): void {
+  if (errors.length === 0 && parsedVotes.length === votesCount && electionId && observed.totalExpected !== undefined) {
     try {
       observed.recomputedInputCommitment = computeInputCommitmentFromPublicInput({
         electionId,
@@ -340,7 +384,12 @@ export function parsePublicInputArtifact(
       errors.push('input_commitment');
     }
   }
+}
 
+function derivePublicInputAuthority(
+  observed: PublicInputObservedFields,
+  errors: string[],
+): PublicInputAuthority | undefined {
   const typedAuthority =
     errors.length === 0 &&
     observed.electionId &&
@@ -365,14 +414,7 @@ export function parsePublicInputArtifact(
           recomputedInputCommitment: observed.recomputedInputCommitment,
         }
       : undefined;
-
-  return finalizeParsedPublicInput({
-    format,
-    provenance: options,
-    observed,
-    ...omitUndefinedProperties({ typedAuthority: typedAuthority }),
-    errors,
-  });
+  return typedAuthority;
 }
 
 function finalizeParsedPublicInput(input: Omit<ParsedPublicInputArtifact, 'valid'>): ParsedPublicInputArtifact {
@@ -431,102 +473,116 @@ export function parseSupportedPublicInputArtifact(
   return toSupportedPublicInputArtifact(parsePublicInputArtifact(raw, options));
 }
 
+function admitStoredInputRecord(value: unknown, allowedKeys: ReadonlySet<string>): Record<string, unknown> | undefined {
+  return isNonNullObject(value) && !Array.isArray(value) && unexpectedKeys(value, allowedKeys).length === 0
+    ? value
+    : undefined;
+}
+
 export function parseStoredPublicInputArtifact(value: unknown): SupportedPublicInputArtifact | undefined {
-  if (!isRecord(value) || Array.isArray(value) || unexpectedKeys(value, STORED_PUBLIC_INPUT_KEYS).length > 0) {
-    return undefined;
-  }
-
-  const format = getRecordProperty(value, 'format');
-  const provenance = getRecordProperty(value, 'provenance');
-  const typedAuthority = getRecordProperty(value, 'typedAuthority');
-  if (
-    !format ||
-    Array.isArray(format) ||
-    unexpectedKeys(format, PUBLIC_INPUT_FORMAT_KEYS).length > 0 ||
-    !provenance ||
-    Array.isArray(provenance) ||
-    unexpectedKeys(provenance, PUBLIC_INPUT_PROVENANCE_KEYS).length > 0 ||
-    !typedAuthority ||
-    Array.isArray(typedAuthority) ||
-    unexpectedKeys(typedAuthority, PUBLIC_INPUT_AUTHORITY_KEYS).length > 0
-  ) {
-    return undefined;
-  }
-
-  const schema = getStringProperty(format, 'schema');
-  const version = getStringProperty(format, 'version');
-  if (schema !== PUBLIC_INPUT_SCHEMA || version !== PUBLIC_INPUT_VERSION) {
-    return undefined;
-  }
-
+  const record = admitStoredInputRecord(value, STORED_PUBLIC_INPUT_KEYS);
+  if (!record) return undefined;
+  const format = admitStoredInputRecord(getObjectProperty(record, 'format'), PUBLIC_INPUT_FORMAT_KEYS);
+  const provenance = admitStoredInputRecord(getObjectProperty(record, 'provenance'), PUBLIC_INPUT_PROVENANCE_KEYS);
+  const authorityRecord = admitStoredInputRecord(
+    getObjectProperty(record, 'typedAuthority'),
+    PUBLIC_INPUT_AUTHORITY_KEYS,
+  );
+  if (!format || !provenance || !authorityRecord) return undefined;
+  if (!hasCurrentPublicInputFormat(format)) return undefined;
   const source = getStringProperty(provenance, 'source');
-  if (source !== 'bundle' && source !== 'generated') {
-    return undefined;
-  }
+  if (source !== 'bundle' && source !== 'generated') return undefined;
+  const typedAuthority = admitStoredPublicInputAuthority(authorityRecord);
+  if (!typedAuthority) return undefined;
+  return {
+    format: { schema: PUBLIC_INPUT_SCHEMA, version: PUBLIC_INPUT_VERSION },
+    provenance: projectStoredPublicInputProvenance(provenance, source),
+    typedAuthority,
+  };
+}
 
-  const electionId = getStringProperty(typedAuthority, 'electionId');
-  const electionConfigHash = getStringProperty(typedAuthority, 'electionConfigHash');
-  const methodVersion = getNumberProperty(typedAuthority, 'methodVersion');
-  const bulletinRoot = getStringProperty(typedAuthority, 'bulletinRoot');
-  const treeSize = getNumberProperty(typedAuthority, 'treeSize');
-  const totalExpected = getNumberProperty(typedAuthority, 'totalExpected');
-  const votesCount = getNumberProperty(typedAuthority, 'votesCount');
-  const logId = getStringProperty(typedAuthority, 'logId');
-  const timestamp = getNumberProperty(typedAuthority, 'timestamp');
-  const recomputedInputCommitment = getStringProperty(typedAuthority, 'recomputedInputCommitment');
+function hasCurrentPublicInputFormat(format: Record<string, unknown>): boolean {
+  return (
+    getStringProperty(format, 'schema') === PUBLIC_INPUT_SCHEMA &&
+    getStringProperty(format, 'version') === PUBLIC_INPUT_VERSION
+  );
+}
 
-  if (
-    !electionId ||
-    !electionConfigHash ||
-    !isValidHexString(electionConfigHash, 32) ||
-    typeof methodVersion !== 'number' ||
-    !Number.isInteger(methodVersion) ||
-    !bulletinRoot ||
-    !isValidHexString(bulletinRoot, 32) ||
-    typeof treeSize !== 'number' ||
-    !Number.isInteger(treeSize) ||
-    typeof totalExpected !== 'number' ||
-    !Number.isInteger(totalExpected) ||
-    typeof votesCount !== 'number' ||
-    !Number.isInteger(votesCount) ||
-    typeof typedAuthority['uniqueIndices'] !== 'boolean' ||
-    typeof typedAuthority['uniqueCommitments'] !== 'boolean' ||
-    !logId ||
-    !isValidHexString(logId, 32) ||
-    typeof timestamp !== 'number' ||
-    !Number.isInteger(timestamp) ||
-    !recomputedInputCommitment ||
-    !isValidHexString(recomputedInputCommitment, 32)
-  ) {
-    return undefined;
-  }
-
+function projectStoredPublicInputProvenance(
+  provenance: Record<string, unknown>,
+  source: PublicInputArtifactSource,
+): PublicInputArtifactProvenance {
   const finalizationId = getStringProperty(provenance, 'finalizationId');
   const bundleKey = getStringProperty(provenance, 'bundleKey');
+  return { source, ...(finalizationId ? { finalizationId } : {}), ...(bundleKey ? { bundleKey } : {}) };
+}
 
+function admitStoredInputIdentity(record: Record<string, unknown>) {
+  const electionId = getStringProperty(record, 'electionId');
+  const electionConfigHash = getStringProperty(record, 'electionConfigHash');
+  const methodVersion = getNumberProperty(record, 'methodVersion');
+  if (!electionId || !isPublicInputHash(electionConfigHash) || !isPublicInputInteger(methodVersion)) return undefined;
+  return { electionId, electionConfigHash: addHexPrefix(normalizeHexString(electionConfigHash)), methodVersion };
+}
+
+function admitStoredInputSnapshot(record: Record<string, unknown>) {
+  const bulletinRoot = getStringProperty(record, 'bulletinRoot');
+  const treeSize = getNumberProperty(record, 'treeSize');
+  const totalExpected = getNumberProperty(record, 'totalExpected');
+  const logId = getStringProperty(record, 'logId');
+  const timestamp = getNumberProperty(record, 'timestamp');
+  if (
+    !isPublicInputHash(bulletinRoot) ||
+    !isPublicInputInteger(treeSize) ||
+    !isPublicInputInteger(totalExpected) ||
+    !isPublicInputHash(logId) ||
+    !isPublicInputInteger(timestamp)
+  )
+    return undefined;
   return {
-    format: {
-      schema: PUBLIC_INPUT_SCHEMA,
-      version: PUBLIC_INPUT_VERSION,
-    },
-    provenance: {
-      source,
-      ...(finalizationId ? { finalizationId } : {}),
-      ...(bundleKey ? { bundleKey } : {}),
-    },
-    typedAuthority: {
-      electionId,
-      electionConfigHash: addHexPrefix(normalizeHexString(electionConfigHash)),
-      methodVersion,
-      bulletinRoot: addHexPrefix(normalizeHexString(bulletinRoot)),
-      treeSize,
-      totalExpected,
-      votesCount,
-      uniqueIndices: typedAuthority['uniqueIndices'],
-      uniqueCommitments: typedAuthority['uniqueCommitments'],
-      logId: addHexPrefix(normalizeHexString(logId)),
-      timestamp,
-      recomputedInputCommitment: addHexPrefix(normalizeHexString(recomputedInputCommitment)),
-    },
+    bulletinRoot: addHexPrefix(normalizeHexString(bulletinRoot)),
+    treeSize,
+    totalExpected,
+    logId: addHexPrefix(normalizeHexString(logId)),
+    timestamp,
+  };
+}
+
+function admitStoredInputVoteFacts(record: Record<string, unknown>) {
+  const votesCount = getNumberProperty(record, 'votesCount');
+  const uniqueIndices = record['uniqueIndices'];
+  const uniqueCommitments = record['uniqueCommitments'];
+  const recomputedInputCommitment = getStringProperty(record, 'recomputedInputCommitment');
+  if (
+    !isPublicInputInteger(votesCount) ||
+    typeof uniqueIndices !== 'boolean' ||
+    typeof uniqueCommitments !== 'boolean' ||
+    !isPublicInputHash(recomputedInputCommitment)
+  )
+    return undefined;
+  return {
+    votesCount,
+    uniqueIndices,
+    uniqueCommitments,
+    recomputedInputCommitment: addHexPrefix(normalizeHexString(recomputedInputCommitment)),
+  };
+}
+
+function admitStoredPublicInputAuthority(record: Record<string, unknown>): PublicInputAuthority | undefined {
+  const identity = admitStoredInputIdentity(record);
+  const snapshot = admitStoredInputSnapshot(record);
+  const votes = admitStoredInputVoteFacts(record);
+  if (!identity || !snapshot || !votes) return undefined;
+  return {
+    ...identity,
+    bulletinRoot: snapshot.bulletinRoot,
+    treeSize: snapshot.treeSize,
+    totalExpected: snapshot.totalExpected,
+    votesCount: votes.votesCount,
+    uniqueIndices: votes.uniqueIndices,
+    uniqueCommitments: votes.uniqueCommitments,
+    logId: snapshot.logId,
+    timestamp: snapshot.timestamp,
+    recomputedInputCommitment: votes.recomputedInputCommitment,
   };
 }

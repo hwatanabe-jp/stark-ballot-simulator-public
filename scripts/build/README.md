@@ -11,7 +11,6 @@ Prefer the package scripts in `package.json` for normal project-level use:
 pnpm build:zkvm
 pnpm build:verifier-service
 pnpm terraform:build-lambdas
-pnpm terraform:build-lambda:ecr-retention
 pnpm clean:all
 ```
 
@@ -31,7 +30,7 @@ Builds the zkVM host binary in release mode.
 
 ### build-target-lambdas.mjs
 
-Builds the complete six-artifact target-owned Lambda package set:
+Assembles the complete six-artifact target-owned Lambda package set:
 
 - public API
 - finalization writer
@@ -42,25 +41,19 @@ Builds the complete six-artifact target-owned Lambda package set:
 
 It writes deterministic ZIP packages plus a checksum-bound manifest under
 `.tmp/target-lambdas/`. The image-signature-verifier entry also records its
-asset-manifest and trust-root digests.
+asset-manifest and trust-root digests. App Prepare must first run native
+signature preparation and exact preflight validation: the packager copies
+`.tmp/app-signature-preflight/image-signature-verifier.zip`, compares its bytes
+with `image-signature-preflight-validation.json`, and carries the immutable
+package reference checked by the publisher. Missing or changed bytes fail;
+there is no second verifier build or alternate package selection. The five
+runtime Lambda ZIPs are built normally. Prepare owns the single frozen install
+and ignored-build review before checks and packaging.
 
 This script is the implementation behind
 `pnpm terraform:build-lambda:target-runtime`; use the canonical aggregate
 command above unless a pipeline or diagnostic step specifically requires the
 direct script.
-
-### build-ecr-retention-lambda.mjs
-
-Builds the Foundation-owned ECR-retention Lambda from
-`infra/lambdas/ecr-retention/index.ts`. It emits an uncompressed deterministic
-ZIP, checksum sidecar, and manifest under `.tmp/foundation-lambdas/`. Entries
-use a fixed 1980 UTC timestamp and file mode so the saved-plan
-`source_code_hash` is stable across zlib releases.
-
-Foundation Plan runs this command, compares the generated manifest with the
-tracked `infra/terraform/foundation/ecr-retention-package.json`, and retains
-the exact bundle in `PlanOutput`. Foundation Apply verifies and consumes that
-saved bundle; it must not rebuild it.
 
 ### build-image-signature-verifier-lambda.mjs
 
@@ -69,7 +62,10 @@ bundles the handler, installs the checksum-pinned native verifier assets,
 validates their allowlist and native executability, and emits
 `image-signature-verifier.zip` plus `manifest.json`.
 
-The app signature-preflight CodeBuild definition invokes it directly:
+The private App Prepare integration calls its exported builder, verifies the
+selected image with the assets being packaged, publishes
+the package, and retains its exact ZIP for target Lambda packaging.
+For standalone packaging diagnostics, invoke the CLI:
 
 ```bash
 node scripts/build/build-image-signature-verifier-lambda.mjs \
@@ -117,8 +113,9 @@ Cleanup of common local generated files:
 - TypeScript build info
 - Test coverage reports
 - Playwright and test result outputs
-- Terraform generated Lambda bundles (`infra/terraform/legacy/.tmp` and
-  `.tmp/target-lambdas`), including `.tmp/foundation-lambdas`
+- Complete repository-root `.tmp` and `.temp` directories, including generated
+  Lambda bundles under `.tmp/target-lambdas`
+- Files matching `*.tmp` or `*.temp` throughout the repository tree
 - Terraform local generated backend/tfvars/json files and ignored plan outputs
   (`infra/terraform/**/*.local.hcl`, `infra/terraform/**/*.local.tfvars`,
   `infra/terraform/**/*.local.json`, `infra/terraform/**/*.tfplan`, and

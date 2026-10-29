@@ -10,9 +10,10 @@ import {
 } from '@stark-ballot/web/api/artifacts';
 import type { VerificationStepId, VerificationStepStatus } from '@stark-ballot/web/knowledge';
 import type { SessionData } from '@stark-ballot/web/session/types';
-import { getVerificationStepInputs, type VerificationCheck } from '@stark-ballot/verification/checks';
+import { type VerificationCheck } from '@stark-ballot/verification/checks';
 import {
   deriveVerificationPresentationPolicy,
+  projectVerificationPresentationSteps,
   type VerificationPresentationPolicyResult,
 } from '@stark-ballot/verification/presentation-policy';
 import type { PublicVerificationReport } from '@stark-ballot/verification/public-result';
@@ -95,13 +96,6 @@ export interface VerificationProjectionOptions {
   sthSourcesConfigured?: boolean;
 }
 
-const VERIFICATION_STEP_IDS = [
-  'cast_as_intended',
-  'recorded_as_cast',
-  'counted_as_recorded',
-  'stark_verification',
-] as const satisfies readonly VerificationStepId[];
-
 export function resolveStarkStatus(
   verificationStatus?: VerificationStatus,
   verificationReport?: { status?: VerificationStatus },
@@ -130,22 +124,6 @@ function buildPresentationPolicy(
     },
     verificationStatus: resource.verifierResult.status,
     ...(resource.verifierResult.report ? { verificationReportStatus: resource.verifierResult.report.status } : {}),
-  });
-}
-
-function projectVerificationSteps(
-  resource: AvailableVerificationResource,
-  policy: VerificationPresentationPolicyResult,
-): NonNullable<VerificationPayload['verificationSteps']> {
-  const serverSteps = new Map(resource.verification.steps.map((step) => [step.id, step] as const));
-  return VERIFICATION_STEP_IDS.map((id) => {
-    const serverStep = serverSteps.get(id);
-    return {
-      id,
-      status: policy.stageStatuses[id],
-      inputs: serverStep?.inputs ? [...serverStep.inputs] : getVerificationStepInputs(id),
-      ...(serverStep?.error ? { error: serverStep.error } : {}),
-    };
   });
 }
 
@@ -222,7 +200,7 @@ export function projectVerificationResource(
             },
           }
         : {}),
-      verificationSteps: projectVerificationSteps(resource, policy),
+      verificationSteps: projectVerificationPresentationSteps(resource.verification.steps, policy),
       verificationChecks: localEvidence.checks,
       presentationPolicy: policy,
       imageId: proof.imageId,
@@ -299,15 +277,16 @@ export function resolveReportCandidate(data: VerificationPayload | null, session
 
 export function buildDetectionReceipt(data: VerificationPayload): DetectionReceipt | null {
   const bulletinRoot = data.bulletinRoot || data.voteReceipt?.bulletinRootAtCast;
-  const counts = data.tally?.counts;
+  const tally = data.tally;
+  const counts = tally?.counts;
   if (!bulletinRoot || !counts) {
     return null;
   }
   return omitUndefinedProperties({
     tally: counts,
     bulletinRoot,
-    totalVotes: data.tally?.totalVotes ?? 0,
-    tamperedCount: data.tally?.tamperedCount ?? 0,
+    totalVotes: tally.totalVotes ?? 0,
+    tamperedCount: tally.tamperedCount ?? 0,
     missingSlots: data.missingSlots,
     invalidPresentedSlots: data.invalidPresentedSlots,
     rejectedRecords: data.rejectedRecords,

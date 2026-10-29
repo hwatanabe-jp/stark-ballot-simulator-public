@@ -3,11 +3,7 @@ data "aws_iam_policy" "image_signature_verifier_permissions_boundary" {
 }
 
 locals {
-  image_signature_verifier_prover_image_uri = coalesce(
-    var.image_signature_verifier_base_prover_image_uri,
-    var.image_signature_preflight_prover_image_uri,
-    var.prover_image_uri,
-  )
+  image_signature_verifier_prover_image_uri = var.prover_image_uri
   image_signature_verifier_prover_repo_uri = split(
     "@",
     local.image_signature_verifier_prover_image_uri,
@@ -42,48 +38,6 @@ locals {
       + 5000
     ) <= var.image_signature_verifier_handler_deadline_ms
   )
-  image_signature_verifier_authority_selection_valid = (
-    local.image_signature_verifier_initialization
-    ? (
-      local.image_signature_verifier_standalone
-      && local.deployment_target.environmentTier == "production"
-      && local.deployment_target_inputs_exact
-      && var.deploy_mode == "normal"
-      && var.image_signature_preflight_prover_image_uri == var.prover_image_uri
-      && var.image_signature_verifier_base_prover_image_uri == null
-      && var.image_signature_verifier_selected_authority == null
-      && var.image_signature_verifier_reconciled_function_version == null
-      && var.image_signature_verifier_reconciliation_desired_json == null
-      && var.image_signature_verifier_reconciliation_desired_sha256 == null
-    )
-    : (
-      var.image_signature_preflight_prover_image_uri != null
-      ? (
-        var.image_signature_verifier_base_prover_image_uri == null
-        && var.image_signature_verifier_selected_authority == null
-        && var.image_signature_verifier_reconciled_function_version != null
-        && var.image_signature_verifier_reconciliation_desired_json != null
-        && var.image_signature_verifier_reconciliation_desired_sha256 != null
-      )
-      : (
-        var.deploy_mode == "rollback"
-        ? (
-          var.image_signature_verifier_base_prover_image_uri != null
-          && var.image_signature_verifier_selected_authority != null
-          && var.image_signature_verifier_reconciled_function_version == null
-          && var.image_signature_verifier_reconciliation_desired_json == null
-          && var.image_signature_verifier_reconciliation_desired_sha256 == null
-        )
-        : (
-          var.image_signature_verifier_base_prover_image_uri == null
-          && var.image_signature_verifier_selected_authority == null
-          && var.image_signature_verifier_reconciled_function_version != null
-          && var.image_signature_verifier_reconciliation_desired_json != null
-          && var.image_signature_verifier_reconciliation_desired_sha256 != null
-        )
-      )
-    )
-  )
   image_signature_verifier_execution_role_assume_policy_sha256 = sha256(
     jsonencode(jsondecode(data.aws_iam_policy_document.target_lambda_assume_role.json))
   )
@@ -93,25 +47,6 @@ locals {
   image_signature_verifier_permissions_boundary_policy_sha256 = sha256(
     jsonencode(jsondecode(data.aws_iam_policy.image_signature_verifier_permissions_boundary.policy))
   )
-  image_signature_verifier_rollback_role_authority_valid = (
-    var.image_signature_verifier_selected_authority == null
-    ? true
-    : (
-      var.image_signature_verifier_selected_authority.function_arn
-      == "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.image_signature_verifier_name}"
-      && var.image_signature_verifier_selected_authority.execution_role_arn
-      == "arn:aws:iam::${var.aws_account_id}:role/${local.image_signature_verifier_role_name}"
-      && var.image_signature_verifier_selected_authority.execution_role_assume_policy_sha256
-      == local.image_signature_verifier_execution_role_assume_policy_sha256
-      && var.image_signature_verifier_selected_authority.execution_role_policy_sha256
-      == local.image_signature_verifier_execution_role_policy_sha256
-      && var.image_signature_verifier_selected_authority.execution_role_permissions_boundary_arn
-      == data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
-      && var.image_signature_verifier_selected_authority.execution_role_permissions_boundary_policy_sha256
-      == local.image_signature_verifier_permissions_boundary_policy_sha256
-    )
-  )
-
   image_signature_verifier_environment = {
     IMAGE_SIGNATURE_VERIFIER_EXPECTED_ASSET_MANIFEST_SHA256 = var.lambda_artifacts["image_signature_verifier"].asset_manifest_sha256
     IMAGE_SIGNATURE_VERIFIER_EXPECTED_IMAGE_DIGEST          = local.image_signature_verifier_prover_digest
@@ -159,7 +94,7 @@ locals {
   }
   image_signature_verifier_current_authority = {
     function_arn       = aws_lambda_function.image_signature_verifier.arn
-    function_version   = local.image_signature_verifier_alias_function_version
+    function_version   = aws_lambda_function.image_signature_verifier.version
     architecture       = one(aws_lambda_function.image_signature_verifier.architectures)
     runtime            = aws_lambda_function.image_signature_verifier.runtime
     timeout_seconds    = aws_lambda_function.image_signature_verifier.timeout
@@ -172,42 +107,11 @@ locals {
     execution_role_policy_sha256                      = local.image_signature_verifier_execution_role_policy_sha256
     execution_role_permissions_boundary_arn           = data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
     execution_role_permissions_boundary_policy_sha256 = local.image_signature_verifier_permissions_boundary_policy_sha256
-    preflight_alias_arn                               = aws_lambda_alias.image_signature_verifier_preflight.arn
-    runtime_alias_arn                                 = "${aws_lambda_function.image_signature_verifier.arn}:runtime"
+    qualified_arn                                     = aws_lambda_function.image_signature_verifier.qualified_arn
     package                                           = var.lambda_artifacts["image_signature_verifier"]
   }
-  image_signature_verifier_deployment_authority = (
-    var.image_signature_verifier_selected_authority == null
-    ? local.image_signature_verifier_current_authority
-    : var.image_signature_verifier_selected_authority
-  )
+  image_signature_verifier_deployment_authority = local.image_signature_verifier_current_authority
 
-}
-
-resource "terraform_data" "image_signature_verifier_permissions_boundary_authority" {
-  input = {
-    arn           = data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
-    policy_sha256 = local.image_signature_verifier_permissions_boundary_policy_sha256
-  }
-}
-
-resource "terraform_data" "image_signature_verifier_reconciliation_authority" {
-  input = local.image_signature_verifier_initialization ? null : {
-    desired_json              = var.image_signature_verifier_reconciliation_desired_json
-    desired_sha256            = var.image_signature_verifier_reconciliation_desired_sha256
-    expected_function_version = var.image_signature_verifier_reconciled_function_version
-  }
-
-  lifecycle {
-    precondition {
-      condition = (
-        var.image_signature_verifier_reconciliation_desired_json == null
-        ? var.image_signature_verifier_reconciliation_desired_sha256 == null
-        : sha256(var.image_signature_verifier_reconciliation_desired_json) == var.image_signature_verifier_reconciliation_desired_sha256
-      )
-      error_message = "The verifier reconciliation authority hash must bind the exact reviewed desired JSON."
-    }
-  }
 }
 
 resource "aws_lambda_function" "image_signature_verifier" {
@@ -222,7 +126,7 @@ resource "aws_lambda_function" "image_signature_verifier" {
   source_code_hash  = var.lambda_artifacts["image_signature_verifier"].source_code_hash
   timeout           = var.image_signature_verifier_lambda_timeout_seconds
   memory_size       = 1024
-  publish           = local.image_signature_verifier_initialization
+  publish           = true
 
   ephemeral_storage {
     size = 1024
@@ -239,30 +143,6 @@ resource "aws_lambda_function" "image_signature_verifier" {
   }
 
   lifecycle {
-    # Isolated reconciliation owns mutable verifier code and configuration;
-    # the full App plan retains their exact desired authority in state and only selects qualified aliases.
-    ignore_changes = [
-      architectures,
-      dead_letter_config,
-      environment,
-      ephemeral_storage,
-      handler,
-      kms_key_arn,
-      layers,
-      logging_config,
-      memory_size,
-      publish,
-      role,
-      runtime,
-      s3_bucket,
-      s3_key,
-      s3_object_version,
-      source_code_hash,
-      timeout,
-      tracing_config,
-      vpc_config,
-    ]
-
     precondition {
       condition     = data.aws_caller_identity.current.account_id == var.aws_account_id
       error_message = "AWS caller account must match aws_account_id before mutating the verifier."
@@ -274,17 +154,11 @@ resource "aws_lambda_function" "image_signature_verifier" {
     }
 
     precondition {
-      condition     = local.image_signature_verifier_authority_selection_valid
-      error_message = "Isolated preflight must not select rollback authority; full rollback requires both the current base verifier binding and exact selected authority; normal deployment must not override the base binding."
-    }
-
-    precondition {
       condition = (
         data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
         == var.image_signature_verifier_permissions_boundary_arn
-        && local.image_signature_verifier_rollback_role_authority_valid
       )
-      error_message = "The verifier execution role and live bootstrap-managed permissions boundary must match the exact retained rollback authority."
+      error_message = "The verifier execution role must use the exact Bootstrap-managed permissions boundary."
     }
 
     precondition {
@@ -304,20 +178,4 @@ resource "aws_lambda_function" "image_signature_verifier" {
   ]
 
   tags = local.common_tags
-}
-
-resource "aws_lambda_alias" "image_signature_verifier_preflight" {
-  name             = "preflight"
-  description      = "Qualified non-accepting cryptographic verifier preflight"
-  function_name    = local.image_signature_verifier_name
-  function_version = local.image_signature_verifier_alias_function_version
-
-  depends_on = [terraform_data.image_signature_verifier_reconciliation_authority]
-}
-
-resource "aws_lambda_alias" "image_signature_verifier_runtime" {
-  name             = "runtime"
-  description      = "Qualified runtime cryptographic verifier gate"
-  function_name    = aws_lambda_function.image_signature_verifier.function_name
-  function_version = local.image_signature_verifier_alias_function_version
 }

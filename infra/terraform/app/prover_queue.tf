@@ -10,8 +10,8 @@ resource "aws_sqs_queue" "prover_work_dlq" {
 resource "aws_sqs_queue" "prover_work" {
   name                      = local.prover_work_queue_name
   message_retention_seconds = 345600
-  # Keep at 6x the proof dispatcher Lambda timeout; raising the dispatcher timeout requires raising this too.
-  visibility_timeout_seconds = 180
+  # Keep retry headroom at 6x the consumer timeout, including future timeout changes.
+  visibility_timeout_seconds = 6 * local.target_lambda_timeout_seconds.proof_dispatcher
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.prover_work_dlq.arn
     maxReceiveCount     = 3
@@ -32,9 +32,10 @@ resource "aws_sqs_queue" "verification_work_dlq" {
 }
 
 resource "aws_sqs_queue" "verification_work" {
-  name                       = local.verification_work_queue_name
-  message_retention_seconds  = 345600
-  visibility_timeout_seconds = 180
+  name                      = local.verification_work_queue_name
+  message_retention_seconds = 345600
+  # Allow throttled deliveries to retry without making in-flight work visible early.
+  visibility_timeout_seconds = 6 * local.target_lambda_timeout_seconds.verification_worker
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.verification_work_dlq.arn
     maxReceiveCount     = 3

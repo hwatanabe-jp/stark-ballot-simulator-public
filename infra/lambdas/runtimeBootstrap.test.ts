@@ -8,6 +8,7 @@ import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeP
 
 const loggerMocks = vi.hoisted(() => ({
   configureLogger: vi.fn(),
+  info: vi.fn(),
   error: vi.fn(),
 }));
 
@@ -15,7 +16,7 @@ vi.mock('@stark-ballot/diagnostics/logger', () => ({
   configureLogger: loggerMocks.configureLogger,
   logger: {
     debug: vi.fn(),
-    info: vi.fn(),
+    info: loggerMocks.info,
     warn: vi.fn(),
     error: loggerMocks.error,
   },
@@ -101,6 +102,12 @@ describe('Lambda runtime observability bootstrap', () => {
     });
 
     expect(order).toEqual(['configure_logger', 'resolve_references', 'validate_component']);
+    expect(loggerMocks.info).toHaveBeenCalledWith('Node.js runtime initialized', {
+      event: 'runtime_initialized',
+      node_version: process.versions.node,
+      openssl_version: process.versions.openssl,
+      undici_version: process.versions['undici'],
+    });
     expect(loggerMocks.configureLogger).toHaveBeenCalledWith({
       format: 'json',
       jsonOutputMode: 'lambda-native',

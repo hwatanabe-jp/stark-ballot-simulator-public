@@ -8,7 +8,8 @@ env:
 #
 # Build Strategy:
 # - Uses a pre-built RISC Zero toolchain base image when one is supplied
-# - Base image contains: host Rust 1.97.1, guest Rust r0.1.97.0, pinned RISC Zero 3.0.6, build dependencies
+# - Reused base supplies guest Rust r0.1.97.0, RISC Zero 3.0.6 and build dependencies.
+# - The copied rust-toolchain.toml selects host Rust independently of the base.
 # - Build time: 5-10 minutes (vs 70-90 minutes without base image)
 # - See: docs/infrastructure/risc0-base-image.md
 
@@ -16,6 +17,11 @@ env:
 # region is loaded from the validated deployment context below.
 
 phases:
+  install:
+    runtime-versions:
+      nodejs: 24
+    commands:
+      - bash infra/terraform/bootstrap/source-path-build-scripts/install-node.sh
   pre_build:
     commands:
       - echo "Validating the exact requested source revision..."
@@ -58,12 +64,6 @@ phases:
         export AWS_ACCOUNT_ID="$DEPLOYMENT_CONTEXT_TARGET_ACCOUNT_ID"
         export AWS_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
         export AWS_DEFAULT_REGION="$DEPLOYMENT_CONTEXT_TARGET_REGION"
-        cmp \
-          "$CODEBUILD_SRC_DIR_FoundationConsumerAuthorityOutput/deployment-context.json" \
-          "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.json"
-        cmp \
-          "$CODEBUILD_SRC_DIR_FoundationConsumerAuthorityOutput/deployment-context.sha256" \
-          "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.sha256"
         mkdir -p deployment-context
         cp "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.json" deployment-context/deployment-context.json
         cp "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/deployment-context.sha256" deployment-context/deployment-context.sha256
@@ -80,11 +80,11 @@ phases:
         fi
       - echo "Loading the exact Foundation consumer authority..."
       - |
-        export FOUNDATION_AUTHORITY_FILE="$CODEBUILD_SRC_DIR_FoundationConsumerAuthorityOutput/foundation-consumer-authority.json"
+        export FOUNDATION_AUTHORITY_FILE="$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/foundation-consumer-authority.json"
         test -f "$FOUNDATION_AUTHORITY_FILE"
         FOUNDATION_AUTHORITY_FILE="$FOUNDATION_AUTHORITY_FILE" node --input-type=module <<'NODE'
         import { readFileSync, writeFileSync } from 'node:fs';
-        import { admitProverFoundationConsumerResolution } from './infra/terraform/bootstrap/foundation-pipeline-scripts/prover-release-ledger-adapter.mjs';
+        import { admitRootCheckpoint } from './packages/deployment-authority/src/root-checkpoint.js';
 
         import { resolveAllowedDeploymentTarget } from './packages/deployment-authority/src/index.js';
         import { validateDeploymentContextArtifacts } from './scripts/aws/render-deployment-context.js';
@@ -92,7 +92,9 @@ phases:
         if (context.root.lane !== 'prover') throw new Error('Prover caller context is required.');
         const target = resolveAllowedDeploymentTarget(`${context.target.accountLabel}/${context.target.environmentId}`);
         const resolution = JSON.parse(readFileSync(process.env.FOUNDATION_AUTHORITY_FILE, 'utf8'));
-        const authority = admitProverFoundationConsumerResolution(resolution, process.env.REQUESTED_SOURCE_SHA, target.targetKey);
+        const checkpoint = admitRootCheckpoint(resolution.checkpoint, target.targetKey, 'foundation');
+        if (checkpoint.root !== 'foundation') throw new Error('Foundation checkpoint required.');
+        const authority = checkpoint.outputs;
         writeFileSync('/tmp/foundation-prover-repository', authority.imageAuthority.repositories.prover.name, {
           flag: 'wx',
           mode: 0o600,
@@ -146,9 +148,9 @@ phases:
           exit 1
         fi
         echo "Using resolved toolchain authority from $TOOLCHAIN_AUTHORITY_FILE"
-        RISC0_TOOLCHAIN_IMAGE="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["imageUri"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-        SELECTED_TOOLCHAIN_RELEASE_KEY="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["releaseRecordKey"])' "$TOOLCHAIN_AUTHORITY_FILE")"
-        SELECTED_TOOLCHAIN_IMAGE_DIGEST="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["selectedToolchain"]["imageDigest"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+        RISC0_TOOLCHAIN_IMAGE="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["candidate"]["imageUri"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+        SELECTED_TOOLCHAIN_PROMOTION_VERSION_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["reference"]["versionId"])' "$TOOLCHAIN_AUTHORITY_FILE")"
+        SELECTED_TOOLCHAIN_IMAGE_DIGEST="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["candidate"]["imageUri"].split("@")[1])' "$TOOLCHAIN_AUTHORITY_FILE")"
         if ! RISC0_TOOLCHAIN_IMAGE="$RISC0_TOOLCHAIN_IMAGE" node --input-type=module -e '
           import { parseDigestPinnedImageReference } from "./packages/deployment-authority/src/index.js";
           parseDigestPinnedImageReference(process.env.RISC0_TOOLCHAIN_IMAGE, {
@@ -161,9 +163,9 @@ phases:
           echo "RISC0_TOOLCHAIN_IMAGE must be digest-pinned with @sha256:<64 lowercase hex chars>." >&2
           exit 1
         fi
-        export RISC0_TOOLCHAIN_IMAGE SELECTED_TOOLCHAIN_RELEASE_KEY SELECTED_TOOLCHAIN_IMAGE_DIGEST
+        export RISC0_TOOLCHAIN_IMAGE SELECTED_TOOLCHAIN_PROMOTION_VERSION_ID SELECTED_TOOLCHAIN_IMAGE_DIGEST
         printf '%s' "$RISC0_TOOLCHAIN_IMAGE" > /tmp/risc0-toolchain-image
-        printf '%s' "$SELECTED_TOOLCHAIN_RELEASE_KEY" > /tmp/selected-toolchain-release-key
+        printf '%s' "$SELECTED_TOOLCHAIN_PROMOTION_VERSION_ID" > /tmp/selected-toolchain-promotion-version-id
         printf '%s' "$SELECTED_TOOLCHAIN_IMAGE_DIGEST" > /tmp/selected-toolchain-image-digest
 
       - echo "Determining image tags..."
@@ -202,17 +204,6 @@ phases:
             --publication-output ./prover-candidate-publication.json
         fi
 
-      - |
-        if [ "$PROVER_SELECTION" = "build" ] && { [ "$CODEBUILD_WEBHOOK_TRIGGER" = "branch/main" ] || [ "$CODEBUILD_SOURCE_VERSION" = "refs/heads/main" ]; }; then
-          LATEST_TAG=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:latest
-          if [ "${PUSH_LATEST:-0}" = "1" ]; then
-            echo "Main branch detected and PUSH_LATEST=1 - will also tag as latest"
-          else
-            echo "Main branch detected but PUSH_LATEST!=1 - skipping latest tag"
-            unset LATEST_TAG
-          fi
-        fi
-
   build:
     commands:
       - |
@@ -244,12 +235,6 @@ phases:
         fi
 
       - |
-        if [ "$PROVER_SELECTION" = "build" ] && [ -n "${LATEST_TAG:-}" ]; then
-          echo "Tagging image as latest..."
-          docker tag "$IMAGE_URI" "$LATEST_TAG"
-        fi
-
-      - |
         if [ "$PROVER_SELECTION" = "build" ]; then
           echo "Extracting ARM64 guest ImageID from built prover image..."
           IMAGE_ID_METADATA="$(docker run --rm --entrypoint /opt/zkvm/bin/host "$IMAGE_URI" --print-image-id --json)"
@@ -271,13 +256,14 @@ phases:
   post_build:
     commands:
       - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-}" != "1" ]; then
+          echo "Image publication requires a successful build phase." >&2
+          exit 1
+        fi
+      - |
         if [ "$PROVER_SELECTION" = "build" ]; then
           echo "Pushing Docker image to ECR..."
           docker push "$IMAGE_URI"
-          if [ -n "${LATEST_TAG:-}" ]; then
-            echo "Pushing latest tag..."
-            docker push "$LATEST_TAG"
-          fi
           echo "Build completed on $(date)"
         fi
       - |
@@ -286,21 +272,6 @@ phases:
           sleep 10
           echo "Waiting for ECR image scan to complete..."
           aws ecr wait image-scan-complete --repository-name "$IMAGE_REPO_NAME" --image-id imageTag="$IMAGE_TAG"
-          CRITICAL_HIGH_COUNT=$(aws ecr describe-image-scan-findings \
-            --repository-name "$IMAGE_REPO_NAME" \
-            --image-id imageTag="$IMAGE_TAG" \
-            --query 'length(imageScanFindings.findings[?severity==`CRITICAL` || severity==`HIGH`])' \
-            --output text)
-          if ! printf '%s' "$CRITICAL_HIGH_COUNT" | grep -Eq '^[0-9]+$'; then
-            echo "Unable to parse HIGH/CRITICAL ECR scan finding count: $CRITICAL_HIGH_COUNT" >&2
-            exit 1
-          fi
-          if [ "$CRITICAL_HIGH_COUNT" -gt 0 ]; then
-            echo "ECR scan found $CRITICAL_HIGH_COUNT HIGH/CRITICAL findings. Failing build."
-            exit 1
-          fi
-          printf '%s' "$CRITICAL_HIGH_COUNT" > /tmp/prover-critical-high-count
-          echo "ECR scan passed with no HIGH/CRITICAL findings."
         fi
       - |
         if [ "$PROVER_SELECTION" = "build" ]; then
@@ -313,6 +284,14 @@ phases:
           DIGEST_PINNED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME@$IMAGE_DIGEST"
           printf '%s' "$IMAGE_DIGEST" > /tmp/prover-image-digest
           printf '%s' "$DIGEST_PINNED_IMAGE_URI" > /tmp/digest-pinned-image-uri
+        fi
+      - |
+        if [ "$PROVER_SELECTION" = "build" ]; then
+          CRITICAL_HIGH_COUNT=$(node infra/terraform/bootstrap/foundation-pipeline-scripts/image-authority-aws.mjs \
+            --context ./deployment-context/deployment-context.json --kind prover \
+            --image-uri "$DIGEST_PINNED_IMAGE_URI") || exit 1
+          printf '%s' "$CRITICAL_HIGH_COUNT" > /tmp/prover-critical-high-count
+          echo "ECR scan passed with no HIGH/CRITICAL findings."
         fi
       - |
         if [ "$PROVER_SELECTION" = "build" ]; then
@@ -386,7 +365,7 @@ phases:
           IMAGE_DIGEST="$(cat /tmp/prover-image-digest)"
           DIGEST_PINNED_IMAGE_URI="$(cat /tmp/digest-pinned-image-uri)"
           RISC0_TOOLCHAIN_IMAGE="$(cat /tmp/risc0-toolchain-image)"
-          SELECTED_TOOLCHAIN_RELEASE_KEY="$(cat /tmp/selected-toolchain-release-key)"
+          SELECTED_TOOLCHAIN_PROMOTION_VERSION_ID="$(cat /tmp/selected-toolchain-promotion-version-id)"
           SELECTED_TOOLCHAIN_IMAGE_DIGEST="$(cat /tmp/selected-toolchain-image-digest)"
           ARM64_RISC0_IMAGE_ID="$(cat /tmp/arm64-risc0-image-id)"
           METHOD_VERSION="$(cat /tmp/method-version)"
@@ -404,15 +383,15 @@ phases:
             exit 1
           fi
           CANDIDATE_EXECUTION_ID="prover-candidate/$RELEASE_PIPELINE_EXECUTION_ID"
-          printf '{"buildId":"%s","containerPostureSmokeStatus":"%s","criticalHighCount":%s,"digest":"%s","failureMarkerContractSha256":"%s","failureMarkerSmokeStatus":"%s","imageTag":"%s","imageUri":"%s","managedSigningStatus":"COMPLETE","methodVersion":%s,"postPushMethodVersion":%s,"postPushRisc0ImageId":"%s","risc0ImageId":"%s","scanStatus":"PASS","selectedToolchainImageDigest":"%s","selectedToolchainImageUri":"%s","selectedToolchainReleaseKey":"%s","sourceSha":"%s","zkvmContractHash":"%s"}\n' \
-            "$CANDIDATE_EXECUTION_ID" "$CONTAINER_POSTURE_SMOKE_STATUS" "$CRITICAL_HIGH_COUNT" "$IMAGE_DIGEST" "$FAILURE_MARKER_CONTRACT_SHA256" "$FAILURE_MARKER_SMOKE_STATUS" "$IMAGE_TAG" "$DIGEST_PINNED_IMAGE_URI" "$METHOD_VERSION" "$POST_PUSH_METHOD_VERSION" "$POST_PUSH_RISC0_IMAGE_ID" "$ARM64_RISC0_IMAGE_ID" "$SELECTED_TOOLCHAIN_IMAGE_DIGEST" "$RISC0_TOOLCHAIN_IMAGE" "$SELECTED_TOOLCHAIN_RELEASE_KEY" "$SOURCE_SHA" "$ZKVM_CONTRACT_HASH" \
+          printf '{"buildId":"%s","containerPostureSmokeStatus":"%s","criticalHighCount":%s,"digest":"%s","failureMarkerContractSha256":"%s","failureMarkerSmokeStatus":"%s","imageTag":"%s","imageUri":"%s","managedSigningStatus":"COMPLETE","methodVersion":%s,"postPushMethodVersion":%s,"postPushRisc0ImageId":"%s","risc0ImageId":"%s","scanStatus":"PASS","selectedToolchainImageDigest":"%s","selectedToolchainImageUri":"%s","selectedToolchainPromotionVersionId":"%s","sourceSha":"%s","zkvmContractHash":"%s"}\n' \
+            "$CANDIDATE_EXECUTION_ID" "$CONTAINER_POSTURE_SMOKE_STATUS" "$CRITICAL_HIGH_COUNT" "$IMAGE_DIGEST" "$FAILURE_MARKER_CONTRACT_SHA256" "$FAILURE_MARKER_SMOKE_STATUS" "$IMAGE_TAG" "$DIGEST_PINNED_IMAGE_URI" "$METHOD_VERSION" "$POST_PUSH_METHOD_VERSION" "$POST_PUSH_RISC0_IMAGE_ID" "$ARM64_RISC0_IMAGE_ID" "$SELECTED_TOOLCHAIN_IMAGE_DIGEST" "$RISC0_TOOLCHAIN_IMAGE" "$SELECTED_TOOLCHAIN_PROMOTION_VERSION_ID" "$SOURCE_SHA" "$ZKVM_CONTRACT_HASH" \
             > image-metadata.json
           node infra/terraform/bootstrap/foundation-pipeline-scripts/prover-release-ledger-adapter.mjs \
             --action publish-candidate \
             --context ./deployment-context/deployment-context.json \
             --context-sha256 ./deployment-context/deployment-context.sha256 \
             --metadata ./image-metadata.json \
-            --foundation-authority "$CODEBUILD_SRC_DIR_FoundationConsumerAuthorityOutput/foundation-consumer-authority.json" \
+            --foundation-authority "$CODEBUILD_SRC_DIR_ToolchainAuthorityOutput/foundation-consumer-authority.json" \
             --publication-output ./prover-candidate-publication.json
         fi
       - cat image-metadata.json

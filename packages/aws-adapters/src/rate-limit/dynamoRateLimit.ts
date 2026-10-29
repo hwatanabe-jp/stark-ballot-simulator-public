@@ -40,11 +40,7 @@ const VOTE_ATTEMPT_SCOPE_PREFIX = 'vote-attempt';
 const ZKVM_SCOPE_PREFIX = 'zkvm';
 const ZKVM_ATTEMPT_SCOPE_PREFIX = 'zkvm-attempt';
 
-function buildVoteScope(ipAddress: string, scopePrefix: string): string {
-  return `${scopePrefix}#${ipAddress}`;
-}
-
-function buildZkVmScope(ipAddress: string, scopePrefix: string): string {
+function buildIpScope(ipAddress: string, scopePrefix: string): string {
   return `${scopePrefix}#${ipAddress}`;
 }
 
@@ -105,6 +101,42 @@ export function createDynamoRateLimitStore(profile: ResolvedRuntimeProfile): Dyn
   });
 }
 
+interface EventWindow {
+  now: number;
+  cutoff: number;
+  scope: string;
+}
+
+function currentEventWindow(ipAddress: string, scopePrefix: string, windowMs: number): EventWindow {
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  const scope = buildIpScope(ipAddress, scopePrefix);
+  return { now, cutoff, scope };
+}
+
+async function consumeEventWindow(
+  store: RateLimitStore,
+  ipAddress: string,
+  scopePrefix: string,
+  windowMs: number,
+): Promise<EventWindow & { count: number }> {
+  const window = currentEventWindow(ipAddress, scopePrefix, windowMs);
+  await store.recordEvent(window.scope, window.now, window.now + windowMs);
+  const count = await store.countEvents(window.scope, window.cutoff);
+  return { ...window, count };
+}
+
+function recordWindowEvent(
+  store: RateLimitStore,
+  ipAddress: string,
+  scopePrefix: string,
+  windowMs: number,
+): Promise<void> {
+  const now = Date.now();
+  const scope = buildIpScope(ipAddress, scopePrefix);
+  return store.recordEvent(scope, now, now + windowMs);
+}
+
 export class DynamoVoteRateLimiter {
   private readonly store: RateLimitStore;
   private readonly limit: number;
@@ -119,40 +151,38 @@ export class DynamoVoteRateLimiter {
   }
 
   async check(ipAddress: string): Promise<VoteRateLimitResult> {
-    const now = Date.now();
-    const cutoff = now - this.windowMs;
-    const scope = buildVoteScope(ipAddress, this.scopePrefix);
+    const { now, cutoff, scope } = currentEventWindow(ipAddress, this.scopePrefix, this.windowMs);
     const count = await this.store.countEvents(scope, cutoff);
 
     if (count >= this.limit) {
-      const oldest = await this.store.getOldestEventTimestamp(scope, cutoff);
-      const retryAfter = oldest ? computeRetryAfter(oldest, this.windowMs, now) : Math.ceil(this.windowMs / 1000);
-      return { allowed: false, remaining: 0, retryAfter };
+      return this.deniedVote(scope, cutoff, now);
     }
 
     return { allowed: true, remaining: computeRemaining(this.limit, count) };
   }
 
   async record(ipAddress: string): Promise<void> {
-    const now = Date.now();
-    const scope = buildVoteScope(ipAddress, this.scopePrefix);
-    await this.store.recordEvent(scope, now, now + this.windowMs);
+    await recordWindowEvent(this.store, ipAddress, this.scopePrefix, this.windowMs);
   }
 
   async consume(ipAddress: string): Promise<VoteRateLimitResult> {
-    const now = Date.now();
-    const cutoff = now - this.windowMs;
-    const scope = buildVoteScope(ipAddress, this.scopePrefix);
-    await this.store.recordEvent(scope, now, now + this.windowMs);
-    const count = await this.store.countEvents(scope, cutoff);
+    const { now, cutoff, scope, count } = await consumeEventWindow(
+      this.store,
+      ipAddress,
+      this.scopePrefix,
+      this.windowMs,
+    );
 
     if (count > this.limit) {
-      const oldest = await this.store.getOldestEventTimestamp(scope, cutoff);
-      const retryAfter = oldest ? computeRetryAfter(oldest, this.windowMs, now) : Math.ceil(this.windowMs / 1000);
-      return { allowed: false, remaining: 0, retryAfter };
+      return this.deniedVote(scope, cutoff, now);
     }
 
     return { allowed: true, remaining: Math.max(0, this.limit - count) };
+  }
+  private async deniedVote(scope: string, cutoff: number, now: number): Promise<VoteRateLimitResult> {
+    const oldest = await this.store.getOldestEventTimestamp(scope, cutoff);
+    const retryAfter = oldest ? computeRetryAfter(oldest, this.windowMs, now) : Math.ceil(this.windowMs / 1000);
+    return { allowed: false, remaining: 0, retryAfter };
   }
 }
 
@@ -174,25 +204,11 @@ export class DynamoServerRateLimiter {
   }
 
   async checkZkVmRateLimit(ipAddress: string): Promise<ZkVmRateLimitResult> {
-    const now = Date.now();
-    const cutoff = now - this.windowMs;
-    const scope = buildZkVmScope(ipAddress, this.scopePrefix);
+    const { now, cutoff, scope } = currentEventWindow(ipAddress, this.scopePrefix, this.windowMs);
     const count = await this.store.countEvents(scope, cutoff);
 
     if (count >= this.maxExecutions) {
-      const oldest = await this.store.getOldestEventTimestamp(scope, cutoff);
-      if (!oldest) {
-        return {
-          allowed: false,
-          remainingExecutions: 0,
-          nextAvailableAt: new Date(now + this.windowMs).toISOString(),
-        };
-      }
-      return {
-        allowed: false,
-        remainingExecutions: 0,
-        nextAvailableAt: buildNextAvailableAt(oldest, this.windowMs),
-      };
+      return this.deniedExecution(scope, cutoff, now);
     }
 
     return {
@@ -202,32 +218,19 @@ export class DynamoServerRateLimiter {
   }
 
   async recordZkVmExecution(ipAddress: string): Promise<void> {
-    const now = Date.now();
-    const scope = buildZkVmScope(ipAddress, this.scopePrefix);
-    await this.store.recordEvent(scope, now, now + this.windowMs);
+    await recordWindowEvent(this.store, ipAddress, this.scopePrefix, this.windowMs);
   }
 
   async consumeZkVmExecution(ipAddress: string): Promise<ZkVmRateLimitResult> {
-    const now = Date.now();
-    const cutoff = now - this.windowMs;
-    const scope = buildZkVmScope(ipAddress, this.scopePrefix);
-    await this.store.recordEvent(scope, now, now + this.windowMs);
-    const count = await this.store.countEvents(scope, cutoff);
+    const { now, cutoff, scope, count } = await consumeEventWindow(
+      this.store,
+      ipAddress,
+      this.scopePrefix,
+      this.windowMs,
+    );
 
     if (count > this.maxExecutions) {
-      const oldest = await this.store.getOldestEventTimestamp(scope, cutoff);
-      if (!oldest) {
-        return {
-          allowed: false,
-          remainingExecutions: 0,
-          nextAvailableAt: new Date(now + this.windowMs).toISOString(),
-        };
-      }
-      return {
-        allowed: false,
-        remainingExecutions: 0,
-        nextAvailableAt: buildNextAvailableAt(oldest, this.windowMs),
-      };
+      return this.deniedExecution(scope, cutoff, now);
     }
 
     return {
@@ -236,12 +239,30 @@ export class DynamoServerRateLimiter {
     };
   }
 
-  async checkGlobalLimit(timeWindow: 'daily' | 'hourly'): Promise<GlobalLimitResult> {
+  private async deniedExecution(scope: string, cutoff: number, now: number): Promise<ZkVmRateLimitResult> {
+    const oldest = await this.store.getOldestEventTimestamp(scope, cutoff);
+    return {
+      allowed: false,
+      remainingExecutions: 0,
+      nextAvailableAt: buildNextAvailableAt(oldest || now, this.windowMs),
+    };
+  }
+
+  private globalWindow(timeWindow: 'daily' | 'hourly') {
     const now = new Date();
     const windowStart = timeWindow === 'daily' ? getDailyWindowStart(now) : getHourlyWindowStart(now);
-    const key = buildGlobalKey(timeWindow, windowStart);
-    const limit = timeWindow === 'daily' ? this.dailyLimit : this.hourlyLimit;
     const durationMs = getWindowDurationMs(timeWindow);
+    return {
+      now,
+      windowStart,
+      durationMs,
+      key: buildGlobalKey(timeWindow, windowStart),
+      limit: timeWindow === 'daily' ? this.dailyLimit : this.hourlyLimit,
+    };
+  }
+
+  async checkGlobalLimit(timeWindow: 'daily' | 'hourly'): Promise<GlobalLimitResult> {
+    const { now, windowStart, key, limit, durationMs } = this.globalWindow(timeWindow);
     const currentCount = (await this.store.getCounter(key)) ?? 0;
 
     if (currentCount >= limit) {
@@ -257,20 +278,13 @@ export class DynamoServerRateLimiter {
   }
 
   async incrementGlobalCount(timeWindow: 'daily' | 'hourly'): Promise<number> {
-    const now = new Date();
-    const windowStart = timeWindow === 'daily' ? getDailyWindowStart(now) : getHourlyWindowStart(now);
-    const key = buildGlobalKey(timeWindow, windowStart);
-    const durationMs = getWindowDurationMs(timeWindow);
+    const { windowStart, key, durationMs } = this.globalWindow(timeWindow);
     const expiresAt = computeGlobalCounterExpiry(windowStart.getTime(), durationMs);
     return await this.store.incrementCounter(key, expiresAt);
   }
 
   async consumeGlobalLimit(timeWindow: 'daily' | 'hourly'): Promise<GlobalLimitResult> {
-    const now = new Date();
-    const windowStart = timeWindow === 'daily' ? getDailyWindowStart(now) : getHourlyWindowStart(now);
-    const key = buildGlobalKey(timeWindow, windowStart);
-    const limit = timeWindow === 'daily' ? this.dailyLimit : this.hourlyLimit;
-    const durationMs = getWindowDurationMs(timeWindow);
+    const { now, windowStart, key, limit, durationMs } = this.globalWindow(timeWindow);
     const expiresAt = computeGlobalCounterExpiry(windowStart.getTime(), durationMs);
     const currentCount = await this.store.incrementCounter(key, expiresAt);
 

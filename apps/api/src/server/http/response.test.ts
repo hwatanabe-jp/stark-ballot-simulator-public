@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { jsonResponse, errorResponse } from './response';
 import { ErrorCode, getErrorMessage } from '@stark-ballot/api-contract/errors/apiErrors';
 import { readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
-import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
 import { runWithLogContext } from '@stark-ballot/diagnostics/requestLogContext';
 
@@ -14,7 +14,7 @@ describe('jsonResponse', () => {
     expect(response.headers.get('Content-Type')).toBe('application/json');
 
     const payload = await readJsonRecord(response, 'json response');
-    const data = getRecordProperty(payload, 'data');
+    const data = getObjectProperty(payload, 'data');
     expect(data?.['ok']).toBe(true);
   });
 
@@ -25,7 +25,7 @@ describe('jsonResponse', () => {
     expect(response.headers.get('X-Test')).toBe('ok');
 
     const payload = await readJsonRecord(response, 'json response');
-    expect(getStringProperty(getRecordProperty(payload, 'data'), 'status')).toBe('created');
+    expect(getStringProperty(getObjectProperty(payload, 'data'), 'status')).toBe('created');
   });
 });
 
@@ -60,7 +60,7 @@ describe('errorResponse', () => {
     );
 
     const payload = await readJsonRecord(response, 'error response');
-    expect(getRecordProperty(getRecordProperty(payload, 'error'), 'details')).toBeUndefined();
+    expect(getObjectProperty(getObjectProperty(payload, 'error'), 'details')).toBeUndefined();
     expect(JSON.stringify(payload)).not.toContain('private-generation');
   });
 
@@ -74,8 +74,8 @@ describe('errorResponse', () => {
     expect(response.status).toBe(400);
     const payload = await readJsonRecord(response, 'error response');
     expect(StandardErrorResponseSchema.safeParse(payload).success).toBe(true);
-    expect(getStringProperty(getRecordProperty(payload, 'error'), 'code')).toBe('INVALID_IMAGE_ID');
-    expect(getRecordProperty(payload, 'meta')).toEqual({ requestId: 'trusted-image-request-id' });
+    expect(getStringProperty(getObjectProperty(payload, 'error'), 'code')).toBe('INVALID_IMAGE_ID');
+    expect(getObjectProperty(payload, 'meta')).toEqual({ requestId: 'trusted-image-request-id' });
     expect(JSON.stringify(payload)).not.toContain('Finalization receipt ImageID did not match');
   });
 });

@@ -99,10 +99,19 @@ const executionArn = 'arn:aws:states:ap-northeast-1:123456789012:execution:machi
 let consoleLogSpy: MockInstance<typeof console.log>;
 
 function expectLifecycleOutput(to: string, reason: string): void {
-  expect(consoleLogSpy.mock.calls).toHaveLength(2);
+  expect(consoleLogSpy.mock.calls).toHaveLength(3);
   expect(consoleLogSpy.mock.calls[0]).toHaveLength(1);
   expect(consoleLogSpy.mock.calls[1]).toHaveLength(1);
+  expect(consoleLogSpy.mock.calls[2]).toHaveLength(1);
   expect(consoleLogSpy.mock.calls[0]?.[0]).toEqual(
+    expect.objectContaining({
+      event: 'runtime_initialized',
+      node_version: process.versions.node,
+      openssl_version: process.versions.openssl,
+      undici_version: process.versions['undici'],
+    }),
+  );
+  expect(consoleLogSpy.mock.calls[1]?.[0]).toEqual(
     expect.objectContaining({
       level: 'info',
       service: 'finalization-writer',
@@ -113,7 +122,7 @@ function expectLifecycleOutput(to: string, reason: string): void {
       finalization_id: finalizationId,
     }),
   );
-  expect(consoleLogSpy.mock.calls[1]?.[0]).toEqual(
+  expect(consoleLogSpy.mock.calls[2]?.[0]).toEqual(
     expect.objectContaining({
       level: 'info',
       service: 'finalization-writer',
@@ -134,7 +143,6 @@ function createStateMachinePayload(): Record<string, unknown> {
     sessionId,
     finalizationId,
     queuedAtMs,
-    startedAtMs,
     expectedImageId: `0x${'1'.repeat(64)}`,
     inputS3Key: `sessions/${sessionId}/${finalizationId}/input.json`,
     outputS3Prefix: `sessions/${sessionId}/${finalizationId}/`,
@@ -146,7 +154,8 @@ function createStateMachinePayload(): Record<string, unknown> {
       tamperMode: 'none',
     },
     proverResult: {
-      ExecutionStoppedAt: '2026-06-17T00:00:05.000Z',
+      StartedAt: startedAtMs - 500,
+      StoppedAt: Date.parse('2026-06-17T00:00:05.000Z'),
     },
   };
 }
@@ -272,9 +281,10 @@ function createStore(): {
     finalizationId,
     scenarioContext,
     state: {
-      status: 'pending',
+      status: 'running',
       finalizationId,
       queuedAtMs,
+      startedAtMs,
     },
   };
   const setCurrentRecord = (
@@ -463,6 +473,45 @@ function createStore(): {
   };
 }
 
+function mismatchedLifecycleRecord(record: FinalizationRecord, mismatch: string): FinalizationRecord | null {
+  const base = {
+    sessionId: record.sessionId,
+    finalizationId: record.finalizationId,
+    scenarioContext: record.scenarioContext,
+  };
+  switch (mismatch) {
+    case 'missing':
+      return null;
+    case 'pending':
+      return { ...base, state: { status: 'pending', finalizationId, queuedAtMs } };
+    case 'cancelled':
+      return {
+        ...base,
+        state: {
+          status: 'failed',
+          finalizationId,
+          queuedAtMs,
+          failedAtMs: startedAtMs,
+          error: { code: 'CANCELLED', message: 'Cancelled', category: 'unknown' },
+        },
+      };
+    case 'wrong-session':
+      return {
+        ...base,
+        state: { status: 'running', finalizationId, queuedAtMs, startedAtMs },
+        sessionId: asSessionId('9f61dd4f-3194-4a79-a00f-9025062c8e83'),
+      };
+    case 'wrong-finalization':
+      return {
+        ...base,
+        state: { status: 'running', finalizationId, queuedAtMs, startedAtMs },
+        finalizationId: asFinalizationId('01HVN5WA1CEH94868G90QGJ7HY'),
+      };
+    default:
+      return { ...base, state: { status: 'running', finalizationId, queuedAtMs: queuedAtMs + 1, startedAtMs } };
+  }
+}
+
 describe('target finalization-writer real parser admission', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -491,7 +540,7 @@ describe('target finalization-writer real parser admission', () => {
     const { store, markFinalizationSucceeded, markAwsFinalizationSucceeded } = createStore();
     mocks.state.store = store;
 
-    const response = await handler({
+    const response = await invokeDirectWriter({
       status: 'SUCCEEDED',
       executionArn,
       payload: createStateMachinePayload(),
@@ -540,6 +589,43 @@ describe('target finalization-writer real parser admission', () => {
     expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
   });
 
+  it('uses the admitted start time for duplicate success callbacks, ignoring transport timestamps', async () => {
+    const { store, markAwsFinalizationSucceeded } = createStore();
+    mocks.state.store = store;
+    const event = {
+      status: 'SUCCEEDED',
+      executionArn,
+      startedAtMs: startedAtMs - 100,
+      payload: { ...createStateMachinePayload(), startedAtMs: startedAtMs - 200 },
+    };
+    await handler(event);
+    expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
+    await handler(event);
+    expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
+    expect(markAwsFinalizationSucceeded).toHaveBeenCalledTimes(2);
+    for (const [, payload] of markAwsFinalizationSucceeded.mock.calls) {
+      expect(payload.startedAtMs).toBe(startedAtMs);
+    }
+  });
+
+  it.each(['missing', 'pending', 'cancelled', 'wrong-session', 'wrong-finalization', 'wrong-queue-time'])(
+    'rejects successful callbacks when the admitted lifecycle is %s',
+    async (mismatch) => {
+      const { store, markAwsFinalizationSucceeded } = createStore();
+      mocks.state.store = store;
+      const record = await store.getFinalizationRecord(sessionId, finalizationId);
+      if (!record) throw new Error('Expected running fixture');
+      const mismatchedRecord = mismatchedLifecycleRecord(record, mismatch);
+      vi.mocked(store.getFinalizationRecord).mockResolvedValue(mismatchedRecord);
+      await expect(
+        handler({ status: 'SUCCEEDED', executionArn, payload: createStateMachinePayload() }),
+      ).rejects.toThrow('Invalid direct finalize callback event');
+      expect(markAwsFinalizationSucceeded).not.toHaveBeenCalled();
+      expect(consoleLogSpy.mock.calls.at(-1)?.[0]).toMatchObject({ outcome_code: 'payload_invalid' });
+      consoleLogSpy.mockClear();
+    },
+  );
+
   it('keeps successful finalization compatible when the restored result has no bitmap evidence', async () => {
     const { store } = createStore();
     mocks.state.store = store;
@@ -558,7 +644,7 @@ describe('target finalization-writer real parser admission', () => {
     expectLifecycleOutput('succeeded', 'RUNTIME_UPDATE_RECEIVED');
   });
 
-  it('keeps pending authority when the atomic successful commit fails and repairs it on callback retry', async () => {
+  it('keeps running authority when the atomic successful commit fails and succeeds on callback retry', async () => {
     const { store, markAwsFinalizationSucceeded } = createStore();
     mocks.state.store = store;
     markAwsFinalizationSucceeded.mockRejectedValueOnce(new Error('atomic successful finalization commit unavailable'));
@@ -571,10 +657,10 @@ describe('target finalization-writer real parser admission', () => {
     await expect(handler(event)).rejects.toThrow('atomic successful finalization commit unavailable');
 
     await expect(store.getCurrentFinalizationRecord(sessionId)).resolves.toMatchObject({
-      state: { status: 'pending' },
+      state: { status: 'running' },
     });
-    expect(consoleLogSpy.mock.calls).toHaveLength(2);
-    expect(consoleLogSpy.mock.calls[1]?.[0]).toEqual(
+    expect(consoleLogSpy.mock.calls).toHaveLength(3);
+    expect(consoleLogSpy.mock.calls[2]?.[0]).toEqual(
       expect.objectContaining({
         event: 'finalization_update_received',
         outcome_code: 'application_failed',
@@ -609,7 +695,7 @@ describe('target finalization-writer real parser admission', () => {
     delete payload['bundleS3Key'];
     payload['s3BundleKey'] = 'sessions/retired-alias/other-execution/bundle.zip';
 
-    const response = await handler({
+    const response = await invokeDirectWriter({
       status: 'SUCCEEDED',
       executionArn,
       payload,
@@ -640,7 +726,7 @@ describe('target finalization-writer real parser admission', () => {
     delete payload['startedAtMs'];
     mocks.state.store = store;
 
-    const response = await handler({
+    const response = await invokeDirectWriter({
       status: 'RUNNING',
       executionArn,
       startedAtIso: proverStartedAtIso,
@@ -692,7 +778,7 @@ describe('target finalization-writer real parser admission', () => {
     });
     mocks.state.store = store;
 
-    const response = await handler({
+    const response = await invokeDirectWriter({
       status: 'RUNNING',
       executionArn,
       startedAtIso: '2026-06-17T00:00:01.000Z',
@@ -711,7 +797,7 @@ describe('target finalization-writer real parser admission', () => {
     const { store, markFinalizationFailed } = createStore();
     mocks.state.store = store;
 
-    const response = await handler({
+    const response = await invokeDirectWriter({
       status: 'FAILED',
       executionArn,
       failedAtIso: '2026-06-17T00:00:05.000Z',
@@ -740,7 +826,6 @@ describe('target finalization-writer real parser admission', () => {
       expect.objectContaining({
         finalizationId,
         queuedAtMs,
-        startedAtMs,
         failedAtMs: Date.parse('2026-06-17T00:00:05.000Z'),
         error: {
           code: 'PROVER_TASK_FAILED',
@@ -759,7 +844,7 @@ describe('target finalization-writer real parser admission', () => {
     const timeoutAtIso = '2026-06-17T00:00:10.000Z';
     mocks.state.store = store;
 
-    const response = await handler({
+    const response = await invokeDirectWriter({
       status: 'TIMED_OUT',
       executionArn,
       timeoutAtIso,
@@ -786,7 +871,6 @@ describe('target finalization-writer real parser admission', () => {
       expect.objectContaining({
         finalizationId,
         queuedAtMs,
-        startedAtMs,
         timeoutAtMs: Date.parse(timeoutAtIso),
       }),
     );
@@ -796,3 +880,9 @@ describe('target finalization-writer real parser admission', () => {
     expectLifecycleOutput('timeout', 'RUNTIME_UPDATE_RECEIVED');
   });
 });
+
+async function invokeDirectWriter(event: unknown) {
+  const response = await handler(event);
+  if (!('state' in response)) throw new Error('Expected a direct writer response');
+  return response;
+}

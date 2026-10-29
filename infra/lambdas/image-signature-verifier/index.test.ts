@@ -23,7 +23,8 @@ vi.mock('@aws-sdk/client-ecr', () => {
   };
 });
 
-const { createEcrSigningStatusLookup, createImageSignatureVerifierHandler } = await import('./index.mjs');
+const { createImageSignatureVerifierHandler } = await import('./index.mjs');
+const { createEcrSigningStatusLookup } = await import('../../image-signature-verifier/signing-status.mjs');
 
 const imageDigest = `sha256:${'1'.repeat(64)}`;
 const invocation = {
@@ -126,6 +127,9 @@ describe('target cryptographic image signature verifier Lambda', () => {
       {
         service: 'image-signature-verifier',
         event: 'verification_started',
+        node_version: process.versions.node,
+        openssl_version: process.versions.openssl,
+        undici_version: process.versions['undici'],
         requestId: 'safe-request-id',
       },
       {
@@ -201,6 +205,9 @@ describe('target cryptographic image signature verifier Lambda', () => {
       {
         service: 'image-signature-verifier',
         event: 'verification_started',
+        node_version: process.versions.node,
+        openssl_version: process.versions.openssl,
+        undici_version: process.versions['undici'],
         requestId: 'bounded-diagnostic-id',
       },
       {

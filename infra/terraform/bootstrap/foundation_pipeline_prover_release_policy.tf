@@ -1,12 +1,7 @@
 data "aws_iam_policy_document" "foundation_prover_release_toolchain_resolver_build" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  count                   = local.foundation_pipeline_enabled ? 1 : 0
+  source_policy_documents = [data.aws_iam_policy_document.terraform_authority_decrypt[0].json]
 
-  statement {
-    sid       = "ReadExactProverToolchainResolverProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [aws_codebuild_project.prover_release_toolchain_resolver[0].arn]
-  }
 
   statement {
     sid    = "UseProverReleaseToolchainResolverPipelineArtifacts"
@@ -61,10 +56,23 @@ data "aws_iam_policy_document" "foundation_prover_release_toolchain_resolver_bui
       "s3:GetObjectVersion",
     ]
     resources = [
-      local.foundation_toolchain_accepted_pointer_object_arn,
+      local.foundation_toolchain_promotion_object_arn,
       local.foundation_toolchain_candidate_records_objects_arn,
-      local.foundation_toolchain_release_records_objects_arn,
     ]
+  }
+
+  statement {
+    sid       = "ReadCurrentFoundationCheckpoint"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${local.terraform_authority_bucket_arn}/deployment/${local.deployment_target.targetKey}/foundation/checkpoint.json"]
+  }
+
+  statement {
+    sid       = "RevalidateSelectedToolchainImage"
+    effect    = "Allow"
+    actions   = ["ecr:DescribeImages", "ecr:DescribeImageScanFindings"]
+    resources = [local.foundation_risc0_toolchain_ecr_repository_arn]
   }
 
 }
@@ -80,12 +88,6 @@ resource "aws_iam_role_policy" "foundation_prover_release_toolchain_resolver_bui
 data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  statement {
-    sid       = "ReadExactProverCandidateProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [aws_codebuild_project.prover_release_candidate[0].arn]
-  }
 
   statement {
     sid    = "UseProverReleaseCandidatePipelineArtifacts"
@@ -153,7 +155,7 @@ data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
     ]
     resources = [
       local.foundation_toolchain_candidate_records_objects_arn,
-      local.foundation_toolchain_release_records_objects_arn,
+      local.foundation_toolchain_promotion_object_arn,
     ]
   }
 
@@ -211,6 +213,37 @@ data "aws_iam_policy_document" "foundation_prover_release_candidate_build" {
     resources = local.foundation_ecr_signing_profile_arns
   }
 
+  statement {
+    sid       = "ObserveProverPromotionPredecessor"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = [local.foundation_prover_promotion_object_arn]
+  }
+  statement {
+    sid       = "ObserveInitialProverPromotionAbsence"
+    effect    = "Allow"
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.foundation_release_manifest_bucket_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:prefix"
+      values   = ["promotions/prover/current.json"]
+    }
+  }
+
+  statement {
+    sid       = "ReadCurrentFoundationCheckpoint"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${local.terraform_authority_bucket_arn}/deployment/${local.deployment_target.targetKey}/foundation/checkpoint.json"]
+  }
+  statement {
+    sid       = "DecryptFoundationCheckpoint"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt", "kms:DescribeKey"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
+  }
+
 }
 
 resource "aws_iam_role_policy" "foundation_prover_release_candidate_build" {
@@ -224,12 +257,6 @@ resource "aws_iam_role_policy" "foundation_prover_release_candidate_build" {
 data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointer_build" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  statement {
-    sid       = "ReadExactProverPointerProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [aws_codebuild_project.prover_release_update_accepted_pointer[0].arn]
-  }
 
   statement {
     sid    = "UseProverReleaseAcceptedPointerArtifacts"
@@ -285,7 +312,6 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
     ]
     resources = [
       local.foundation_prover_candidate_records_objects_arn,
-      local.foundation_prover_release_records_objects_arn,
     ]
   }
 
@@ -299,16 +325,11 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
     ]
     resources = [
       local.foundation_toolchain_candidate_records_objects_arn,
-      local.foundation_toolchain_release_records_objects_arn,
+      local.foundation_toolchain_promotion_object_arn,
     ]
   }
 
-  statement {
-    sid       = "PublishProverReleaseLedgerRecords"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
-    resources = [local.foundation_prover_release_records_objects_arn]
-  }
+
 
   statement {
     sid    = "PromoteAcceptedProverPointer"
@@ -319,7 +340,27 @@ data "aws_iam_policy_document" "foundation_prover_release_update_accepted_pointe
       "s3:GetObjectVersion",
       "s3:PutObject",
     ]
-    resources = [local.foundation_prover_accepted_pointer_object_arn]
+    resources = [local.foundation_prover_promotion_object_arn]
+  }
+
+  statement {
+    sid       = "RevalidateProverPromotionImage"
+    effect    = "Allow"
+    actions   = ["ecr:DescribeImages", "ecr:DescribeImageScanFindings", "ecr:DescribeImageSigningStatus"]
+    resources = [local.foundation_prover_ecr_repository_arn]
+  }
+
+  statement {
+    sid       = "ReadCurrentFoundationCheckpoint"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${local.terraform_authority_bucket_arn}/deployment/${local.deployment_target.targetKey}/foundation/checkpoint.json"]
+  }
+  statement {
+    sid       = "DecryptFoundationCheckpoint"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt", "kms:DescribeKey"]
+    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
   }
 
 }

@@ -635,7 +635,7 @@ export const runVerificationRoute = defineRoute({
     headers: PathSessionCapabilityHeadersSchema,
     body: VerificationRunRequestSchema,
   },
-  responses: [jsonResponse(200, VerificationRunResponseSchema)],
+  responses: [jsonResponse(200, VerificationRunResponseSchema), jsonResponse(202, VerificationRunResponseSchema)],
   publicErrorShape: 'standard-error-envelope',
   publicErrors: publicErrors('standard-error-envelope', [
     ...MOUNTED_ROUTE_ERROR_RESPONSES,
@@ -643,6 +643,7 @@ export const runVerificationRoute = defineRoute({
     ...BODY_ERROR_RESPONSES,
     standardJsonError('SESSION_NOT_FOUND', 404),
     standardJsonError('SESSION_NOT_FINALIZED', 400),
+    standardJsonError('FINALIZATION_NOT_CURRENT', 409),
     ...FINALIZE_RATE_LIMIT_ERROR_RESPONSES,
   ]),
   dataClassification: 'owner-scoped-public-projection',

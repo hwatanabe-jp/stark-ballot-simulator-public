@@ -1,9 +1,10 @@
 resource "aws_codepipeline" "development_foundation" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  name          = local.foundation_pipeline_name
-  pipeline_type = "V2"
-  role_arn      = aws_iam_role.foundation_pipeline[0].arn
+  name           = local.foundation_pipeline_name
+  pipeline_type  = "V2"
+  execution_mode = "QUEUED"
+  role_arn       = aws_iam_role.foundation_pipeline[0].arn
 
   artifact_store {
     location = aws_s3_bucket.foundation_pipeline_artifacts[0].bucket
@@ -16,9 +17,9 @@ resource "aws_codepipeline" "development_foundation" {
   }
 
   variable {
-    name          = "FoundationEvidenceIntent"
-    default_value = "foundation-saved-plan-evidence"
-    description   = "Stable label for the foundation saved-plan evidence package."
+    name          = "InitialPublication"
+    default_value = "false"
+    description   = "Explicit first checkpoint and mutation-owner publication for reviewed target cutover."
   }
 
   stage {
@@ -57,6 +58,7 @@ resource "aws_codepipeline" "development_foundation" {
 
       configuration = {
         EnvironmentVariables = jsonencode([
+          { name = "DEPLOYMENT_INITIAL_PUBLICATION", value = "#{variables.InitialPublication}", type = "PLAINTEXT" },
           { name = "FOUNDATION_PIPELINE_EXECUTION_ID", value = "#{codepipeline.PipelineExecutionId}", type = "PLAINTEXT" },
           { name = "PIPELINE_SOURCE_SHA", value = "#{FoundationSource.CommitId}", type = "PLAINTEXT" },
         ])
@@ -83,7 +85,7 @@ resource "aws_codepipeline" "development_foundation" {
   }
 
   stage {
-    name = "TerraformApply"
+    name = "DeployFoundation"
 
     action {
       name             = "ApplyReviewedFoundationPlan"
@@ -103,12 +105,9 @@ resource "aws_codepipeline" "development_foundation" {
         ProjectName   = aws_codebuild_project.foundation_terraform_apply[0].name
       }
     }
-  }
-
-  stage {
-    name = "PostApplySmoke"
 
     action {
+      run_order        = 2
       name             = "FoundationStateAbsenceOfAppRuntime"
       category         = "Build"
       owner            = "AWS"

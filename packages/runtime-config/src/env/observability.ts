@@ -2,7 +2,7 @@ import { isPublicDefaultLogSalt } from '@stark-ballot/validation/log-hash-salt';
 import { RuntimeConfigValidationError } from '@stark-ballot/runtime-config/env/configValidationError';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
-export type TargetObservabilityConfigName =
+type TargetObservabilityConfigName =
   | 'LOG_IP_HASH_SALT_REF'
   | 'LOG_IP_HASH_SALT'
   | 'LOG_FORMAT'

@@ -1,11 +1,13 @@
+import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
+import { reconcileAwsFinalizations } from '@stark-ballot/aws-adapters/finalize/reconcileFinalizations';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import { applyAwsFinalizationStateUpdatePayload } from '@stark-ballot/aws-adapters/finalize/applyFinalizationStateUpdate';
 import { parseFinalizationStateUpdatePayload } from '@stark-ballot/aws-adapters/finalize/finalizationStateUpdateAdmission';
 import {
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 import {
   buildFinalizationResultFromS3Bundle,
@@ -58,10 +60,10 @@ function emitDirectUpdateReceived(
 }
 
 function resolveSafeDirectUpdateCorrelation(rawEvent: unknown): FinalizationUpdateCorrelation | undefined {
-  if (!isRecord(rawEvent)) {
+  if (!isNonNullObject(rawEvent)) {
     return undefined;
   }
-  const candidate = getRecordProperty(rawEvent, 'payload') ?? rawEvent;
+  const candidate = getObjectProperty(rawEvent, 'payload') ?? rawEvent;
   const sessionId = getStringProperty(candidate, 'sessionId');
   const finalizationId = getStringProperty(candidate, 'finalizationId');
   const admittedSessionId = parseSessionId(sessionId);
@@ -129,7 +131,7 @@ function resolveBundleS3Key(profile: ResolvedRuntimeProfile, payload: Record<str
   if (directKey) {
     return validateAsyncProverBundleKey(profile, sessionId, finalizationId, directKey);
   }
-  const bundleMetadata = getRecordProperty(payload, 'bundleMetadata');
+  const bundleMetadata = getObjectProperty(payload, 'bundleMetadata');
   const metadataKey = bundleMetadata ? getStringProperty(bundleMetadata, 's3BundleKey') : undefined;
   if (metadataKey) {
     return validateAsyncProverBundleKey(profile, sessionId, finalizationId, metadataKey);
@@ -153,10 +155,25 @@ function resolveEpochMillis(value: unknown): number | undefined {
 }
 
 function resolveTimestampFromProverResult(result: unknown, field: string): number | undefined {
-  if (!isRecord(result)) {
+  if (!isNonNullObject(result)) {
     return undefined;
   }
   return resolveEpochMillis(getNumberProperty(result, field) ?? getStringProperty(result, field));
+}
+
+const DIRECT_UPDATE_FIELDS: ReadonlyMap<unknown, readonly string[]> = new Map([
+  ['RUNNING', ['startedAtMs']],
+  ['SUCCEEDED', ['startedAtMs', 'completedAtMs', 'bundleMetadata', 'finalizationResult']],
+  ['FAILED', ['startedAtMs', 'failedAtMs', 'error']],
+  ['TIMED_OUT', ['startedAtMs', 'timeoutAtMs']],
+]);
+
+function presentUpdateFields(payload: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (payload[field] !== undefined) projected[field] = payload[field];
+  }
+  return projected;
 }
 
 function projectFinalizationStateUpdatePayload(payload: Record<string, unknown>): Record<string, unknown> {
@@ -167,90 +184,16 @@ function projectFinalizationStateUpdatePayload(payload: Record<string, unknown>)
     queuedAtMs: payload['queuedAtMs'],
     ...(payload['stepFunctionsArn'] !== undefined ? { stepFunctionsArn: payload['stepFunctionsArn'] } : {}),
   };
-  switch (payload['status']) {
-    case 'RUNNING':
-      return {
-        ...common,
-        ...(payload['startedAtMs'] !== undefined ? { startedAtMs: payload['startedAtMs'] } : {}),
-      };
-    case 'SUCCEEDED':
-      return {
-        ...common,
-        ...(payload['startedAtMs'] !== undefined ? { startedAtMs: payload['startedAtMs'] } : {}),
-        ...(payload['completedAtMs'] !== undefined ? { completedAtMs: payload['completedAtMs'] } : {}),
-        ...(payload['bundleMetadata'] !== undefined ? { bundleMetadata: payload['bundleMetadata'] } : {}),
-        ...(payload['finalizationResult'] !== undefined ? { finalizationResult: payload['finalizationResult'] } : {}),
-      };
-    case 'FAILED':
-      return {
-        ...common,
-        ...(payload['startedAtMs'] !== undefined ? { startedAtMs: payload['startedAtMs'] } : {}),
-        ...(payload['failedAtMs'] !== undefined ? { failedAtMs: payload['failedAtMs'] } : {}),
-        ...(payload['error'] !== undefined ? { error: payload['error'] } : {}),
-      };
-    case 'TIMED_OUT':
-      return {
-        ...common,
-        ...(payload['startedAtMs'] !== undefined ? { startedAtMs: payload['startedAtMs'] } : {}),
-        ...(payload['timeoutAtMs'] !== undefined ? { timeoutAtMs: payload['timeoutAtMs'] } : {}),
-      };
-    default:
-      return common;
-  }
+  const fields = DIRECT_UPDATE_FIELDS.get(payload['status']);
+  return fields === undefined ? common : { ...common, ...presentUpdateFields(payload, fields) };
 }
 
-function resolveStartedAtMs(rawEvent: Record<string, unknown>, payload: Record<string, unknown>): number | undefined {
-  const direct = getNumberProperty(rawEvent, 'startedAtMs') ?? getNumberProperty(payload, 'startedAtMs');
-  if (direct !== undefined) {
-    return direct;
-  }
-  const markStarted = getRecordProperty(payload, 'markStarted');
-  const callbackPayload = markStarted ? getRecordProperty(markStarted, 'Payload') : undefined;
-  const state = callbackPayload ? getRecordProperty(callbackPayload, 'state') : undefined;
-  return state ? getNumberProperty(state, 'startedAtMs') : undefined;
-}
-
-async function normalizeDirectEvent(profile: ResolvedRuntimeProfile, rawEvent: unknown): Promise<unknown> {
-  if (!isRecord(rawEvent)) {
-    return rawEvent;
-  }
-
-  const payload = getRecordProperty(rawEvent, 'payload');
-  const status = getStringProperty(rawEvent, 'status');
-  if (!payload || (status !== 'RUNNING' && status !== 'SUCCEEDED' && status !== 'FAILED' && status !== 'TIMED_OUT')) {
-    return rawEvent;
-  }
-
-  const directPayload: Record<string, unknown> = {
-    ...payload,
-    status,
-  };
-  applyExecutionArn(directPayload, rawEvent);
-  const startedAtMs = resolveStartedAtMs(rawEvent, directPayload);
-  if (startedAtMs !== undefined) {
-    directPayload['startedAtMs'] = startedAtMs;
-  }
-
-  if (status === 'RUNNING') {
-    const startedAtIso = getStringProperty(rawEvent, 'startedAtIso');
-    const resolvedStartedAtMs = startedAtMs ?? resolveEpochMillis(startedAtIso);
-    if (resolvedStartedAtMs !== undefined) {
-      directPayload['startedAtMs'] = resolvedStartedAtMs;
-    }
-    return projectFinalizationStateUpdatePayload(directPayload);
-  }
-
-  if (status === 'TIMED_OUT') {
-    delete directPayload['error'];
-    const timeoutAtMs = getNumberProperty(rawEvent, 'timeoutAtMs');
-    const timeoutAtIso = getStringProperty(rawEvent, 'timeoutAtIso');
-    const resolvedTimeoutAtMs = timeoutAtMs ?? resolveEpochMillis(timeoutAtIso);
-    if (resolvedTimeoutAtMs !== undefined) {
-      directPayload['timeoutAtMs'] = resolvedTimeoutAtMs;
-    }
-  }
-
-  const error = status === 'FAILED' ? getRecordProperty(rawEvent, 'error') : undefined;
+async function normalizeFailedEventError(
+  profile: ResolvedRuntimeProfile,
+  rawEvent: Record<string, unknown>,
+  directPayload: Record<string, unknown>,
+): Promise<void> {
+  const error = getObjectProperty(rawEvent, 'error');
   if (error !== undefined) {
     const sessionId = getStringProperty(directPayload, 'sessionId');
     const finalizationId = getStringProperty(directPayload, 'finalizationId');
@@ -269,99 +212,242 @@ async function normalizeDirectEvent(profile: ResolvedRuntimeProfile, rawEvent: u
       delete directPayload['error'];
     }
   }
+}
 
-  if (status === 'FAILED') {
-    const failedAtMs = getNumberProperty(rawEvent, 'failedAtMs');
-    const failedAtIso = getStringProperty(rawEvent, 'failedAtIso');
-    const resolvedFailedAtMs = failedAtMs ?? resolveEpochMillis(failedAtIso);
-    if (resolvedFailedAtMs !== undefined) {
-      directPayload['failedAtMs'] = resolvedFailedAtMs;
-    }
+function missingBundleIdentityPayload(
+  directPayload: Record<string, unknown>,
+  completedAtMs: number | undefined,
+  message: string,
+): Record<string, unknown> {
+  return projectFinalizationStateUpdatePayload({
+    ...directPayload,
+    status: 'FAILED',
+    ...(completedAtMs !== undefined ? { failedAtMs: completedAtMs } : {}),
+    error: { code: 'FINALIZATION_BUNDLE_KEY_MISSING', message },
+  });
+}
+
+async function restoreSucceededEventBundle(
+  profile: ResolvedRuntimeProfile,
+  directPayload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const completedAtMs = getNumberProperty(directPayload, 'completedAtMs');
+  const bundleS3Key = resolveBundleS3Key(profile, directPayload);
+  if (!bundleS3Key) {
+    return missingBundleIdentityPayload(
+      directPayload,
+      completedAtMs,
+      'Target finalization succeeded without a durable bundle key',
+    );
   }
 
-  if (status === 'SUCCEEDED') {
-    const completedAtMs =
-      getNumberProperty(rawEvent, 'completedAtMs') ??
-      resolveEpochMillis(getStringProperty(rawEvent, 'completedAtIso')) ??
-      resolveTimestampFromProverResult(
-        rawEvent['proverResult'] ?? directPayload['proverResult'],
-        'ExecutionStoppedAt',
-      ) ??
-      resolveTimestampFromProverResult(rawEvent['proverResult'] ?? directPayload['proverResult'], 'StoppedAt');
-    if (completedAtMs !== undefined) {
-      directPayload['completedAtMs'] = completedAtMs;
-    }
+  const finalizationId = getStringProperty(directPayload, 'finalizationId');
+  if (!finalizationId) {
+    return missingBundleIdentityPayload(
+      directPayload,
+      completedAtMs,
+      'Target finalization succeeded without finalization identity',
+    );
   }
 
-  if (status === 'SUCCEEDED' && !getRecordProperty(directPayload, 'finalizationResult')) {
-    const completedAtMs = getNumberProperty(directPayload, 'completedAtMs');
-    const bundleS3Key = resolveBundleS3Key(profile, directPayload);
-    if (!bundleS3Key) {
-      return projectFinalizationStateUpdatePayload({
-        ...directPayload,
-        status: 'FAILED',
-        ...(completedAtMs !== undefined ? { failedAtMs: completedAtMs } : {}),
-        error: {
-          code: 'FINALIZATION_BUNDLE_KEY_MISSING',
-          message: 'Target finalization succeeded without a durable bundle key',
-        },
-      });
+  try {
+    if (completedAtMs === undefined) {
+      return projectFinalizationStateUpdatePayload(directPayload);
     }
+    const s3UploadedAtMs = resolveEpochMillis(directPayload['s3UploadedAtMs']) ?? completedAtMs;
+    const finalizationResult = await buildFinalizationResultFromS3Bundle({
+      profile,
+      bundleS3Key,
+      finalizationId,
+      finalizedAtMs: completedAtMs,
+    });
+    return projectFinalizationStateUpdatePayload({
+      ...directPayload,
+      completedAtMs,
+      finalizationResult,
+      bundleMetadata: {
+        ...(isNonNullObject(directPayload['bundleMetadata']) ? directPayload['bundleMetadata'] : {}),
+        s3BundleKey: bundleS3Key,
+        s3UploadedAtMs,
+      },
+    });
+  } catch (error) {
+    if (isTransientBundleRestoreError(error)) {
+      throw error;
+    }
+    return projectFinalizationStateUpdatePayload({
+      ...directPayload,
+      status: 'FAILED',
+      failedAtMs: completedAtMs,
+      error: {
+        code: 'FINALIZATION_BUNDLE_RESTORE_FAILED',
+        message: 'Target finalization bundle could not be restored',
+      },
+    });
+  }
+}
 
-    const finalizationId = getStringProperty(directPayload, 'finalizationId');
-    if (!finalizationId) {
-      return projectFinalizationStateUpdatePayload({
-        ...directPayload,
-        status: 'FAILED',
-        ...(completedAtMs !== undefined ? { failedAtMs: completedAtMs } : {}),
-        error: {
-          code: 'FINALIZATION_BUNDLE_KEY_MISSING',
-          message: 'Target finalization succeeded without finalization identity',
-        },
-      });
-    }
+function applyDirectStartedAt(
+  rawEvent: Record<string, unknown>,
+  directPayload: Record<string, unknown>,
+): number | undefined {
+  const startedAtMs = getNumberProperty(rawEvent, 'startedAtMs') ?? getNumberProperty(directPayload, 'startedAtMs');
+  if (startedAtMs !== undefined) {
+    directPayload['startedAtMs'] = startedAtMs;
+  }
 
-    try {
-      if (completedAtMs === undefined) {
-        return projectFinalizationStateUpdatePayload(directPayload);
-      }
-      const s3UploadedAtMs = resolveEpochMillis(directPayload['s3UploadedAtMs']) ?? completedAtMs;
-      const finalizationResult = await buildFinalizationResultFromS3Bundle({
-        profile,
-        bundleS3Key,
-        finalizationId,
-        finalizedAtMs: completedAtMs,
-      });
-      return projectFinalizationStateUpdatePayload({
-        ...directPayload,
-        completedAtMs,
-        finalizationResult,
-        bundleMetadata: {
-          ...(isRecord(directPayload['bundleMetadata']) ? directPayload['bundleMetadata'] : {}),
-          s3BundleKey: bundleS3Key,
-          s3UploadedAtMs,
-        },
-      });
-    } catch (error) {
-      if (isTransientBundleRestoreError(error)) {
-        throw error;
-      }
-      return projectFinalizationStateUpdatePayload({
-        ...directPayload,
-        status: 'FAILED',
-        failedAtMs: completedAtMs,
-        error: {
-          code: 'FINALIZATION_BUNDLE_RESTORE_FAILED',
-          message: 'Target finalization bundle could not be restored',
-        },
-      });
-    }
+  return startedAtMs;
+}
+
+function normalizeRunningEvent(
+  rawEvent: Record<string, unknown>,
+  directPayload: Record<string, unknown>,
+  startedAtMs: number | undefined,
+): Record<string, unknown> {
+  const startedAtIso = getStringProperty(rawEvent, 'startedAtIso');
+  const resolvedStartedAtMs = startedAtMs ?? resolveEpochMillis(startedAtIso);
+  if (resolvedStartedAtMs !== undefined) {
+    directPayload['startedAtMs'] = resolvedStartedAtMs;
+  }
+  return projectFinalizationStateUpdatePayload(directPayload);
+}
+
+function applyDirectTerminalTimestamp(
+  rawEvent: Record<string, unknown>,
+  directPayload: Record<string, unknown>,
+  field: string,
+  isoField: string,
+): void {
+  const timestamp = getNumberProperty(rawEvent, field);
+  const timestampIso = getStringProperty(rawEvent, isoField);
+  const resolvedTimestamp = timestamp ?? resolveEpochMillis(timestampIso);
+  if (resolvedTimestamp !== undefined) directPayload[field] = resolvedTimestamp;
+}
+
+async function normalizeSucceededEvent(
+  profile: ResolvedRuntimeProfile,
+  rawEvent: Record<string, unknown>,
+  directPayload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const completedAtMs =
+    getNumberProperty(rawEvent, 'completedAtMs') ??
+    resolveEpochMillis(getStringProperty(rawEvent, 'completedAtIso')) ??
+    resolveTimestampFromProverResult(rawEvent['proverResult'] ?? directPayload['proverResult'], 'ExecutionStoppedAt') ??
+    resolveTimestampFromProverResult(rawEvent['proverResult'] ?? directPayload['proverResult'], 'StoppedAt');
+  if (completedAtMs !== undefined) {
+    directPayload['completedAtMs'] = completedAtMs;
+  }
+
+  if (!getObjectProperty(directPayload, 'finalizationResult')) {
+    return restoreSucceededEventBundle(profile, directPayload);
   }
 
   return projectFinalizationStateUpdatePayload(directPayload);
 }
 
-export const handler = async (rawEvent: unknown): Promise<DirectCallbackResponse> => {
+function isDirectUpdateStatus(status: string | undefined): boolean {
+  return status === 'RUNNING' || status === 'SUCCEEDED' || status === 'FAILED' || status === 'TIMED_OUT';
+}
+
+async function normalizeDirectEvent(profile: ResolvedRuntimeProfile, rawEvent: unknown): Promise<unknown> {
+  if (!isNonNullObject(rawEvent)) {
+    return rawEvent;
+  }
+
+  const payload = getObjectProperty(rawEvent, 'payload');
+  const status = getStringProperty(rawEvent, 'status');
+  if (!payload || !isDirectUpdateStatus(status)) {
+    return rawEvent;
+  }
+
+  const directPayload: Record<string, unknown> = {
+    ...payload,
+    status,
+  };
+  applyExecutionArn(directPayload, rawEvent);
+  const startedAtMs = applyDirectStartedAt(rawEvent, directPayload);
+
+  if (status === 'RUNNING') {
+    return normalizeRunningEvent(rawEvent, directPayload, startedAtMs);
+  }
+
+  if (status === 'TIMED_OUT') {
+    delete directPayload['error'];
+    applyDirectTerminalTimestamp(rawEvent, directPayload, 'timeoutAtMs', 'timeoutAtIso');
+  }
+
+  if (status === 'FAILED') {
+    await normalizeFailedEventError(profile, rawEvent, directPayload);
+    applyDirectTerminalTimestamp(rawEvent, directPayload, 'failedAtMs', 'failedAtIso');
+  }
+
+  if (status === 'SUCCEEDED') {
+    return normalizeSucceededEvent(profile, rawEvent, directPayload);
+  }
+
+  return projectFinalizationStateUpdatePayload(directPayload);
+}
+
+function admittedStartedAt(
+  record: FinalizationRecord | null,
+  correlation: FinalizationUpdateCorrelation,
+  queuedAtMs: unknown,
+): number {
+  if (
+    !record ||
+    record.sessionId !== correlation.sessionId ||
+    record.finalizationId !== correlation.finalizationId ||
+    record.state.finalizationId !== correlation.finalizationId ||
+    record.state.queuedAtMs !== queuedAtMs ||
+    (record.state.status !== 'running' && record.state.status !== 'succeeded')
+  ) {
+    throw new Error('Invalid direct finalize callback event');
+  }
+  return record.state.startedAtMs;
+}
+
+async function bindAdmittedStartedAt(
+  runtimeProfile: ResolvedRuntimeProfile,
+  normalizedEvent: unknown,
+): Promise<unknown> {
+  if (isNonNullObject(normalizedEvent) && normalizedEvent['status'] === 'SUCCEEDED') {
+    const sessionId = parseSessionId(normalizedEvent['sessionId']);
+    const finalizationId = parseFinalizationId(normalizedEvent['finalizationId']);
+    if (!sessionId || !finalizationId) {
+      throw new Error('Invalid direct finalize callback event');
+    }
+    // Container admission owns the start time; the Step Functions input never receives it.
+    const record = await getGlobalStore(runtimeProfile).getFinalizationRecord(sessionId, finalizationId);
+    const startedAtMs = admittedStartedAt(record, { sessionId, finalizationId }, normalizedEvent['queuedAtMs']);
+    return { ...normalizedEvent, startedAtMs };
+  }
+  return normalizedEvent;
+}
+
+async function prepareDirectCallbackEvent(runtimeProfile: ResolvedRuntimeProfile, rawEvent: unknown): Promise<unknown> {
+  try {
+    const normalizedEvent = await normalizeDirectEvent(runtimeProfile, rawEvent);
+    return await bindAdmittedStartedAt(runtimeProfile, normalizedEvent);
+  } catch (error) {
+    if (isTransientBundleRestoreError(error)) {
+      logger.warn('Finalization bundle restoration is temporarily unavailable', {
+        event: 'finalization_bundle_restore_deferred',
+        source_kind: 'step_functions',
+      });
+      emitDirectUpdateReceived('application_failed', resolveSafeDirectUpdateCorrelation(rawEvent));
+      throw error;
+    }
+    logger.warn('Invocation payload is invalid', {
+      event: 'invocation_invalid',
+      source_kind: 'step_functions',
+      reason: 'payload_invalid',
+    });
+    emitDirectUpdateReceived('payload_invalid', resolveSafeDirectUpdateCorrelation(rawEvent));
+    throw error;
+  }
+}
+
+export const handler = async (rawEvent: unknown): Promise<DirectCallbackResponse | { visited: number }> => {
   const env = process.env;
   const runtimeProfile = (resolvedRuntimeProfile ??= resolveRuntimeProfile(env));
   await bootstrapLambdaRuntime({
@@ -395,26 +481,15 @@ export const handler = async (rawEvent: unknown): Promise<DirectCallbackResponse
     throw new Error('Target finalization-writer runtime profile was not resolved');
   }
 
-  let normalizedEvent: unknown;
-  try {
-    normalizedEvent = await normalizeDirectEvent(runtimeProfile, rawEvent);
-  } catch (error) {
-    if (isTransientBundleRestoreError(error)) {
-      logger.warn('Finalization bundle restoration is temporarily unavailable', {
-        event: 'finalization_bundle_restore_deferred',
-        source_kind: 'step_functions',
-      });
-      emitDirectUpdateReceived('application_failed', resolveSafeDirectUpdateCorrelation(rawEvent));
-      throw error;
-    }
-    logger.warn('Invocation payload is invalid', {
-      event: 'invocation_invalid',
-      source_kind: 'step_functions',
-      reason: 'payload_invalid',
-    });
-    emitDirectUpdateReceived('payload_invalid', resolveSafeDirectUpdateCorrelation(rawEvent));
-    throw error;
+  if (
+    isNonNullObject(rawEvent) &&
+    rawEvent['operation'] === 'reconcile-finalizations' &&
+    Object.keys(rawEvent).length === 1
+  ) {
+    return reconcileAwsFinalizations(runtimeProfile, getGlobalStore(runtimeProfile));
   }
+
+  const normalizedEvent = await prepareDirectCallbackEvent(runtimeProfile, rawEvent);
 
   let payload: ReturnType<typeof parseFinalizationStateUpdatePayload>;
   try {

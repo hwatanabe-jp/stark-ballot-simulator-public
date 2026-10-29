@@ -50,9 +50,11 @@ locals {
   app_target_state_machine_arn     = "arn:aws:states:${var.aws_region}:${var.aws_account_id}:stateMachine:${local.app_runtime_name_prefix}-finalization"
   app_target_execution_status_rule = "${local.app_runtime_name_prefix}-sem-janitor-exec"
   app_target_sweep_rule            = "${local.app_runtime_name_prefix}-semaphore-janitor-sweep"
+  app_finalization_sweep_rule      = "${local.app_runtime_name_prefix}-finalization-sweep"
   app_target_ops_ledger_rule_names = [
     "${local.app_runtime_name_prefix}-ops-alarm-changed",
     "${local.app_runtime_name_prefix}-ops-deploy-accepted",
+    "${local.app_runtime_name_prefix}-ops-prover-finished",
     "${local.app_runtime_name_prefix}-ops-ecs-stopped",
     "${local.app_runtime_name_prefix}-ops-pipeline-changed",
   ]
@@ -68,6 +70,7 @@ locals {
     [
       "arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/${local.app_target_execution_status_rule}",
       "arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/${local.app_target_sweep_rule}",
+      "arn:aws:events:${var.aws_region}:${var.aws_account_id}:rule/${local.app_finalization_sweep_rule}",
     ],
     [
       for name in local.app_target_ops_ledger_rule_names :
@@ -94,12 +97,16 @@ locals {
     local.app_target_runtime_role_arn_pattern,
     local.app_signature_verifier_role_arn,
   ]
-  app_target_api_arns = [
+  app_retired_http_api_arns = [
     "arn:aws:apigateway:${var.aws_region}::/apis",
     "arn:aws:apigateway:${var.aws_region}::/apis/*",
   ]
+  app_target_api_arns = [
+    "arn:aws:apigateway:${var.aws_region}::/restapis",
+    "arn:aws:apigateway:${var.aws_region}::/restapis/*",
+  ]
   app_target_api_tagging_arns = [
-    "arn:aws:apigateway:${var.aws_region}::/tags/arn%3Aaws%3Aapigateway%3A${var.aws_region}%3A%3A%2Fv2%2Fapis%2F*",
+    "arn:aws:apigateway:${var.aws_region}::/tags/arn%3Aaws%3Aapigateway%3A${var.aws_region}%3A%3A%2Frestapis%2F*",
   ]
   app_data_kms_key_arn_pattern = "arn:aws:kms:${var.aws_region}:${var.aws_account_id}:key/*"
   app_dynamodb_table_arn_pattern = (
@@ -182,31 +189,13 @@ locals {
   app_signature_verifier_lambda_arn = (
     "arn:aws:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.app_signature_verifier_lambda_name}"
   )
-  app_signature_verifier_alias_arns = [
-    local.app_signature_verifier_lambda_arn,
-    "${local.app_signature_verifier_lambda_arn}:preflight",
-    "${local.app_signature_verifier_lambda_arn}:runtime",
-  ]
-  app_pipeline_enabled                      = var.enable_development_app_pipeline
-  app_static_fast_available                 = local.static_fast_lane_authority != null
-  app_static_fast_enabled                   = local.app_pipeline_enabled && local.app_static_fast_available
-  app_pipeline_name                         = local.app_lane_authority.names.pipeline
-  app_pipeline_role_name                    = local.app_lane_authority.names.pipelineRole
-  app_acceptance_publisher_role_name        = local.deployment_shared_names.appAcceptancePublisherRole
-  app_acceptance_publisher_role_arn         = "arn:aws:iam::${var.aws_account_id}:role/${local.app_acceptance_publisher_role_name}"
-  app_execution_authority_role_name         = local.deployment_shared_names.appExecutionAuthorityRole
-  app_terraform_plan_role_name              = local.app_lane_authority.names.terraformPlanRole
-  app_terraform_apply_role_name             = local.app_lane_authority.names.terraformApplyRole
-  app_signature_preflight_plan_role_name    = local.deployment_shared_names.appSignaturePreflightPlanRole
-  app_signature_preflight_apply_role_name   = local.deployment_shared_names.appSignaturePreflightApplyRole
-  app_signature_preflight_invoker_role_name = local.deployment_shared_names.appSignaturePreflightInvokerRole
-  app_static_deploy_role_name               = local.deployment_shared_names.appStaticDeployRole
-  app_static_fast_static_deploy_role_name   = local.app_static_fast_available ? local.deployment_shared_names.appStaticFastDeployRole : null
-  app_terraform_smoke_role_name             = local.app_lane_authority.names.terraformSmokeRole
-  app_static_fast_pipeline_role_name        = local.app_static_fast_available ? local.static_fast_lane_authority.names.pipelineRole : null
-  app_static_fast_gate_and_build_role_name  = local.app_static_fast_available ? local.deployment_shared_names.appStaticFastGateRole : null
-  app_static_fast_smoke_lite_role_name      = local.app_static_fast_available ? local.deployment_shared_names.appStaticFastSmokeRole : null
-  app_github_trigger_role_name              = local.app_lane_authority.names.githubTriggerRole
+  app_pipeline_enabled          = var.enable_development_app_pipeline
+  app_pipeline_name             = local.app_lane_authority.names.pipeline
+  app_pipeline_role_name        = local.app_lane_authority.names.pipelineRole
+  app_terraform_plan_role_name  = local.app_lane_authority.names.terraformPlanRole
+  app_terraform_apply_role_name = local.app_lane_authority.names.terraformApplyRole
+  app_static_deploy_role_name   = local.deployment_shared_names.appStaticDeployRole
+  app_terraform_smoke_role_name = local.app_lane_authority.names.terraformSmokeRole
   app_deploy_permissions_boundary_policy_name = (
     "${var.project_name}-app-deploy-boundary-${var.account_alias}-${var.deployment_environment}-app"
   )
@@ -225,17 +214,10 @@ locals {
   app_smoke_deploy_permissions_boundary_policy_arn = (
     "arn:aws:iam::${var.aws_account_id}:policy/${local.app_smoke_deploy_permissions_boundary_policy_name}"
   )
-  app_acceptance_publisher_boundary_policy_name = (
-    "sbs-app-acceptance-publisher-boundary-${var.account_alias}-${var.deployment_environment}"
-  )
-  app_acceptance_publisher_boundary_policy_arn = (
-    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_acceptance_publisher_boundary_policy_name}"
-  )
   app_deploy_permissions_boundary_policy_arns = [
     local.app_deploy_permissions_boundary_policy_arn,
     local.app_apply_deploy_permissions_boundary_policy_arn,
     local.app_smoke_deploy_permissions_boundary_policy_arn,
-    local.app_acceptance_publisher_boundary_policy_arn,
     local.app_signature_verifier_execution_boundary_policy_arn,
   ]
   app_codebuild_common_policy_name            = "${local.app_terraform_plan_role_name}-common"
@@ -243,94 +225,54 @@ locals {
   app_terraform_plan_runtime_policy_name      = "${local.app_terraform_plan_role_name}-runtime"
   app_terraform_apply_runtime_policy_name     = "${local.app_terraform_apply_role_name}-runtime"
   app_terraform_apply_runtime_kms_policy_name = "${local.app_terraform_apply_role_name}-runtime-kms"
+  app_terraform_apply_verifier_policy_name    = "${local.app_terraform_apply_role_name}-verifier"
   app_terraform_apply_events_policy_name      = "${local.app_terraform_apply_role_name}-events"
   app_terraform_apply_state_backend_policy_name = (
     "${local.app_terraform_apply_role_name}-state-backend"
   )
   app_deployment_managed_policy_arns = [
+    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_runtime_name_prefix}-batch-read",
+    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_runtime_name_prefix}-batch-deployment",
+    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_plan_role_name}-foundation-checkpoint",
     local.app_codebuild_common_policy_arn,
     "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_plan_runtime_policy_name}",
     "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_apply_runtime_policy_name}",
+    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_apply_verifier_policy_name}",
     "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_apply_runtime_kms_policy_name}",
     "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_apply_events_policy_name}",
     "arn:aws:iam::${var.aws_account_id}:policy/${local.app_terraform_apply_state_backend_policy_name}",
   ]
-  app_lane_pipeline_management_policy_name = (
-    "${var.project_name}-bootstrap-app-lane-pipeline-${var.account_alias}-${var.deployment_environment}"
-  )
-  app_lane_iam_management_policy_name = (
-    "${var.project_name}-bootstrap-app-lane-iam-${var.account_alias}-${var.deployment_environment}"
-  )
-  app_lane_role_attachment_management_policy_name = (
-    "${var.project_name}-bootstrap-app-lane-role-attachments-${var.account_alias}-${var.deployment_environment}"
-  )
-  # Retained AWS identity repurposed in place for Terraform authority runtime
-  # management; see bootstrap_managed_policy_moves.tf.
-  app_lane_artifacts_management_policy_name = (
-    "${var.project_name}-bootstrap-app-lane-artifacts-${var.account_alias}-${var.deployment_environment}"
-  )
-  app_lane_management_policy_arns = [
-    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_lane_pipeline_management_policy_name}",
-    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_lane_iam_management_policy_name}",
-    "arn:aws:iam::${var.aws_account_id}:policy/${local.app_lane_role_attachment_management_policy_name}",
-  ]
-
-  app_execution_authority_project_name        = local.deployment_shared_names.appExecutionAuthorityProject
-  app_terraform_plan_project_name             = local.app_lane_authority.names.terraformPlanProject
-  app_terraform_apply_project_name            = local.app_lane_authority.names.terraformApplyProject
-  app_signature_preflight_plan_project_name   = local.deployment_shared_names.appSignaturePreflightPlanProject
-  app_signature_preflight_apply_project_name  = local.deployment_shared_names.appSignaturePreflightApplyProject
-  app_signature_preflight_invoke_project_name = local.deployment_shared_names.appSignaturePreflightInvokeProject
-  app_static_deploy_project_name              = local.deployment_shared_names.appStaticDeployProject
-  app_static_fast_static_deploy_project_name  = local.app_static_fast_available ? local.deployment_shared_names.appStaticFastDeployProject : null
-  app_smoke_project_name                      = local.app_lane_authority.names.smokeProject
-  app_static_fast_pipeline_name               = local.app_static_fast_available ? local.static_fast_lane_authority.names.pipeline : null
-  app_static_fast_gate_project_name           = local.app_static_fast_available ? local.deployment_shared_names.appStaticFastGateProject : null
-  app_static_fast_smoke_project_name          = local.app_static_fast_available ? local.deployment_shared_names.appStaticFastSmokeProject : null
+  app_terraform_plan_project_name  = local.app_lane_authority.names.terraformPlanProject
+  app_terraform_apply_project_name = local.app_lane_authority.names.terraformApplyProject
+  app_static_deploy_project_name   = local.deployment_shared_names.appStaticDeployProject
+  app_smoke_project_name           = local.app_lane_authority.names.smokeProject
   app_codebuild_project_names = compact([
-    local.app_execution_authority_project_name,
+
     local.app_terraform_plan_project_name,
     local.app_terraform_apply_project_name,
-    local.app_signature_preflight_plan_project_name,
-    local.app_signature_preflight_apply_project_name,
-    local.app_signature_preflight_invoke_project_name,
     local.app_static_deploy_project_name,
-    local.app_static_fast_available ? local.app_static_fast_static_deploy_project_name : null,
     local.app_smoke_project_name,
     local.foundation_app_status_publisher_project_name,
-    local.app_static_fast_available ? local.app_static_fast_gate_project_name : null,
-    local.app_static_fast_available ? local.app_static_fast_smoke_project_name : null,
   ])
   app_codebuild_project_arns = [
     for name in local.app_codebuild_project_names :
     "arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${name}"
   ]
-  app_pipeline_arn             = "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.app_pipeline_name}"
-  app_static_fast_pipeline_arn = local.app_static_fast_available ? "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.app_static_fast_pipeline_name}" : null
+  app_pipeline_arn = "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.app_pipeline_name}"
   app_codebuild_log_group_arn_by_project_name = {
-    for name in local.app_codebuild_project_names :
+    for name in local.app_codebuild_log_group_project_names :
     name => "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/codebuild/${name}"
   }
   app_codebuild_log_group_arns = [
-    for name in local.app_codebuild_project_names :
+    for name in local.app_codebuild_log_group_project_names :
     local.app_codebuild_log_group_arn_by_project_name[name]
   ]
   app_pipeline_role_name_arns = compact([
-    local.app_acceptance_publisher_role_arn,
     local.foundation_app_status_publisher_role_arn,
     "arn:aws:iam::${var.aws_account_id}:role/${local.app_pipeline_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.app_execution_authority_role_name}",
     "arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_plan_role_name}",
     "arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_apply_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_preflight_plan_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_preflight_apply_role_name}",
-    "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_preflight_invoker_role_name}",
     "arn:aws:iam::${var.aws_account_id}:role/${local.app_static_deploy_role_name}",
-    local.app_static_fast_available ? "arn:aws:iam::${var.aws_account_id}:role/${local.app_static_fast_static_deploy_role_name}" : null,
     "arn:aws:iam::${var.aws_account_id}:role/${local.app_terraform_smoke_role_name}",
-    local.app_static_fast_available ? "arn:aws:iam::${var.aws_account_id}:role/${local.app_static_fast_pipeline_role_name}" : null,
-    local.app_static_fast_available ? "arn:aws:iam::${var.aws_account_id}:role/${local.app_static_fast_gate_and_build_role_name}" : null,
-    local.app_static_fast_available ? "arn:aws:iam::${var.aws_account_id}:role/${local.app_static_fast_smoke_lite_role_name}" : null,
-    "arn:aws:iam::${var.aws_account_id}:role/${local.app_github_trigger_role_name}",
   ])
 }

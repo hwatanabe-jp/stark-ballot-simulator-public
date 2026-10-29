@@ -1,68 +1,14 @@
 data "aws_iam_policy_document" "app_terraform_smoke" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = local.deployment_target.environmentId == "main" ? [
-    data.aws_iam_policy_document.app_initialization_execution_read[0].json,
-  ] : []
+  source_policy_documents = [data.aws_iam_policy_document.terraform_authority_decrypt[0].json]
+
 
   statement {
-    sid       = "AssumeAppAcceptancePublisher"
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
-    resources = [local.app_acceptance_publisher_role_arn]
-  }
-
-  statement {
-    sid       = "ReadRetainedApprovalEvidenceForSmoke"
+    sid       = "ReadExactFoundationCheckpointForSmoke"
     effect    = "Allow"
     actions   = ["s3:GetObjectVersion"]
-    resources = [local.app_retained_approval_evidence_objects_arn]
-  }
-
-  statement {
-    sid     = "ReadExactAppAcceptancePreparationForSmoke"
-    effect  = "Allow"
-    actions = ["s3:GetObjectVersion"]
-    resources = concat(
-      local.app_retained_acceptance_attempt_evidence_object_arns,
-      [
-        local.app_retained_recovery_manifest_objects_arn,
-        local.app_retained_lambda_artifact_objects_arn,
-        local.app_retained_static_frontend_artifact_objects_arn,
-        local.app_foundation_acceptance_records_objects_arn,
-        local.app_toolchain_accepted_pointer_object_arn,
-        local.app_toolchain_candidate_records_objects_arn,
-        local.app_toolchain_release_records_objects_arn,
-        local.app_prover_accepted_pointer_object_arn,
-        local.app_prover_candidate_records_objects_arn,
-        local.app_prover_release_records_objects_arn,
-      ],
-    )
-  }
-
-  statement {
-    sid       = "DecryptFoundationAcceptanceForAppSmoke"
-    effect    = "Allow"
-    actions   = ["kms:Decrypt"]
-    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:CallerAccount"
-      values   = [var.aws_account_id]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["s3.${var.aws_region}.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:aws:s3:arn"
-      values   = [local.terraform_authority_bucket_arn]
-    }
+    resources = [local.foundation_checkpoint_object_arn]
   }
 
   statement {
@@ -73,6 +19,13 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
       local.app_retained_signature_preflight_objects_arn,
       local.app_retained_image_signature_verifier_package_objects_arn,
     ]
+  }
+
+  statement {
+    sid       = "ReadApprovedFrontendManifestForSmoke"
+    effect    = "Allow"
+    actions   = ["s3:GetObjectVersion"]
+    resources = ["${trimsuffix(local.app_retained_static_frontend_artifact_objects_arn, "*")}*/*/manifest.json"]
   }
 
   statement {
@@ -170,7 +123,6 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
     resources = concat(
       local.app_dynamodb_table_arns,
       local.app_dynamodb_index_arns,
-      local.app_dynamodb_recovery_table_arn_patterns,
     )
   }
 
@@ -196,12 +148,19 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
     condition {
       test     = "ForAnyValue:StringLike"
       variable = "kms:EncryptionContext:aws:dynamodb:tableName"
-      values   = concat(local.app_dynamodb_table_names, local.app_dynamodb_recovery_table_name_patterns)
+      values   = local.app_dynamodb_table_names
     }
   }
 
   statement {
-    sid    = "ReadTargetRecoveryLambdaConfig"
+    sid       = "ReadRuntimeVerifierWorkflowBinding"
+    effect    = "Allow"
+    actions   = ["states:DescribeStateMachine"]
+    resources = [local.app_target_state_machine_arn]
+  }
+
+  statement {
+    sid    = "ReadTargetRuntimeLambdaConfig"
     effect = "Allow"
     actions = [
       "lambda:GetAlias",
@@ -233,7 +192,7 @@ data "aws_iam_policy_document" "app_terraform_smoke" {
   }
 
   statement {
-    sid       = "ReadTargetRecoveryEventSourceMappings"
+    sid       = "ReadTargetRuntimeEventSourceMappings"
     effect    = "Allow"
     actions   = ["lambda:GetEventSourceMapping"]
     resources = ["*"]

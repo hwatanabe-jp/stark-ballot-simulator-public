@@ -21,9 +21,9 @@ authority.
 
 ## Current Target Model
 
-This diagram summarizes the architecture of the accepted develop and production
-deployments. Dated live status and any repository-to-deployment drift remain
-in the private current AWS inventory; the diagram supplies no new live checks.
+This diagram summarizes the checked-in architecture for develop and production
+targets. Dated deployment evidence and any repository-to-deployment drift remain
+in the private current AWS inventory; source changes do not establish live state.
 
 ```text
 Production: Browser -> Cloudflare proxy -> CloudFront authenticated admission
@@ -32,21 +32,30 @@ Develop:    Browser -> CloudFront operator signed-cookie gate
 Shared routing in each target:
   CloudFront
      -> private S3 static frontend
-     -> API Gateway HTTP API
+     -> API Gateway REST API
         -> Hono public-api Lambda
            -> DynamoDB
            -> SQS prover work
               -> dispatcher Lambda
                  -> Step Functions finalization
                     -> cryptographic image-signature verifier
-                    -> acquire DynamoDB prover semaphore slot
-                    -> finalization writer persists running state
-                    -> ECS/Fargate ARM64 prover
-                    -> release semaphore slot and persist terminal state
+                    -> AWS Batch job queue and replenishable capacity
+                       -> Fargate ARM64 prover container starts
+                          -> finalization writer admits and persists running state
+                          -> proof execution
+                    -> finalization writer terminal callback
            -> SQS verification work
               -> verification-worker Lambda
            -> private proof/report S3 bucket
+
+  EventBridge (every minute)
+     -> finalization writer reconciles persisted outcomes
 ```
+
+Batch owns capacity allocation and replenishment. Container start admission
+precedes input reads and proof execution; Step Functions delivers the terminal
+callback. Scheduled reconciliation runs independently of API reads and pauses
+while the application is quiesced.
 
 Both entrances converge on the same CloudFront static/API routing model.
 Production requires the exact public host and a private Cloudflare request
@@ -56,41 +65,24 @@ public API uses `TRUSTED_PROXY=cloudflare` and accepts only a valid bare IPv4
 or IPv6 address; missing or malformed headers never fall back to another
 proxy address. Develop retains API Gateway client-IP attribution.
 
-Deployment control is separated into bootstrap and foundation saved-plan
-lanes, toolchain and prover release lanes, an app saved-plan lane, and a
-develop-only static fast lane for allowlisted presentation changes. The
-retired Amplify, Next.js, and AppSync surfaces are not part of the current
-target runtime.
+Deployment control uses local Bootstrap and local drift, plus four managed
+pipelines: Foundation, Toolchain, Prover and App. Each target defines twelve
+pipeline CodeBuild projects and one asynchronous App status publisher, for
+thirteen projects total. Source topology and deployed target observations are separate.
 
 ## Selection Rules
 
-- Static presentation-only changes may use the develop static fast lane;
-  production uses the full App saved-plan lane.
-- Normal App and Prover lanes resolve one current Foundation acceptance and
-  require the selected source's complete Foundation contract hash to match.
-  Run Foundation first only when that contract changes; source equality is
-  neither required nor sufficient.
-- App may reuse a Prover from another source when its zkVM contract matches
-  the App source, its candidate's Foundation closure/hash matches the selected
-  Foundation, its promotion binds the exact current Foundation acceptance,
-  and its immutable Toolchain link is valid.
-- Run the Prover lane when its contents, ImageID/method, Toolchain, zkVM
-  contract, or Foundation binding changes. An incompatible candidate requires
-  a new build even when proof code is unchanged; a compatible retained
-  candidate may use `existing` mode for a fresh promotion. Follow the
-  [deployment selection rules](./terraform.md#selecting-a-deployment-story)
-  before proceeding to App.
-- Run the Toolchain lane only when its contents or accepted selection changes.
-  `build` creates a new image and content-addressed candidate; `existing`
-  validates one exact retained candidate key without rebuilding it. Both
-  publish a content-addressed release and conditionally move the key-only
-  accepted pointer. A Toolchain change is followed by the Prover and App lanes.
-- ImageID mapping changes are never static-only.
-- Secret and CloudFront-key rotation requires a dedicated compatibility
-  analysis.
-- Production operates through five lanes and accepted authority, with no
-  static-fast lane. New executions remain separately authorized; initial
-  construction is an exceptional path before the owning acceptance exists.
+- App and static changes use the full App plan and approval, including no-ops.
+- Current Foundation consumer requirements and image digest, signature, ImageID
+  and method contracts must agree before deployment.
+- Image candidate provenance is immutable. Unrelated IaC changes or same-digest
+  Toolchain promotion do not require image rebuilds.
+- Image `existing` selection revalidates the exact candidate without rebuilding.
+  Candidate execution and promotion have separate approvals.
+- Both ECR repositories retain the newest five images with native count rules;
+  required images can expire. Missing images require authorized rebuild and
+  fresh deployment, with no fallback to stale records.
+- Future production changes require independent authorization and observation.
 
 ## Security Routing
 
@@ -109,8 +101,8 @@ artifact bodies, and live inventory must not appear in public documentation.
 
 - Verify the intended profile, account, role, region, source revision, state
   scope, and backend key before starting an authorized lane.
-- Apply Terraform only through the AWS-managed saved-plan role for the target
-  root.
+- Apply Foundation/App through their managed saved-plan roles; Bootstrap uses
+  the protected local administrator workflow.
 - Keep prover image references digest-pinned and preserve the ImageID/method
   version trust chain.
 - Treat pipeline smoke and a voting/proof journey as distinct evidence.

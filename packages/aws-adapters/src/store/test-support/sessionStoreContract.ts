@@ -1,6 +1,10 @@
+import { reconcileFinalization } from '@stark-ballot/application/finalize/reconcile-finalization';
 import { BotVoter } from '@stark-ballot/application/bot/botVoter';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
+import type {
+  FinalizationStore,
+  FinalizationQueuedPayload,
+} from '@stark-ballot/application/finalize/finalization-store';
 import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import { buildFinalizationResultFromJournal } from '@stark-ballot/application/finalize/finalization-result';
 import type { FinalizationRecord } from '@stark-ballot/application/finalize/finalization-record';
@@ -19,7 +23,7 @@ import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type { SessionVoteMutationStore } from '@stark-ballot/application/session/session-vote-store';
 import type { BotVoteCommand, UserVoteCommand } from '@stark-ballot/domain/types/sessionRecords';
 import { generateVoteId } from '@stark-ballot/domain/vote/voteId';
-import { asSessionId } from '@stark-ballot/domain/types/identifiers';
+import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 
@@ -59,6 +63,21 @@ const scenarioContext: FinalizationScenarioContext = {
   },
 };
 
+async function prepareTerminalAuthority(
+  store: SessionStoreContract,
+  sessionId: SessionId,
+  payload: FinalizationQueuedPayload & { startedAtMs?: number },
+  terminal: 'fail' | 'cancel' | 'time_out',
+): Promise<void> {
+  if (terminal !== 'cancel') return;
+  const { finalizationId, queuedAtMs, scenarioContext, startedAtMs } = payload;
+  if (startedAtMs === undefined) {
+    await store.markFinalizationQueued(sessionId, { finalizationId, queuedAtMs, scenarioContext });
+  } else {
+    await store.markFinalizationRunning(sessionId, { finalizationId, queuedAtMs, startedAtMs, scenarioContext });
+  }
+}
+
 function requireValue<T>(value: T | null | undefined, label: string): T {
   if (value === null || value === undefined) {
     throw new Error(`Expected ${label}`);
@@ -87,6 +106,32 @@ function buildFinalizationResult(journal = createTestJournal()): FinalizationRes
     journal,
     imageId: journal.imageId ?? `0x${'1'.repeat(64)}`,
   });
+}
+
+function buildSuccessfulRecord(sessionId: SessionId, finalizationId: FinalizationRecord['finalizationId']) {
+  return requireSucceededRecord({
+    sessionId,
+    finalizationId,
+    scenarioContext,
+    state: { status: 'succeeded', finalizationId, queuedAtMs: 10, startedAtMs: 20, completedAtMs: 30 },
+    finalizationResult: { finalizationId, ...buildFinalizationResult() },
+  });
+}
+
+function buildEmbeddedBitmapResult(): FinalizationResultAuthority {
+  const includedBitmap = [true];
+  const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
+  const result = buildFinalizationResult({
+    ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
+    includedBitmapRoot,
+    seenBitmapRoot: includedBitmapRoot,
+  });
+  result.artifacts.bitmap = {
+    availability: 'available',
+    proofSource: 'real',
+    data: { includedBitmap, includedBitmapRoot, treeSize: 1, finalizedAtMs: 30 },
+  };
+  return result;
 }
 
 function requireSucceededRecord(
@@ -216,7 +261,6 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
       const voting = requireValue(await harness.store.getVotingRecord(identity.sessionId), 'voting record');
       const botVoteId = requireValue(voting.votes.get(1), 'bot vote').voteId;
       expect(voting.botCount).toBe(1);
-      expect(voting.votes.get(1)?.voteId).toBe(botVoteId);
       await expect(harness.store.getVoteByIdWithProof(identity.sessionId, botVoteId)).resolves.toMatchObject({
         leafIndex: 1,
         treeSize: 2,
@@ -239,10 +283,16 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
     it('exposes only the explicit activity mutation rather than a generic metadata patch', async () => {
       const identity = await harness.store.createSession();
       const before = requireValue(await harness.store.getVotingRecord(identity.sessionId), 'voting record');
-      await harness.store.touchSession(identity.sessionId);
+      const touchedAt = before.lastActivityMs + 1_000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(touchedAt);
+      try {
+        await harness.store.touchSession(identity.sessionId);
+      } finally {
+        clock.mockRestore();
+      }
       const after = requireValue(await harness.store.getVotingRecord(identity.sessionId), 'voting record');
 
-      expect(after.lastActivityMs).toBeGreaterThanOrEqual(before.lastActivityMs);
+      expect(after.lastActivityMs).toBe(touchedAt);
       expect('updateSession' in harness.store).toBe(false);
       expect('updateFinalizationArtifactMetadata' in harness.store).toBe(false);
     });
@@ -335,73 +385,103 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
       ).resolves.toMatchObject({ state: { status: 'timeout' } });
     });
 
-    it.each([undefined, 0, 20])(
-      'preserves optional start time %s and explicit terminal reasons',
-      async (startedAtMs) => {
-        for (const terminal of ['fail', 'cancel', 'time_out'] as const) {
-          const identity = await harness.store.createSession();
-          const finalizationId = asFinalizationId(`contract-terminal-${terminal.replace('_', '-')}`);
-          const common = {
-            finalizationId,
-            queuedAtMs: 0,
-            ...(startedAtMs === undefined ? {} : { startedAtMs }),
-            scenarioContext,
-            observability: { source: 'finalize' as const, reason: 'RUNTIME_UPDATE_RECEIVED' as const },
-          };
-          if (terminal === 'cancel') {
-            if (startedAtMs === undefined) {
-              await harness.store.markFinalizationQueued(identity.sessionId, {
-                finalizationId,
-                queuedAtMs: 0,
-                scenarioContext,
+    it.each(
+      [undefined, 0, 20].flatMap((startedAtMs) =>
+        (['fail', 'cancel', 'time_out'] as const).map((terminal) => ({ startedAtMs, terminal })),
+      ),
+    )('preserves optional start time $startedAtMs and explicit $terminal reason', async ({ startedAtMs, terminal }) => {
+      const identity = await harness.store.createSession();
+      const finalizationId = asFinalizationId(`contract-terminal-${terminal.replace('_', '-')}`);
+      const common = {
+        finalizationId,
+        queuedAtMs: 0,
+        ...(startedAtMs === undefined ? {} : { startedAtMs }),
+        scenarioContext,
+        observability: { source: 'finalize' as const, reason: 'RUNTIME_UPDATE_RECEIVED' as const },
+      };
+      await prepareTerminalAuthority(harness.store, identity.sessionId, common, terminal);
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+      try {
+        const record =
+          terminal === 'time_out'
+            ? await harness.store.markFinalizationTimedOut(identity.sessionId, { ...common, timeoutAtMs: 30 })
+            : await harness.store.markFinalizationFailed(identity.sessionId, {
+                ...common,
+                failedAtMs: 30,
+                error: {
+                  code: terminal === 'cancel' ? 'USER_CANCELLED' : 'FINALIZATION_FAILED',
+                  message: 'terminal detail',
+                },
               });
-            } else {
-              await harness.store.markFinalizationRunning(identity.sessionId, {
-                finalizationId,
-                queuedAtMs: 0,
-                startedAtMs,
-                scenarioContext,
-              });
-            }
-          }
-          const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
-          try {
-            const record =
-              terminal === 'time_out'
-                ? await harness.store.markFinalizationTimedOut(identity.sessionId, { ...common, timeoutAtMs: 30 })
-                : await harness.store.markFinalizationFailed(identity.sessionId, {
-                    ...common,
-                    failedAtMs: 30,
-                    error: {
-                      code: terminal === 'cancel' ? 'USER_CANCELLED' : 'FINALIZATION_FAILED',
-                      message: 'terminal detail',
-                    },
-                  });
-            expect(record.state).toMatchObject({
-              status: terminal === 'time_out' ? 'timeout' : 'failed',
-              finalizationId,
-              queuedAtMs: 0,
-              ...(terminal === 'time_out'
-                ? { timeoutAtMs: 30 }
-                : { failedAtMs: 30, error: { message: 'terminal detail' } }),
-              ...(startedAtMs === undefined ? {} : { startedAtMs }),
-            });
-            if (startedAtMs === undefined) {
-              expect(record.state).not.toHaveProperty('startedAtMs');
-            }
-            expect(record.scenarioContext).toEqual(scenarioContext);
-            expect(info).toHaveBeenCalledWith(
-              'finalize_state_transition',
-              expect.objectContaining({
-                to: terminal === 'time_out' ? 'timeout' : 'failed',
-                reason: 'RUNTIME_UPDATE_RECEIVED',
-                changed: true,
-              }),
-            );
-          } finally {
-            info.mockRestore();
-          }
+        expect(record.state).toMatchObject({
+          status: terminal === 'time_out' ? 'timeout' : 'failed',
+          finalizationId,
+          queuedAtMs: 0,
+          ...(terminal === 'time_out'
+            ? { timeoutAtMs: 30 }
+            : { failedAtMs: 30, error: { message: 'terminal detail' } }),
+          ...(startedAtMs === undefined ? {} : { startedAtMs }),
+        });
+        if (startedAtMs === undefined) {
+          expect(record.state).not.toHaveProperty('startedAtMs');
         }
+        expect(record.scenarioContext).toEqual(scenarioContext);
+        expect(info).toHaveBeenCalledWith(
+          'finalize_state_transition',
+          expect.objectContaining({
+            to: terminal === 'time_out' ? 'timeout' : 'failed',
+            reason: 'RUNTIME_UPDATE_RECEIVED',
+            changed: true,
+          }),
+        );
+      } finally {
+        info.mockRestore();
+      }
+    });
+
+    it.each(['succeeded', 'cancelled'] as const)(
+      'preserves %s authority when reconciliation loses to a writer',
+      async (winner) => {
+        const { store } = harness;
+        const identity = await store.createSession();
+        const finalizationId = asFinalizationId('contract-reconcile');
+        const nowMs = Date.now();
+        const queuedAtMs = nowMs - 120_000;
+        const startedAtMs = nowMs - 110_000;
+        await store.markFinalizationRunning(identity.sessionId, {
+          finalizationId,
+          queuedAtMs,
+          startedAtMs,
+          scenarioContext,
+        });
+        let terminal: FinalizationRecord | undefined;
+        await reconcileFinalization(
+          { sessionId: identity.sessionId, finalizationId, nowMs, dispatchDeadlineMs: 900_000 },
+          {
+            store,
+            observeExecution: async () => {
+              terminal =
+                winner === 'succeeded'
+                  ? await store.markFinalizationSucceeded(identity.sessionId, {
+                      finalizationId,
+                      queuedAtMs,
+                      startedAtMs,
+                      completedAtMs: nowMs - 60_000,
+                      finalizationResult: buildFinalizationResult(),
+                    })
+                  : await store.markFinalizationFailed(identity.sessionId, {
+                      finalizationId,
+                      queuedAtMs,
+                      startedAtMs,
+                      failedAtMs: nowMs - 60_000,
+                      error: { code: 'USER_CANCELLED', message: 'Cancelled' },
+                    });
+              return { status: 'failed', stoppedAtMs: nowMs - 70_000 };
+            },
+          },
+        );
+        const persisted = harness.reload ? await harness.reload() : store;
+        expect(await persisted.getCurrentFinalizationRecord(identity.sessionId)).toEqual(terminal);
       },
     );
 
@@ -670,19 +750,7 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
     it('preserves valid later async verification on a duplicate success callback without sync verification', async () => {
       const identity = await harness.store.createSession();
       const finalizationId = asFinalizationId('contract-later-async-verification');
-      const record = requireSucceededRecord({
-        sessionId: identity.sessionId,
-        finalizationId,
-        scenarioContext,
-        state: {
-          status: 'succeeded',
-          finalizationId,
-          queuedAtMs: 10,
-          startedAtMs: 20,
-          completedAtMs: 30,
-        },
-        finalizationResult: { finalizationId, ...buildFinalizationResult() },
-      });
+      const record = buildSuccessfulRecord(identity.sessionId, finalizationId);
       const input = { record, bitmap: { availability: 'unavailable' as const } };
       const committed = await harness.store.commitSuccessfulFinalization(input);
       await harness.store.markVerificationRunning(identity.sessionId, finalizationId);
@@ -734,19 +802,7 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
     it('exact-admits receipt input before successful finalization mutation', async () => {
       const identity = await harness.store.createSession();
       const finalizationId = asFinalizationId('contract-extra-receipt-field-rejected');
-      const record = requireSucceededRecord({
-        sessionId: identity.sessionId,
-        finalizationId,
-        scenarioContext,
-        state: {
-          status: 'succeeded',
-          finalizationId,
-          queuedAtMs: 10,
-          startedAtMs: 20,
-          completedAtMs: 30,
-        },
-        finalizationResult: { finalizationId, ...buildFinalizationResult() },
-      });
+      const record = buildSuccessfulRecord(identity.sessionId, finalizationId);
 
       await expect(
         harness.store.commitSuccessfulFinalization({
@@ -869,19 +925,7 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
     it('rejects extra unavailable bitmap disposition fields before mutation', async () => {
       const identity = await harness.store.createSession();
       const finalizationId = asFinalizationId('contract-invalid-unavailable-bitmap-shape');
-      const record = requireSucceededRecord({
-        sessionId: identity.sessionId,
-        finalizationId,
-        scenarioContext,
-        state: {
-          status: 'succeeded',
-          finalizationId,
-          queuedAtMs: 10,
-          startedAtMs: 20,
-          completedAtMs: 30,
-        },
-        finalizationResult: { finalizationId, ...buildFinalizationResult() },
-      });
+      const record = buildSuccessfulRecord(identity.sessionId, finalizationId);
 
       await expect(
         harness.store.commitSuccessfulFinalization({
@@ -915,89 +959,62 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
       await expect(harness.store.getCurrentFinalizationRecord(identity.sessionId)).resolves.toBeNull();
     });
 
-    it('binds a successful commit to the exact pending queue time and scenario authority', async () => {
-      const identity = await harness.store.createSession();
-      const finalizationId = asFinalizationId('contract-pending-success-binding');
-      const pending = await harness.store.markFinalizationQueued(identity.sessionId, {
-        finalizationId,
-        queuedAtMs: 10,
-        scenarioContext,
-      });
-      const record = requireSucceededRecord({
-        sessionId: identity.sessionId,
-        finalizationId,
-        scenarioContext: { ...scenarioContext, claimedTotalVotes: 2 },
-        state: {
-          status: 'succeeded',
-          finalizationId,
-          queuedAtMs: 11,
-          startedAtMs: 20,
-          completedAtMs: 30,
-        },
-        finalizationResult: { finalizationId, ...buildFinalizationResult() },
-      });
-
-      await expect(
-        harness.store.commitSuccessfulFinalization({
-          record,
-          bitmap: { availability: 'unavailable' },
-        }),
-      ).rejects.toThrow('Successful finalization commit does not match current lifecycle authority');
-      await expect(harness.store.getCurrentFinalizationRecord(identity.sessionId)).resolves.toEqual(pending);
-    });
-
-    it('binds a successful commit to the exact running start time', async () => {
-      const identity = await harness.store.createSession();
-      const finalizationId = asFinalizationId('contract-running-success-binding');
-      const running = await harness.store.markFinalizationRunning(identity.sessionId, {
-        finalizationId,
-        queuedAtMs: 10,
+    it.each([
+      {
+        name: 'exact pending queue time and scenario authority',
+        initial: 'pending',
+        id: 'contract-pending-success-binding',
+        queuedAtMs: 11,
         startedAtMs: 20,
-        scenarioContext,
-      });
+        changedScenario: true,
+      },
+      {
+        name: 'exact running start time',
+        initial: 'running',
+        id: 'contract-running-success-binding',
+        queuedAtMs: 10,
+        startedAtMs: 21,
+        changedScenario: false,
+      },
+    ] as const)('binds a successful commit to the $name', async (testCase) => {
+      const identity = await harness.store.createSession();
+      const finalizationId = asFinalizationId(testCase.id);
+      const current =
+        testCase.initial === 'pending'
+          ? await harness.store.markFinalizationQueued(identity.sessionId, {
+              finalizationId,
+              queuedAtMs: 10,
+              scenarioContext,
+            })
+          : await harness.store.markFinalizationRunning(identity.sessionId, {
+              finalizationId,
+              queuedAtMs: 10,
+              startedAtMs: 20,
+              scenarioContext,
+            });
       const record = requireSucceededRecord({
         sessionId: identity.sessionId,
         finalizationId,
-        scenarioContext,
+        scenarioContext: testCase.changedScenario ? { ...scenarioContext, claimedTotalVotes: 2 } : scenarioContext,
         state: {
           status: 'succeeded',
           finalizationId,
-          queuedAtMs: 10,
-          startedAtMs: 21,
+          queuedAtMs: testCase.queuedAtMs,
+          startedAtMs: testCase.startedAtMs,
           completedAtMs: 30,
         },
         finalizationResult: { finalizationId, ...buildFinalizationResult() },
       });
-
       await expect(
-        harness.store.commitSuccessfulFinalization({
-          record,
-          bitmap: { availability: 'unavailable' },
-        }),
+        harness.store.commitSuccessfulFinalization({ record, bitmap: { availability: 'unavailable' } }),
       ).rejects.toThrow('Successful finalization commit does not match current lifecycle authority');
-      await expect(harness.store.getCurrentFinalizationRecord(identity.sessionId)).resolves.toEqual(running);
+      await expect(harness.store.getCurrentFinalizationRecord(identity.sessionId)).resolves.toEqual(current);
     });
 
     it('rejects embedded bitmap material on the direct lifecycle success command', async () => {
       const identity = await harness.store.createSession();
       const finalizationId = asFinalizationId('contract-embedded-bitmap-rejected');
-      const includedBitmap = [true];
-      const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
-      const finalizationResult = buildFinalizationResult({
-        ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
-        includedBitmapRoot,
-        seenBitmapRoot: includedBitmapRoot,
-      });
-      finalizationResult.artifacts.bitmap = {
-        availability: 'available',
-        proofSource: 'real',
-        data: {
-          includedBitmap,
-          includedBitmapRoot,
-          treeSize: 1,
-          finalizedAtMs: 30,
-        },
-      };
+      const finalizationResult = buildEmbeddedBitmapResult();
 
       await expect(
         harness.store.markFinalizationSucceeded(identity.sessionId, {
@@ -1023,23 +1040,7 @@ export function defineSessionStoreContract(definition: SessionStoreContractDefin
         scenarioContext,
         error: { code: 'FAILED', message: 'terminal authority' },
       });
-      const includedBitmap = [true];
-      const includedBitmapRoot = computeIncludedBitmapRoot(includedBitmap);
-      const finalizationResult = buildFinalizationResult({
-        ...createTestJournal({ totalExpected: 1, validVotes: 1 }),
-        includedBitmapRoot,
-        seenBitmapRoot: includedBitmapRoot,
-      });
-      finalizationResult.artifacts.bitmap = {
-        availability: 'available',
-        proofSource: 'real',
-        data: {
-          includedBitmap,
-          includedBitmapRoot,
-          treeSize: 1,
-          finalizedAtMs: 30,
-        },
-      };
+      const finalizationResult = buildEmbeddedBitmapResult();
 
       await expect(
         harness.store.markFinalizationSucceeded(identity.sessionId, {

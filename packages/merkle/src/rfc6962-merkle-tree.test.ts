@@ -169,19 +169,18 @@ describe('RFC6962MerkleTree', () => {
         tree.append(createTestLeaf(i));
       }
 
-      // First call - computes and caches
-      const start1 = performance.now();
+      // Assert cache behavior directly; wall-clock ratios vary with scheduler load.
+      tree.clearCache();
       const root50_1 = tree.getRootAtSize(50);
-      const time1 = performance.now() - start1;
+      const cacheSize = tree.getCacheSize();
+      expect(tree.getCacheHitRate()).toBe(0);
 
-      // Second call - should use cache (much faster)
-      const start2 = performance.now();
       const root50_2 = tree.getRootAtSize(50);
-      const time2 = performance.now() - start2;
 
       expect(root50_1).toBe(root50_2);
-      expect(time2).toBeLessThan(time1 / 2); // Cache should be at least 2x faster
-      expect(tree.getCacheSize()).toBeGreaterThan(0);
+      expect(cacheSize).toBeGreaterThan(0);
+      expect(tree.getCacheSize()).toBe(cacheSize);
+      expect(tree.getCacheHitRate()).toBe(0.5);
     });
 
     it('should throw error for invalid sizes', () => {

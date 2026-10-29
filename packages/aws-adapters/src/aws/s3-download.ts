@@ -61,6 +61,25 @@ function isUint8Array(value: unknown): value is Uint8Array {
   return value instanceof Uint8Array;
 }
 
+async function readS3ResponseBody(body: unknown): Promise<Buffer> {
+  if (!body) {
+    throw new Error('S3 object not found');
+  }
+  if (!isAsyncIterable(body)) {
+    throw new Error('S3 response body is not a readable stream');
+  }
+
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of body) {
+    if (!isUint8Array(chunk)) {
+      throw new Error('S3 response chunk is not a Uint8Array');
+    }
+    chunks.push(chunk);
+  }
+
+  return Buffer.concat(chunks);
+}
+
 /**
  * Download a file from S3 bucket
  *
@@ -88,23 +107,7 @@ export async function downloadS3Object(
 
   const response = await client.send(command);
 
-  if (!response.Body) {
-    throw new Error('S3 object not found');
-  }
-  if (!isAsyncIterable(response.Body)) {
-    throw new Error('S3 response body is not a readable stream');
-  }
-
-  // Stream to Buffer (memory-efficient for large files)
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of response.Body) {
-    if (!isUint8Array(chunk)) {
-      throw new Error('S3 response chunk is not a Uint8Array');
-    }
-    chunks.push(chunk);
-  }
-
-  const buffer = Buffer.concat(chunks);
+  const buffer = await readS3ResponseBody(response.Body);
 
   logger.info('[S3 Download] Downloaded object from S3', {
     ...buildS3LogFields('getObject', bucket, bucketKey),
@@ -170,23 +173,10 @@ export async function downloadRangeFromS3(
     }),
   );
 
-  if (!response.Body) {
-    throw new Error('S3 object not found');
-  }
-  if (!isAsyncIterable(response.Body)) {
-    throw new Error('S3 response body is not a readable stream');
-  }
-
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of response.Body) {
-    if (!isUint8Array(chunk)) {
-      throw new Error('S3 response chunk is not a Uint8Array');
-    }
-    chunks.push(chunk);
-  }
+  const buffer = await readS3ResponseBody(response.Body);
 
   return {
-    body: Buffer.concat(chunks),
+    body: buffer,
     ...omitUndefinedProperties({
       contentLength: response.ContentLength,
       contentRange: response.ContentRange,

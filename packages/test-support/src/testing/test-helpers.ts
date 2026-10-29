@@ -1,6 +1,6 @@
 /**
- * Test helpers for zkVM v2 structures
- * Provides utilities for creating test data following final-design.md v1.0
+ * Structural mock inputs and current journal fixtures for tests.
+ * Use a Merkle builder when a test requires cryptographically consistent inclusion evidence.
  */
 
 import { randomBytes, randomUUID } from 'crypto';
@@ -239,9 +239,9 @@ export function generateElectionConfigHash(options?: { totalExpected?: number; c
 }
 
 /**
- * Create test ZkVMInput
+ * Create a structural mock ZkVMInput; random paths and the synthetic root do not prove RFC 6962 inclusion.
  */
-export function createTestInput(options?: {
+export function createMockZkvmInput(options?: {
   electionId?: string;
   voteCount?: number;
   totalExpected?: number;
@@ -285,6 +285,97 @@ export function createTestInput(options?: {
   return input;
 }
 
+type TestJournalOptions = NonNullable<Parameters<typeof createTestJournal>[0]>;
+interface TestJournalPartition {
+  totalExpected: number;
+  validVotes: number;
+  seenIndicesCount: number;
+  missingSlots: number;
+  invalidPresentedSlots: number;
+}
+
+function resolveTestSeenIndicesCount(options: TestJournalOptions, totalExpected: number, validVotes: number): number {
+  const requestedSeenIndicesCount = options.seenIndicesCount;
+  const requestedInvalidPresentedSlots = options.invalidPresentedSlots;
+  const requestedMissingSlots = options.missingSlots;
+  if (requestedSeenIndicesCount !== undefined) {
+    return requestedSeenIndicesCount;
+  } else if (requestedInvalidPresentedSlots !== undefined) {
+    return validVotes + requestedInvalidPresentedSlots;
+  } else {
+    const missingSlots = requestedMissingSlots ?? 0;
+    // Default helper fixtures still model treeSize === totalExpected. Tests that
+    // need a different seen-count relationship should pass seenIndicesCount
+    // explicitly instead of relying on this derivation.
+    return Math.max(0, totalExpected - missingSlots);
+  }
+}
+
+function assertTestJournalSlotBounds({
+  seenIndicesCount,
+  totalExpected,
+  missingSlots,
+  invalidPresentedSlots,
+}: TestJournalPartition): void {
+  if (seenIndicesCount > totalExpected || missingSlots < 0) {
+    throw new Error('createTestJournal slot partition exceeds totalExpected');
+  }
+
+  if (invalidPresentedSlots < 0) {
+    throw new Error('createTestJournal slot partition requires validVotes <= seenIndicesCount');
+  }
+}
+
+function assertRequestedTestJournalSlots(
+  options: TestJournalOptions,
+  { missingSlots, invalidPresentedSlots }: TestJournalPartition,
+): void {
+  const requestedInvalidPresentedSlots = options.invalidPresentedSlots;
+  const requestedMissingSlots = options.missingSlots;
+  if (requestedInvalidPresentedSlots !== undefined && requestedInvalidPresentedSlots !== invalidPresentedSlots) {
+    throw new Error('createTestJournal invalidPresentedSlots must match seenIndicesCount - validVotes');
+  }
+
+  if (requestedMissingSlots !== undefined && requestedMissingSlots !== missingSlots) {
+    throw new Error('createTestJournal slot partition must match missingSlots');
+  }
+}
+
+function assertTestJournalCountTotals(
+  options: TestJournalOptions,
+  { validVotes, invalidPresentedSlots, missingSlots, totalExpected }: TestJournalPartition,
+): void {
+  if (validVotes + invalidPresentedSlots + missingSlots !== totalExpected) {
+    throw new Error('createTestJournal slot partition must satisfy validVotes + invalidPresentedSlots + missingSlots');
+  }
+
+  if (options.rejectedRecords !== undefined && options.rejectedRecords < invalidPresentedSlots) {
+    throw new Error('createTestJournal rejectedRecords must be >= invalidPresentedSlots');
+  }
+}
+
+function resolveTestJournalCounts(options: TestJournalOptions) {
+  const totalExpected = options.totalExpected ?? 64;
+  const validVotes = options.validVotes ?? totalExpected;
+  const seenIndicesCount = resolveTestSeenIndicesCount(options, totalExpected, validVotes);
+  const missingSlots = totalExpected - seenIndicesCount;
+  const invalidPresentedSlots = seenIndicesCount - validVotes;
+  const partition = { totalExpected, validVotes, seenIndicesCount, missingSlots, invalidPresentedSlots };
+  assertTestJournalSlotBounds(partition);
+  assertRequestedTestJournalSlots(options, partition);
+  assertTestJournalCountTotals(options, partition);
+  const normalizedCounts = normalizeTestJournalCounts({
+    validVotes,
+    missingSlots,
+    invalidPresentedSlots,
+    rejectedRecords: options.rejectedRecords ?? invalidPresentedSlots,
+    ...omitUndefinedProperties({ excludedSlots: options.excludedSlots }),
+    seenIndicesCount,
+  });
+
+  return { totalExpected, normalizedCounts };
+}
+
 /**
  * Create test ZkVMJournal
  */
@@ -299,60 +390,7 @@ export function createTestJournal(options?: {
   seenIndicesCount?: number;
 }): CurrentZkVMJournal {
   const electionId = options?.electionId || generateElectionId();
-  const totalExpected = options?.totalExpected ?? 64;
-  const validVotes = options?.validVotes ?? totalExpected;
-  const requestedMissingSlots = options?.missingSlots;
-  const requestedInvalidPresentedSlots = options?.invalidPresentedSlots;
-  const requestedSeenIndicesCount = options?.seenIndicesCount;
-
-  let seenIndicesCount: number;
-  if (requestedSeenIndicesCount !== undefined) {
-    seenIndicesCount = requestedSeenIndicesCount;
-  } else if (requestedInvalidPresentedSlots !== undefined) {
-    seenIndicesCount = validVotes + requestedInvalidPresentedSlots;
-  } else {
-    const missingSlots = requestedMissingSlots ?? 0;
-    // Default helper fixtures still model treeSize === totalExpected. Tests that
-    // need a different seen-count relationship should pass seenIndicesCount
-    // explicitly instead of relying on this derivation.
-    seenIndicesCount = Math.max(0, totalExpected - missingSlots);
-  }
-
-  const missingSlots = totalExpected - seenIndicesCount;
-  const invalidPresentedSlots = seenIndicesCount - validVotes;
-
-  if (seenIndicesCount > totalExpected || missingSlots < 0) {
-    throw new Error('createTestJournal slot partition exceeds totalExpected');
-  }
-
-  if (invalidPresentedSlots < 0) {
-    throw new Error('createTestJournal slot partition requires validVotes <= seenIndicesCount');
-  }
-
-  if (requestedInvalidPresentedSlots !== undefined && requestedInvalidPresentedSlots !== invalidPresentedSlots) {
-    throw new Error('createTestJournal invalidPresentedSlots must match seenIndicesCount - validVotes');
-  }
-
-  if (requestedMissingSlots !== undefined && requestedMissingSlots !== missingSlots) {
-    throw new Error('createTestJournal slot partition must match missingSlots');
-  }
-
-  if (validVotes + invalidPresentedSlots + missingSlots !== totalExpected) {
-    throw new Error('createTestJournal slot partition must satisfy validVotes + invalidPresentedSlots + missingSlots');
-  }
-
-  if (options?.rejectedRecords !== undefined && options.rejectedRecords < invalidPresentedSlots) {
-    throw new Error('createTestJournal rejectedRecords must be >= invalidPresentedSlots');
-  }
-
-  const normalizedCounts = normalizeTestJournalCounts({
-    validVotes,
-    missingSlots,
-    invalidPresentedSlots,
-    rejectedRecords: options?.rejectedRecords ?? invalidPresentedSlots,
-    ...omitUndefinedProperties({ excludedSlots: options?.excludedSlots }),
-    seenIndicesCount,
-  });
+  const { totalExpected, normalizedCounts } = resolveTestJournalCounts(options ?? {});
 
   // Generate realistic tally distribution
   const verifiedTally = generateRealisticTally(normalizedCounts.validVotes);

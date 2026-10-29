@@ -199,9 +199,7 @@ export default function PrivacyPolicyPage(): React.ReactElement {
   const s = c.sections;
 
   return (
-    <LegalPageLayout title={c.title} effectiveDate={c.effectiveDate} effectiveDateLabel={c.effectiveDateLabel}>
-      <p>{c.intro}</p>
-
+    <LegalPageLayout document={c}>
       {/* 1. 本サービスの性質 */}
       <LegalSection title={s.nature.title}>
         <p>{s.nature.content}</p>

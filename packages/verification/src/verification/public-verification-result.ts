@@ -1,3 +1,4 @@
+import { projectVerifierReportMetadata } from './verifier-service-report';
 import type { VerificationReport, VerificationResult } from '@stark-ballot/verification/shared/types';
 import { s, type Infer } from '@stark-ballot/validation/schema';
 import { documentOpenApiRefinement } from '@stark-ballot/validation/schema-openapi';
@@ -7,7 +8,7 @@ import {
   verifierReportTimestampSchema,
 } from './verifier-service-report';
 
-export const PUBLIC_VERIFICATION_ERROR_MESSAGES = [
+const PUBLIC_VERIFICATION_ERROR_MESSAGES = [
   'ImageID mismatch',
   'Receipt does not contain ImageID',
   'Invalid proof',
@@ -95,7 +96,7 @@ export const publicVerificationResultSchema = s.union([
 ]);
 export type PublicVerificationResult = Infer<typeof publicVerificationResultSchema>;
 
-export function isPublicVerificationErrorMessage(value: string): value is PublicVerificationErrorMessage {
+function isPublicVerificationErrorMessage(value: string): value is PublicVerificationErrorMessage {
   return PUBLIC_VERIFICATION_ERROR_MESSAGE_SET.has(value);
 }
 
@@ -110,6 +111,23 @@ function sanitizeVerificationError(entry: unknown): PublicVerificationErrorMessa
   }
 
   return isPublicVerificationErrorMessage(trimmed) ? trimmed : GENERIC_PUBLIC_VERIFICATION_ERROR;
+}
+
+function sanitizePublicVerificationErrors(errors: VerificationReport['errors']): PublicVerificationErrorMessage[] {
+  const sanitizedErrors: PublicVerificationErrorMessage[] = [];
+  if (Array.isArray(errors)) {
+    for (const entry of errors) {
+      if (sanitizedErrors.length >= 20) {
+        break;
+      }
+      const publicError = sanitizeVerificationError(entry);
+      if (publicError && !sanitizedErrors.includes(publicError)) {
+        sanitizedErrors.push(publicError);
+      }
+    }
+  }
+
+  return sanitizedErrors;
 }
 
 export function sanitizeVerificationReportForPublicResponse(
@@ -130,25 +148,8 @@ export function sanitizeVerificationReportForPublicResponse(
     return undefined;
   }
 
-  const sanitizedErrors: PublicVerificationErrorMessage[] = [];
-  if (Array.isArray(report.errors)) {
-    for (const entry of report.errors) {
-      if (sanitizedErrors.length >= 20) {
-        break;
-      }
-      const publicError = sanitizeVerificationError(entry);
-      if (publicError && !sanitizedErrors.includes(publicError)) {
-        sanitizedErrors.push(publicError);
-      }
-    }
-  }
-
-  const common = {
-    verifier_version: report.verifier_version,
-    verified_at: report.verified_at,
-    duration_ms: report.duration_ms,
-    expected_image_id: report.expected_image_id,
-  };
+  const sanitizedErrors = sanitizePublicVerificationErrors(report.errors);
+  const common = projectVerifierReportMetadata(report);
 
   switch (report.status) {
     case 'success':

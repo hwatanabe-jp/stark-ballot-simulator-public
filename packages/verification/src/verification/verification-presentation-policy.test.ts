@@ -56,9 +56,6 @@ describe('resolveVerificationDisplayDecision formal vectors', () => {
     expect(decision.source).toBe(testCase.expectedOverrideSource);
     expect(decision.status).toBe(testCase.expectedOverrideStatus);
     expect(decision.renderedStatus).toBe(testCase.expectedRenderedStatus);
-    if (testCase.expectedRenderedStatus !== 'verified') {
-      expect(decision.renderedStatus).not.toBe('verified');
-    }
   });
 });
 

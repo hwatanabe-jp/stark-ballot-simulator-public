@@ -29,6 +29,19 @@ export default function HomePage(): React.ReactElement {
 
   useEffect(() => () => sessionRequestControllerRef.current?.abort(), []);
 
+  const handleCreationError = (err: unknown) => {
+    const errorCode = resolveApiClientErrorCode(err);
+    if (errorCode === 'SESSION_LIMIT_EXCEEDED') {
+      setErrorKey('errors.sessionLimitExceeded');
+    } else if (errorCode === 'CAPTCHA_FAILED') {
+      setErrorKey('errors.captchaFailed');
+      setTurnstileToken(null);
+    } else {
+      console.error('Session creation error:', err);
+      setErrorKey('errors.generic');
+    }
+  };
+
   const handleStart = async () => {
     if (sessionRequestControllerRef.current || (requireSessionTurnstile && !turnstileToken)) return;
     const controller = new AbortController();
@@ -60,16 +73,7 @@ export default function HomePage(): React.ReactElement {
       router.push('/vote');
     } catch (err) {
       if (controller.signal.aborted) return;
-      const errorCode = resolveApiClientErrorCode(err);
-      if (errorCode === 'SESSION_LIMIT_EXCEEDED') {
-        setErrorKey('errors.sessionLimitExceeded');
-      } else if (errorCode === 'CAPTCHA_FAILED') {
-        setErrorKey('errors.captchaFailed');
-        setTurnstileToken(null);
-      } else {
-        console.error('Session creation error:', err);
-        setErrorKey('errors.generic');
-      }
+      handleCreationError(err);
       sessionRequestControllerRef.current = null;
       setIsLoading(false);
     }

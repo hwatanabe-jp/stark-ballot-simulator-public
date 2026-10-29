@@ -106,15 +106,7 @@ export function hasCoherentCurrentZkVMJournalSemantics(journal: CurrentZkVMJourn
 }
 
 export function isSupportedZkVMJournal(value: unknown): value is CurrentZkVMJournal {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (!hasExactCurrentJournalKeys(value)) {
-    return false;
-  }
-  if (hasLegacyJournalCountAliases(value)) {
-    return false;
-  }
+  if (!isCurrentJournalRecord(value)) return false;
 
   const electionId = getStringProperty(value, 'electionId');
   const electionConfigHash = getStringProperty(value, 'electionConfigHash');
@@ -142,22 +134,11 @@ export function isSupportedZkVMJournal(value: unknown): value is CurrentZkVMJour
     return false;
   }
   if (
-    !electionConfigHash ||
-    !isValidHexString(electionConfigHash, HASH_BYTE_LENGTH) ||
-    !bulletinRoot ||
-    !isValidHexString(bulletinRoot, HASH_BYTE_LENGTH) ||
-    !sthDigest ||
-    !isValidHexString(sthDigest, HASH_BYTE_LENGTH) ||
-    !includedBitmapRoot ||
-    !isValidHexString(includedBitmapRoot, HASH_BYTE_LENGTH) ||
-    !inputCommitment ||
-    !isValidHexString(inputCommitment, HASH_BYTE_LENGTH)
-  ) {
+    ![electionConfigHash, bulletinRoot, sthDigest, includedBitmapRoot, inputCommitment, seenBitmapRoot].every(
+      isJournalHash,
+    )
+  )
     return false;
-  }
-  if (!seenBitmapRoot || !isValidHexString(seenBitmapRoot, HASH_BYTE_LENGTH)) {
-    return false;
-  }
   if (imageId !== undefined && !isValidHexString(imageId, IMAGE_ID_BYTE_LENGTH)) {
     return false;
   }
@@ -191,4 +172,12 @@ function isCurrentJournalUint32(value: number | undefined): value is number {
 
 function isCurrentJournalPositiveUint32(value: number | undefined): value is number {
   return isCurrentJournalUint32(value) && value > 0;
+}
+
+function isCurrentJournalRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && hasExactCurrentJournalKeys(value) && !hasLegacyJournalCountAliases(value);
+}
+
+function isJournalHash(value: string | undefined): value is string {
+  return !!value && isValidHexString(value, HASH_BYTE_LENGTH);
 }

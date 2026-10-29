@@ -23,16 +23,11 @@ Browser
                     -> packages/application use cases
                     -> packages/domain facts and ports
                     -> packages/aws-adapters and packages/node-adapters
-                       -> DynamoDB, S3, SQS, Step Functions, and ECS prover
+                       -> DynamoDB, S3, SQS, Step Functions, and Batch/Fargate prover
 
 Other App runtime Lambda entrypoints
   -> application, AWS, and Node adapter boundaries
   -> verifier-service through verification-worker
-
-Foundation ECR retention schedule
-  -> infra/lambdas/ecr-retention
-  -> packages/deployment-authority retention and target policy
-  -> governed Toolchain and Prover repositories
 
 zkvm host + guest
   -> receipt and journal artifacts
@@ -56,7 +51,7 @@ UI presentation remain separate responsibilities.
 | `packages/application`                       | Cross-context use cases and ports for session reads/mutations, finalization, verification reads and artifact delivery, bot flow, and zkVM-input orchestration                     | Depends on domain facts and injected ports; concrete AWS, filesystem, archive, subprocess, HTTP, and browser adapters stay at the edge.                                                   |
 | `packages/aws-adapters`                      | DynamoDB, S3, SQS, rate-limit, target config-reference, artifact, and concrete persistence adapters                                                                               | Server/runtime only. It may compose application ports and shared Node adapters but does not own browser or public-export behavior.                                                        |
 | `packages/crypto-primitives`                 | Product-neutral strict hex normalization/conversion and SHA-256 primitives                                                                                                        | Neutral leaf package; it does not own domain commitments, Merkle policy, verification semantics, runtime configuration, or concrete adapters.                                             |
-| `packages/deployment-authority`              | Pure reviewed deployment-target configuration and deterministic execution, acceptance, saved-plan, drift, recovery, framework, and ECR-retention policy                           | No AWS SDK, credential, filesystem, process, Terraform execution, or operator-side effects; those remain in scripts, Lambda adapters, and Terraform roots.                                |
+| `packages/deployment-authority`              | Pure reviewed deployment-target configuration and deterministic execution, plan-package, checkpoint, mutation-owner, image, drift, and framework policy                           | No AWS SDK, credential, filesystem, process, Terraform execution, or operator-side effects; those remain in scripts, Lambda adapters, and Terraform roots.                                |
 | `packages/diagnostics`                       | Runtime logging, request-scoped context, request ID extraction, and log-safe hashing                                                                                              | Diagnostics stay outside deterministic domain behavior.                                                                                                                                   |
 | `packages/domain`                            | Session, election, vote, bulletin, finalization, verification-observation facts, deterministic operations, and runtime ports                                                      | No concrete AWS/filesystem adapters, runtime config readers, browser cache, API payload ownership, verification projections, or zkVM-input translation.                                   |
 | `packages/merkle`                            | Pure CT/RFC 6962 tree construction, inclusion/consistency proof behavior, and proof normalization                                                                                 | Depends only on shared cryptographic primitives; it does not own domain, API, browser, verification-policy, or concrete adapter behavior.                                                 |
@@ -69,10 +64,10 @@ UI presentation remain separate responsibilities.
 | `zkvm`                                       | RISC Zero Rust contract core, guest method, host CLI, proof generation, journal emission, and Rust-side compatibility tests                                                       | Generates proofs; receipt verification belongs to `verifier-service`. See [`zkvm/README.md`](../../zkvm/README.md).                                                                       |
 | `verifier-service`                           | Standalone Rust receipt discovery and `Receipt::verify(expected_image_id)`                                                                                                        | Used by local/server Node adapters and packaged into the target verification-worker Lambda. See [`verifier-service/README.md`](../../verifier-service/README.md).                         |
 | `formal`                                     | Lean models, proofs, reports, and generated correspondence vectors for selected fail-closed and encoding invariants                                                               | Does not claim to prove the complete app, cryptographic primitives, RISC Zero soundness, AWS behavior, or React UI. See [`formal/README.md`](../../formal/README.md).                     |
-| `infra/lambdas`                              | App runtime entrypoints, the image-signature-verifier wrapper, and the Foundation-owned scheduled ECR-retention adapter                                                           | Lambda handlers adapt events and bootstrap runtime dependencies; reusable policy remains in apps/packages or the dedicated verifier cores.                                                |
-| `infra/image-signature-verifier`             | Cryptographic Prover-image signature verification core, pinned native-asset manifest, trust root, and deterministic package contract                                              | The Lambda request/response wrapper is `infra/lambdas/image-signature-verifier`; Terraform owns deployment and aliases. See its [README](../../infra/image-signature-verifier/README.md). |
+| `infra/lambdas`                              | App runtime entrypoints and the image-signature-verifier wrapper                                                                                                                  | Lambda handlers adapt events and bootstrap runtime dependencies; reusable policy remains in apps/packages or the dedicated verifier cores.                                                |
+| `infra/image-signature-verifier`             | Cryptographic Prover-image signature verification core, pinned native-asset manifest, trust root, and deterministic package contract                                              | The Lambda request/response wrapper is `infra/lambdas/image-signature-verifier`; App Terraform owns immutable versions. See its [README](../../infra/image-signature-verifier/README.md). |
 | `infra/docker`                               | Prover image builds and the async prover entrypoint                                                                                                                               | The entrypoint owns async artifact conversion, public bundle packaging, private artifact promotion, and upload behavior.                                                                  |
-| `infra/terraform`                            | Bootstrap, foundation, app, and quarantined legacy infrastructure roots                                                                                                           | `foundation` owns target prerequisites and ECR retention; `app` owns runtime resources; `legacy` is retirement inventory, not a normal target.                                            |
+| `infra/terraform`                            | Bootstrap, Foundation and App infrastructure roots                                                                                                                                | `foundation` owns target prerequisites and retained image repositories; `app` owns runtime resources. The deleted legacy account's IaC is retired.                                        |
 | `scripts` (`@stark-ballot/repository-tools`) | Repository guardrails and task-specific build, test, formal, security, public-export, Terraform, and operator automation                                                          | May compose multiple owners, including pure deployment authority, but does not become runtime business-logic authority.                                                                   |
 | `tests/e2e`                                  | Browser workflow and accessibility tests crossing the frontend and server harnesses                                                                                               | Stable selectors and page objects live here because the tests span application boundaries.                                                                                                |
 | `docs` and `public-book`                     | Implementation-oriented contracts and public specifications                                                                                                                       | Documentation records current behavior but is subordinate to implementation and executable tests.                                                                                         |
@@ -117,6 +112,14 @@ is selected into runtime modes by
 [`apps/api/src/server/api/routes/definitions.ts`](../../apps/api/src/server/api/routes/definitions.ts);
 [`apps/api/src/server/api/routes/hono.ts`](../../apps/api/src/server/api/routes/hono.ts)
 binds handlers and admits requests for Hono and the API Gateway Lambda runtime.
+
+Hono composition registers root request logging once, keeps public CORS outside
+internal callbacks, and mounts session, finalization, verification/artifact and
+bulletin child applications. Resource preparation is bound directly to each
+method/path. `honoBindings.ts` owns the typed handler registry; one composition
+registry checks all mounted children for missing and duplicate routes. Store
+resolution remains request-time and bound to the immutable runtime profile.
+
 Handlers receive schema-derived route input separately from admitted context,
 which carries trusted transport metadata, dependencies, and validated identifiers.
 Ordinary JSON handlers return responses admitted for their exact route;
@@ -141,13 +144,62 @@ Verification verdict and evidence rules remain in
 
 The App runtime Lambda set is `public-api`, `finalization-writer`,
 `proof-dispatcher`, `verification-worker`, and `semaphore-janitor`. The
-dedicated `image-signature-verifier` Lambda is packaged and deployed
-separately because its native assets, permissions boundary, immutable
-versions, and preflight/runtime aliases form a distinct trust boundary.
-Foundation separately owns the scheduled `ecr-retention` Lambda. Its adapter
-observes retained deployment and release authority, delegates deterministic
-retention planning to `packages/deployment-authority`, and mutates only its
-governed Toolchain and Prover repositories.
+dedicated `image-signature-verifier` Lambda is packaged separately
+because its native assets and permissions boundary form
+a distinct trust boundary. The ordinary App Apply publishes its immutable
+version, which Step Functions invokes directly. App preparation verifies the
+same Prover digest natively before producing the saved plan.
+Foundation owns no Lambda workload. Its native ECR lifecycle policy retains
+the five newest images per repository and may expire promoted or currently used
+images. Missing image dependencies fail closed; direct operator cleanup remains
+separately authorized.
+
+## Lifecycle And Utility Constraints
+
+Persistence is lifecycle-owned. Domain owns required `SessionIdentityRecord`
+and mutable `SessionVotingRecord`; application owns `FinalizationRecord`,
+verification-result records, transitions, and the non-persisted `SessionReadModel`.
+Verification observations are separate telemetry keyed by `finalizationId`;
+AWS delivery/runtime metadata stays adapter-owned. Session creation writes
+complete identity/configuration; reads never mint or repair missing identifiers.
+Mock, file, and Dynamo stores persist the same current record families.
+File evaluation and writes remain under the exclusive mutation lock. Dynamo
+uses exact persisted lifecycle/scenario CAS and bounded reload/re-evaluation.
+Adapters emit canonical lifecycle observations only after the durable outcome
+is known and must not recreate transition tables.
+
+Persistence admission is a hard cut: no old-shape reader, generation marker,
+dual writer, or read-time repair. Invalid retained server state fails closed.
+Invalid `starkBallotSession` browser data is cleared together with the knowledge
+and per-tab lock state, requiring a new session. Preserve the `starkBallotSession`
+key, `stark-ballot-knowledge` panel state, and `sessionStorage` lock; stale tabs
+must stop acting if another tab replaces the session.
+
+One `finalizationId` scopes state, verifier work/results, observations, and
+bundle/report selection and locators. Sync and async creation use the same
+strict resource. Proof-bound journal authority, presentation, gated voter
+evidence, artifact availability, and runtime diagnostics remain separate.
+Concrete queues, executors, S3, verifier, ImageID, rate limits, and bundle
+construction belong in `apps/api/src/server/composition/finalizationDependencies.ts`.
+The raw-body callback at
+`/api/internal/sessions/:sessionId/finalizations/:finalizationId/callback` is
+API-local: exclude it from public inventory, API Gateway/Lambda mounting,
+browser CORS, and clients. Authenticate exact bounded bytes before JSON
+admission and require path/payload identity equality.
+
+Keep shared leaf utilities with their semantic owners:
+
+- Public API errors and `Content-Range` grammar: `packages/api-contract`.
+- Neutral safe segments, unknown values, and ImageID selection: `packages/validation`.
+- Browser-safe generic hex/byte/SHA-256: `packages/crypto-primitives`; keep
+  protocol framing and zkVM parity with their domain owners.
+- Finalization tamper meaning: `packages/verification`; progress projection:
+  the browser-safe application module.
+- Raw cookie parsing: `apps/web`; bounded request-byte reading: API HTTP
+  transport, with endpoint-owned limits and response mapping.
+- Generic polling and CLI presentation fixtures: `packages/test-support`,
+  for tests/diagnostics only. Production retry policy stays local; benchmark
+  batching stays scripts-owned.
 
 ## Runtime Configuration Authority
 
@@ -171,7 +223,8 @@ authorities are:
 Those authorities cover, among other classes, capability and vote secrets,
 Turnstile inputs, the expected CloudFront origin-verification header reference,
 log-salt and target observability fields, proof and verification queues,
-prover-semaphore settings, and semaphore-janitor operations-ledger inputs.
+Batch prover settings and operations-ledger inputs (the existing
+`semaphore_janitor` Lambda identity is retained).
 Target runtime values fail closed when required references or deployment
 identity fields are missing or inconsistent.
 
@@ -182,6 +235,13 @@ identity fields are missing or inconsistent.
   [`docs/infrastructure/README.md`](../infrastructure/README.md).
 - Pure deployment target/lane resolution and semantic admission policy:
   [`packages/deployment-authority`](../../packages/deployment-authority/).
+  Foundation compatibility uses explicit resource requirements verified by owning
+  Smoke, while source SHA remains execution provenance; no implementation
+  dependency scanner participates in consumer admission.
+  Bootstrap and diagnostic drift execute locally; Foundation/App remain managed.
+  Immutable plan packages bind approval, root checkpoints follow owning Smoke,
+  and conditional mutation owners reject stale continuations. Four pipelines and
+  13 active projects are source-derived.
   Credential, AWS, filesystem, process, approval submission, live inventory,
   and snapshot generation remain private operator concerns implemented at the
   repository edge; generated public snapshots intentionally omit those
@@ -192,3 +252,76 @@ identity fields are missing or inconsistent.
   [`scripts/tests/README.md`](../../scripts/tests/README.md).
 - Public/private bundle membership and verification semantics:
   [`docs/verification/README.md`](../verification/README.md).
+
+## Finalization Reconciliation
+
+The AWS direct finalization writer also receives an exact scheduled
+`{ operation: "reconcile-finalizations" }` invocation every minute. The dispatcher
+starts executions, the direct writer stores outcomes, and Batch holds each
+prover slot until its attempt terminates. Successful callbacks obtain `startedAtMs`
+from the exact stored session/finalization and queued-time record written by
+container admission; a running or already-succeeded lifecycle is required.
+Transport and Batch timestamps do not replace that lifecycle authority.
+The former semaphore-janitor Lambda
+now only writes normalized operations-ledger records. Neither GET nor HEAD establishes terminal lifecycle state.
+
+The AWS adapter queries `finalization-expiry-index` (`itemType`, `expiresAt`)
+for unexpired FINALIZATION records, in descending expiry order and pages of 25,
+projecting only owner and finalization IDs. Each run deduplicates exact
+session/finalization pairs across pages. It deliberately does not deduplicate by
+session alone: an old ID from the eventually consistent index must not suppress
+the current ID. Newer expiries are attempted first to reduce starvation of recent
+work when the invocation budget is exhausted. It does not scan session or vote
+records. Terminal candidates are skipped after a current-state read. The index is eventually consistent;
+subsequent scheduled runs revisit missing candidates. The index is not sparse:
+every sessions-table record with both key attributes incurs index storage and
+write cost, including non-finalization records. Low-cardinality `itemType` keys
+can concentrate traffic, and index write throttling can affect base-table writes.
+The separate votes table is unaffected. This preserves the current record shape;
+capacity review must consider the extra writes as well as query volume.
+Stopped recovery requires the same index on restored sessions tables. Quiesced recovery disables the
+schedule as well as both queue consumers; in-flight work must drain before a
+pair switch.
+
+`reconcile-finalization.ts` owns the use case and minimal lifecycle/execution
+ports. The adapter derives execution ARNs from the trusted target state machine
+and admitted finalization ID, normalizing exact SDK errors. Pending work has a
+60-second initial grace and the validated dispatch deadline (default 900 seconds).
+Missing dispatch beyond that deadline fails; a terminal execution without a
+pending outcome records FINALIZATION_OUTCOME_UNRECORDED. Running executions
+record timeout, execution failure/abort, or unrecorded outcome, never proof success.
+Terminal observations wait 60 seconds for the writer before a transition attempt.
+Lifecycle stores retain their existing locks/CAS. A rejected write re-reads
+current state, preserving a concurrent success, cancellation, or newer identity.
+Storage and observation failures propagate for retry; no unsaved failure is
+returned by the API.
+
+The writer has a 120-second invocation budget. Pagination visits every candidate;
+a failed candidate does not prevent later candidates from being attempted. The
+summary reports `visited` index rows (including skipped/failed rows), not successful
+state transitions. Candidate failures log only admitted correlation IDs (session
+hashed) and allowlisted error names; messages, causes and raw candidate data are
+excluded. The invocation still fails after all candidate errors, including policy
+rejections: claiming success would conceal unresolved work. Operators use these
+logs and canonical rejection events to distinguish persistent invalid data from
+transient failures. This allows Lambda retries and the existing
+writer Errors alarm. EventBridge retries delivery twice within five minutes;
+its FailedInvocations alarm is passive, and the next schedule repeats the query.
+Growing candidate volume or sustained invocation timeouts requires operational
+capacity review; there is no claim of an unbounded throughput guarantee.
+
+## Naming
+
+Use a domain noun and an operation, with qualification only where it distinguishes
+owners or authority. Module-local names need not repeat their full directory
+context. Keep semantic
+terms such as `finalization`, `authority`, and `reviewed` when they distinguish
+security or lifecycle boundaries. Descriptive invariant test names may be longer.
+
+AWS names use the configured target prefix plus a short purpose suffix. Scheduled
+finalization work uses `finalization-sweep`; its delivery alarm uses
+`finalization-sweep-delivery`. Validate fully expanded names for every configured
+target against the service-specific limits, and keep rule names aligned with the
+exact deployment/drift IAM inventory. Existing physical resource names, stored
+keys and public wire fields are identities: cosmetic shortening must not silently
+replace deployed resources or alter retained authority.

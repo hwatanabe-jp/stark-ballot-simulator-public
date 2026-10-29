@@ -15,7 +15,7 @@ import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { SessionReadModel } from '@stark-ballot/application/session/session-read-model';
 import { respondWithRoute, respondWithRouteError } from '../utils/responseSchema';
 
-export function computeSessionInputCommitment(session: SessionReadModel): string {
+function computeSessionInputCommitment(session: SessionReadModel): string {
   return computeInputCommitment(
     buildCanonicalZkVMInputFromSession({
       identity: session.identity,

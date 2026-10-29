@@ -1,3 +1,5 @@
+import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
+import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
 import { normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { BOT_COUNT, VOTE_CHOICES } from '@stark-ballot/domain/shared/constants';
@@ -38,6 +40,7 @@ import { projectSessionSthData } from './sth';
 import {
   prepareVerificationRead,
   type VerificationReadPort,
+  type AvailableVerificationVoterEvidence,
 } from '@stark-ballot/application/verification/prepare-verification-read';
 import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import {
@@ -49,6 +52,7 @@ import type {
   VerificationFailureCategory,
   VerificationReport,
   VerificationStatus,
+  VerificationResult,
 } from '@stark-ballot/verification/shared/types';
 
 const INCOHERENT_VERIFIER_OUTCOME = {
@@ -63,6 +67,15 @@ export function admitVerificationPresentationOutcome(input: {
   failureCategory?: VerificationFailureCategory;
 }): VerificationOutcomeInput {
   return admitVerifierOutcome(input) ?? INCOHERENT_VERIFIER_OUTCOME;
+}
+
+function logExactProofUnavailable(debugEnabled: boolean, sessionId: string, voteId: string): void {
+  if (debugEnabled) {
+    logger.debug('[API][verify][DEBUG] Exact CT proof unavailable for user vote', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      voteId,
+    });
+  }
 }
 
 function createVerificationReadPort(params: {
@@ -127,12 +140,7 @@ function createVerificationReadPort(params: {
         exactVoteProof = await store.getVoteByIdWithProof(sessionId, voteId);
       } catch (error) {
         if (error instanceof Error && error.message === 'CT_PROOF_UNAVAILABLE') {
-          if (debugEnabled) {
-            logger.debug('[API][verify][DEBUG] Exact CT proof unavailable for user vote', {
-              session_id_hash: hashSessionIdForLogging(sessionId),
-              voteId,
-            });
-          }
+          logExactProofUnavailable(debugEnabled, sessionId, voteId);
           return {
             availability: 'unavailable',
             reason: 'exact_proof_unavailable',
@@ -203,22 +211,7 @@ export async function getVerifyHandler({
     const { sessionId, finalizationId: requestedFinalizationId, session, store, runtimeProfile } = context;
     const includeJournal = input.query.include === 'journal';
 
-    if (debugEnabled) {
-      logger.debug('[API][verify][DEBUG] Request started', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    if (debugEnabled) {
-      logger.debug('[API][verify][DEBUG] Session retrieved', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        finalizationStatus: session.finalization?.state.status ?? null,
-        votesCount: session.voting.votes.size,
-        userVoteIndex:
-          session.voting.userParticipation.status === 'cast' ? session.voting.userParticipation.voteIndex : null,
-      });
-    }
+    logVerificationRead(session, debugEnabled);
 
     // Check if session is finalized
     if (session.finalization?.state.status !== 'succeeded' || !session.finalization.finalizationResult) {
@@ -262,70 +255,36 @@ export async function getVerifyHandler({
       ...omitUndefinedProperties({ bitmapData: bitmapData ?? undefined }),
     });
     const presentation = projectedFinalizationResult.presentation;
-    const { tally, imageId, scenarios = [], tamperDetected, journal } = finalizationResult;
+    const { tally, imageId, journal } = finalizationResult;
 
-    const verificationStatus = verificationResult?.status;
-    const allowDevModeVerification =
-      verificationStatus === 'dev_mode' &&
-      (runtimeProfile.proof.evidence === 'development' || runtimeProfile.proof.evidence === 'mock');
+    const { allowDevModeVerification, verifierOutcome, publicVerificationReport } = projectVerifierOutcome(
+      verificationResult,
+      runtimeProfile,
+    );
 
     const bulletinRootRaw = journal.bulletinRoot;
     const exactVoterEvidence =
       preparedRead.voterEvidence.availability === 'available' ? preparedRead.voterEvidence : undefined;
-    const voteReceipt = exactVoterEvidence
-      ? {
-          voteId: exactVoterEvidence.voteReceipt.voteId,
-          commitment: exactVoterEvidence.voteReceipt.commitment,
-          bulletinIndex: exactVoterEvidence.voteReceipt.bulletinIndex,
-          bulletinRootAtCast: exactVoterEvidence.voteReceipt.bulletinRootAtCast,
-          timestamp: exactVoterEvidence.voteReceipt.castAtMs,
-          ...omitUndefinedProperties({
-            inputCommitment: exactVoterEvidence.voteReceipt.inputCommitment,
-          }),
-        }
-      : undefined;
+    const voteReceipt = projectReadVoteReceipt(exactVoterEvidence);
 
     const excludedSlots = presentation.excludedSlots;
 
     const verificationUserVote = preparedRead.voterEvidence.userVote;
 
     const verifiedTallyForChecks = presentation.verifiedTally;
-    // Ensure verifiedTally is always a number[] in [A, B, C, D, E] order (response compatibility)
-    // Use explicit mapping instead of Object.values to guarantee order.
-    // If verifiedTally is missing, do not substitute claimed counts.
-    const verifiedTallyArray: number[] = Array.isArray(verifiedTallyForChecks)
-      ? VOTE_CHOICES.map((_, index) =>
-          Number.isFinite(verifiedTallyForChecks[index]) ? (verifiedTallyForChecks[index] ?? 0) : 0,
-        )
-      : VOTE_CHOICES.map(() => 0);
-    const tallyCounts = VOTE_CHOICES.reduce(
-      (acc, choice) => {
-        acc[choice] = tally.counts[choice];
-        return acc;
-      },
-      {} as Record<(typeof VOTE_CHOICES)[number], number>,
+    const { verifiedTallyArray, tallyCounts, tallyTotalVotes } = projectVerificationTally(
+      tally,
+      verifiedTallyForChecks,
     );
-    const tallyTotalVotes =
-      typeof tally.totalVotes === 'number'
-        ? tally.totalVotes
-        : Object.values(tallyCounts).reduce((sum, v) => sum + v, 0);
     const resolvedTreeSize = presentation.treeSize;
     const resolvedTotalExpected = presentation.totalExpected;
     const inputCommitment = presentation.inputCommitment;
-    const publicAuditArtifacts = finalizationResult.artifacts.publicAudit;
-    const publicInputAuthority = resolvePublicInputAuthority(
-      publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.publicInputArtifact : undefined,
-      {
-        finalizationId: finalizationResult.finalizationId,
-        ...omitUndefinedProperties({ bundleKey: deliveryMetadata?.s3BundleKey }),
-        bulletinRoot: bulletinRootRaw,
-        treeSize: resolvedTreeSize,
-      },
+    const { publicInputAuthority, electionManifest, closeStatement } = resolveReadPublicAudit(
+      finalizationResult,
+      deliveryMetadata?.s3BundleKey,
+      bulletinRootRaw,
+      resolvedTreeSize,
     );
-    const electionManifest =
-      publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.electionManifest : undefined;
-    const closeStatement =
-      publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.closeStatement : undefined;
     const consistencyProof = acquireConsistencyProofEvidence({
       session: session.voting,
       ...omitUndefinedProperties({ fromTreeSize: exactVoterEvidence?.userVote.proof.treeSize }),
@@ -339,38 +298,23 @@ export async function getVerifyHandler({
       finalizationResult,
       voteIndex: userVoteIndex,
     });
-    const sthPublicRuntimeConfig = resolveNodeSthPublicRuntimeConfig();
-    const sthVerification =
-      sthPublicRuntimeConfig.sources.length > 0
-        ? await resolveSthVerificationFromProviders({
-            sources: sthPublicRuntimeConfig.sources,
-            journal: {
-              sthDigest: presentation.sthDigest,
-              bulletinRoot: bulletinRootRaw,
-              treeSize: resolvedTreeSize,
-            },
-            minMatchingSources: sthPublicRuntimeConfig.minMatchingSources,
-            sessionId,
-            sameOriginProvider: () =>
-              projectSessionSthData({
-                journal: finalizationResult.journal,
-                timestamp: session.voting.lastActivityMs,
-                logId: preparedRead.source.logId,
-              }),
-          })
-        : undefined;
+    const { sthVerification, sthSourcesConfigured } = await acquireReadSthVerification(
+      sessionId,
+      session,
+      finalizationResult,
+      presentation,
+      preparedRead.source.logId,
+    );
 
     const verificationChecksBaseInput = {
-      electionId: journal.electionId,
-      electionConfigHash: publicInputAuthority?.electionConfigHash ?? journal.electionConfigHash,
-      logId: publicInputAuthority?.logId ?? preparedRead.source.logId,
+      ...resolveVerificationCheckIdentity(journal, publicInputAuthority, preparedRead.source.logId),
       ...omitUndefinedProperties({ voteReceipt }),
       userVote: verificationUserVote,
       journal,
       ...omitUndefinedProperties({ electionManifest }),
       ...omitUndefinedProperties({ closeStatement }),
       sthDigest: presentation.sthDigest,
-      sthSourcesConfigured: sthPublicRuntimeConfig.sources.length > 0,
+      sthSourcesConfigured,
       ...omitUndefinedProperties({ sthVerification }),
       ...omitUndefinedProperties({ missingSlots: presentation.missingSlots }),
       ...omitUndefinedProperties({ invalidPresentedSlots: presentation.invalidPresentedSlots }),
@@ -401,57 +345,12 @@ export async function getVerifyHandler({
       ...omitUndefinedProperties({ seenBitmapProof: bitmapProofEvidence.seen }),
       allowDevModeVerification,
     };
-    const allowedStatuses = new Set(['success', 'failed', 'not_run', 'running']);
-    const forceFailClosedVerification =
-      verificationResult && verificationStatus && !allowedStatuses.has(verificationStatus) && !allowDevModeVerification;
+    const { effectiveTamperDetected, scenarioId, tamperSummary, botVotesSummary } = projectVerificationScenario(
+      finalizationResult,
+      presentation,
+    );
 
-    const scenarioTamperCount = resolveScenarioTamperCount(finalizationResult.tamperSummary);
-    const tamperDetectedBool: boolean = Boolean(tamperDetected);
-    const effectiveTamperDetected =
-      tamperDetectedBool ||
-      resolveFinalizationTamperDetected({
-        excludedSlots,
-        rejectedRecords: presentation.rejectedRecords,
-        scenarioTamperCount,
-      });
-
-    if (excludedSlots > 0 && debugEnabled) {
-      logger.debug('[API][verify][DEBUG] Tamper detected in verification payload', {
-        session_id_hash: hashSessionIdForLogging(sessionId),
-        excludedSlots,
-        missingSlots: presentation.missingSlots,
-        invalidPresentedSlots: presentation.invalidPresentedSlots,
-      });
-    }
-
-    const effectiveVerificationResult = verificationResult;
-
-    // Prepare response data (STARK verification status only).
-    // The overall user-facing verdict is derived from verification checks + summary,
-    // so missing evidence can still downgrade the page while this remains "success".
-    const computedVerificationStatus = effectiveVerificationResult?.status ?? verificationStatus ?? 'not_run';
-    const presentationVerificationStatus = forceFailClosedVerification ? 'failed' : computedVerificationStatus;
-    const presentationVerificationReportStatus = forceFailClosedVerification
-      ? 'failed'
-      : effectiveVerificationResult?.report?.status;
-    const scenarioIdCandidate = scenarios.length > 0 ? (scenarios[0] ?? 'S0') : 'S0';
-    const allowedScenarioIds = new Set(['S0', 'S1', 'S2', 'S3', 'S4', 'S5']);
-    const scenarioId = allowedScenarioIds.has(scenarioIdCandidate) ? scenarioIdCandidate : 'S0';
-    const bulletinRoot = ensureHex64(bulletinRootRaw);
-    const tamperSummary = finalizationResult.tamperSummary;
-    const affectedBotIds =
-      tamperSummary && Array.isArray(tamperSummary.affectedBotIds) ? tamperSummary.affectedBotIds : undefined;
-    const botVotesSummary =
-      (scenarioId === 'S3' || scenarioId === 'S4') && affectedBotIds && affectedBotIds.length > 0
-        ? { total: BOT_COUNT, affectedBotIds, source: 'scenario_simulation' }
-        : undefined;
-
-    const verifierOutcome = admitVerificationPresentationOutcome({
-      verificationStatus: presentationVerificationStatus,
-      ...omitUndefinedProperties({ verificationReportStatus: presentationVerificationReportStatus }),
-      ...omitUndefinedProperties({ verificationReport: effectiveVerificationResult?.report }),
-      ...omitUndefinedProperties({ failureCategory: effectiveVerificationResult?.failureCategory }),
-    });
+    logTamperEvidence(sessionId, presentation, debugEnabled);
 
     const verificationPresentation = await buildVerificationPresentation({
       ...verificationChecksBaseInput,
@@ -464,11 +363,6 @@ export async function getVerifyHandler({
     logVerificationFailures(verificationChecks);
 
     const admittedVerificationReportStatus = verifierOutcome.report?.status;
-    const publicVerificationReport =
-      admittedVerificationReportStatus !== undefined &&
-      admittedVerificationReportStatus === effectiveVerificationResult?.report?.status
-        ? sanitizeVerificationReportForPublicResponse(effectiveVerificationResult.report)
-        : undefined;
     const policy = deriveVerificationPresentationPolicy({
       availability: 'available',
       checks: verificationChecks,
@@ -481,7 +375,7 @@ export async function getVerifyHandler({
           verifierOutcome.status === 'dev_mode' ||
           admittedVerificationReportStatus === 'dev_mode' ||
           verifierOutcome.report?.dev_mode_receipt === true,
-        sthSourcesConfigured: sthPublicRuntimeConfig.sources.length > 0,
+        sthSourcesConfigured,
       },
       verificationStatus: verifierOutcome.status,
       ...omitUndefinedProperties({ verificationReportStatus: admittedVerificationReportStatus }),
@@ -495,7 +389,7 @@ export async function getVerifyHandler({
         electionConfigHash: journal.electionConfigHash,
         logId: preparedRead.source.logId,
         imageId: ensureHex64(imageId),
-        bulletinRoot,
+        bulletinRoot: ensureHex64(bulletinRootRaw),
         verifiedTally: verifiedTallyArray,
         missingSlots: presentation.missingSlots,
         invalidPresentedSlots: presentation.invalidPresentedSlots,
@@ -560,6 +454,248 @@ export async function getVerifyHandler({
   }
 }
 
+function resolveVerificationCheckIdentity(
+  journal: FinalizationResultAuthority['journal'],
+  publicInputAuthority: VerificationPublicInputAuthority | undefined,
+  logId: string,
+) {
+  return {
+    electionId: journal.electionId,
+    electionConfigHash: publicInputAuthority?.electionConfigHash ?? journal.electionConfigHash,
+    logId: publicInputAuthority?.logId ?? logId,
+  };
+}
+
+function resolveReadPublicAudit(
+  finalizationResult: FinalizationResultAuthority & { finalizationId: string },
+  bundleKey: string | undefined,
+  bulletinRootRaw: string,
+  resolvedTreeSize: number,
+) {
+  const publicAuditArtifacts = finalizationResult.artifacts.publicAudit;
+  const publicInputAuthority = resolvePublicInputAuthority(
+    publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.publicInputArtifact : undefined,
+    {
+      finalizationId: finalizationResult.finalizationId,
+      ...omitUndefinedProperties({ bundleKey: bundleKey }),
+      bulletinRoot: bulletinRootRaw,
+      treeSize: resolvedTreeSize,
+    },
+  );
+  const electionManifest =
+    publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.electionManifest : undefined;
+  const closeStatement =
+    publicAuditArtifacts.availability === 'available' ? publicAuditArtifacts.closeStatement : undefined;
+  return { publicInputAuthority, electionManifest, closeStatement };
+}
+
+async function acquireReadSthVerification(
+  sessionId: SessionFinalizationAdmittedContext['sessionId'],
+  session: SessionReadModel,
+  finalizationResult: FinalizationResultAuthority,
+  presentation: ReturnType<typeof projectFinalizationResultForPublicResponse>['presentation'],
+  logId: string,
+) {
+  const sthPublicRuntimeConfig = resolveNodeSthPublicRuntimeConfig();
+  const sthVerification =
+    sthPublicRuntimeConfig.sources.length > 0
+      ? await resolveSthVerificationFromProviders({
+          sources: sthPublicRuntimeConfig.sources,
+          journal: {
+            sthDigest: presentation.sthDigest,
+            bulletinRoot: finalizationResult.journal.bulletinRoot,
+            treeSize: presentation.treeSize,
+          },
+          minMatchingSources: sthPublicRuntimeConfig.minMatchingSources,
+          sessionId,
+          sameOriginProvider: () =>
+            projectSessionSthData({
+              journal: finalizationResult.journal,
+              timestamp: session.voting.lastActivityMs,
+              logId: logId,
+            }),
+        })
+      : undefined;
+
+  return { sthVerification, sthSourcesConfigured: sthPublicRuntimeConfig.sources.length > 0 };
+}
+
+function projectReadVoteReceipt(exactVoterEvidence: AvailableVerificationVoterEvidence | undefined) {
+  return exactVoterEvidence
+    ? {
+        voteId: exactVoterEvidence.voteReceipt.voteId,
+        commitment: exactVoterEvidence.voteReceipt.commitment,
+        bulletinIndex: exactVoterEvidence.voteReceipt.bulletinIndex,
+        bulletinRootAtCast: exactVoterEvidence.voteReceipt.bulletinRootAtCast,
+        timestamp: exactVoterEvidence.voteReceipt.castAtMs,
+        ...omitUndefinedProperties({
+          inputCommitment: exactVoterEvidence.voteReceipt.inputCommitment,
+        }),
+      }
+    : undefined;
+}
+
+function logTamperEvidence(
+  sessionId: SessionFinalizationAdmittedContext['sessionId'],
+  presentation: ReturnType<typeof projectFinalizationResultForPublicResponse>['presentation'],
+  debugEnabled: boolean,
+): void {
+  const { excludedSlots } = presentation;
+  if (excludedSlots > 0 && debugEnabled) {
+    logger.debug('[API][verify][DEBUG] Tamper detected in verification payload', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      excludedSlots,
+      missingSlots: presentation.missingSlots,
+      invalidPresentedSlots: presentation.invalidPresentedSlots,
+    });
+  }
+}
+
+function projectVerificationTally(
+  tally: FinalizationResultAuthority['tally'],
+  verifiedTallyForChecks: number[] | undefined,
+) {
+  // Ensure verifiedTally is always a number[] in [A, B, C, D, E] order (response compatibility)
+  // Use explicit mapping instead of Object.values to guarantee order.
+  // If verifiedTally is missing, do not substitute claimed counts.
+  const verifiedTallyArray: number[] = Array.isArray(verifiedTallyForChecks)
+    ? VOTE_CHOICES.map((_, index) =>
+        Number.isFinite(verifiedTallyForChecks[index]) ? (verifiedTallyForChecks[index] ?? 0) : 0,
+      )
+    : VOTE_CHOICES.map(() => 0);
+  const tallyCounts = VOTE_CHOICES.reduce(
+    (acc, choice) => {
+      acc[choice] = tally.counts[choice];
+      return acc;
+    },
+    {} as Record<(typeof VOTE_CHOICES)[number], number>,
+  );
+  const tallyTotalVotes =
+    typeof tally.totalVotes === 'number' ? tally.totalVotes : Object.values(tallyCounts).reduce((sum, v) => sum + v, 0);
+  return { verifiedTallyArray, tallyCounts, tallyTotalVotes };
+}
+
+function allowsDevelopmentVerification(
+  verificationStatus: VerificationStatus | undefined,
+  runtimeProfile: ResolvedRuntimeProfile,
+): boolean {
+  const allowDevModeVerification =
+    verificationStatus === 'dev_mode' &&
+    (runtimeProfile.proof.evidence === 'development' || runtimeProfile.proof.evidence === 'mock');
+  return allowDevModeVerification;
+}
+
+function projectAdmittedVerifierReport(
+  verifierOutcome: VerificationOutcomeInput,
+  effectiveVerificationResult: VerificationResult | undefined,
+) {
+  const admittedVerificationReportStatus = verifierOutcome.report?.status;
+  const publicVerificationReport =
+    admittedVerificationReportStatus !== undefined &&
+    admittedVerificationReportStatus === effectiveVerificationResult?.report?.status
+      ? sanitizeVerificationReportForPublicResponse(effectiveVerificationResult.report)
+      : undefined;
+  return publicVerificationReport;
+}
+
+function requiresFailedVerifierPresentation(
+  result: VerificationResult | undefined,
+  status: VerificationStatus | undefined,
+  allowDevelopment: boolean,
+): boolean {
+  const allowedStatuses = new Set(['success', 'failed', 'not_run', 'running']);
+  return Boolean(result && status && !allowedStatuses.has(status) && !allowDevelopment);
+}
+
+function projectVerifierOutcome(
+  verificationResult: VerificationResult | undefined,
+  runtimeProfile: ResolvedRuntimeProfile,
+) {
+  const verificationStatus = verificationResult?.status;
+  const allowDevModeVerification = allowsDevelopmentVerification(verificationStatus, runtimeProfile);
+
+  const forceFailClosedVerification = requiresFailedVerifierPresentation(
+    verificationResult,
+    verificationStatus,
+    allowDevModeVerification,
+  );
+
+  const effectiveVerificationResult = verificationResult;
+
+  // Prepare response data (STARK verification status only).
+  // The overall user-facing verdict is derived from verification checks + summary,
+  // so missing evidence can still downgrade the page while this remains "success".
+  const computedVerificationStatus = verificationStatus ?? 'not_run';
+  const presentationVerificationStatus = forceFailClosedVerification ? 'failed' : computedVerificationStatus;
+  const presentationVerificationReportStatus = forceFailClosedVerification
+    ? 'failed'
+    : effectiveVerificationResult?.report?.status;
+  const verifierOutcome = admitVerificationPresentationOutcome({
+    verificationStatus: presentationVerificationStatus,
+    ...omitUndefinedProperties({ verificationReportStatus: presentationVerificationReportStatus }),
+    ...omitUndefinedProperties({ verificationReport: effectiveVerificationResult?.report }),
+    ...omitUndefinedProperties({ failureCategory: effectiveVerificationResult?.failureCategory }),
+  });
+
+  const publicVerificationReport = projectAdmittedVerifierReport(verifierOutcome, effectiveVerificationResult);
+  return { allowDevModeVerification, verifierOutcome, publicVerificationReport };
+}
+
+function projectScenarioBotVotes(scenarioId: string, tamperSummary: FinalizationResultAuthority['tamperSummary']) {
+  const affectedBotIds =
+    tamperSummary && Array.isArray(tamperSummary.affectedBotIds) ? tamperSummary.affectedBotIds : undefined;
+  const botVotesSummary =
+    (scenarioId === 'S3' || scenarioId === 'S4') && affectedBotIds && affectedBotIds.length > 0
+      ? { total: BOT_COUNT, affectedBotIds, source: 'scenario_simulation' }
+      : undefined;
+  return botVotesSummary;
+}
+
+function projectVerificationScenario(
+  finalizationResult: FinalizationResultAuthority,
+  presentation: ReturnType<typeof projectFinalizationResultForPublicResponse>['presentation'],
+) {
+  const { scenarios = [], tamperDetected } = finalizationResult;
+  const { excludedSlots } = presentation;
+  const scenarioTamperCount = resolveScenarioTamperCount(finalizationResult.tamperSummary);
+  const tamperDetectedBool: boolean = Boolean(tamperDetected);
+  const effectiveTamperDetected =
+    tamperDetectedBool ||
+    resolveFinalizationTamperDetected({
+      excludedSlots,
+      rejectedRecords: presentation.rejectedRecords,
+      scenarioTamperCount,
+    });
+
+  const scenarioIdCandidate = scenarios.length > 0 ? (scenarios[0] ?? 'S0') : 'S0';
+  const allowedScenarioIds = new Set(['S0', 'S1', 'S2', 'S3', 'S4', 'S5']);
+  const scenarioId = allowedScenarioIds.has(scenarioIdCandidate) ? scenarioIdCandidate : 'S0';
+  const tamperSummary = finalizationResult.tamperSummary;
+  const botVotesSummary = projectScenarioBotVotes(scenarioId, tamperSummary);
+
+  return { effectiveTamperDetected, scenarioId, tamperSummary, botVotesSummary };
+}
+
+function logVerificationRead(session: SessionReadModel, debugEnabled: boolean): void {
+  const sessionId = session.identity.sessionId;
+  if (debugEnabled) {
+    logger.debug('[API][verify][DEBUG] Request started', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (debugEnabled) {
+    logger.debug('[API][verify][DEBUG] Session retrieved', {
+      session_id_hash: hashSessionIdForLogging(sessionId),
+      finalizationStatus: session.finalization?.state.status ?? null,
+      votesCount: session.voting.votes.size,
+      userVoteIndex:
+        session.voting.userParticipation.status === 'cast' ? session.voting.userParticipation.voteIndex : null,
+    });
+  }
+}
+
 function logVerificationFailures(checks: VerificationCheck[]): void {
   const failed = checks.filter((check) => check.status === 'failed');
   if (failed.length === 0) {
@@ -587,6 +723,26 @@ function ensureHex64(value: string | undefined | null): string {
   return `0x${clean.padStart(64, '0').toLowerCase()}`;
 }
 
+function matchesPublicInputProvenance(
+  provenance: SupportedPublicInputArtifact['provenance'],
+  expected: { finalizationId: string | undefined; bundleKey: string | undefined },
+): boolean {
+  const { finalizationId, bundleKey } = expected;
+  if (finalizationId) {
+    if (!provenance.finalizationId || provenance.finalizationId !== finalizationId) {
+      return false;
+    }
+  }
+
+  if (bundleKey) {
+    if (!provenance.bundleKey || provenance.bundleKey !== bundleKey) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function resolvePublicInputAuthority(
   artifact: SupportedPublicInputArtifact | undefined,
   options: {
@@ -603,17 +759,7 @@ function resolvePublicInputAuthority(
   const { finalizationId, bundleKey, bulletinRoot, treeSize } = options;
   const { provenance, typedAuthority } = artifact;
 
-  if (finalizationId) {
-    if (!provenance.finalizationId || provenance.finalizationId !== finalizationId) {
-      return undefined;
-    }
-  }
-
-  if (bundleKey) {
-    if (!provenance.bundleKey || provenance.bundleKey !== bundleKey) {
-      return undefined;
-    }
-  }
+  if (!matchesPublicInputProvenance(provenance, { finalizationId, bundleKey })) return undefined;
 
   if (bulletinRoot && normalizeHexString(typedAuthority.bulletinRoot) !== normalizeHexString(bulletinRoot)) {
     return undefined;

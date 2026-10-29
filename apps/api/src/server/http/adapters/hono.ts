@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { getConnInfo as getAwsLambdaConnInfo } from 'hono/aws-lambda';
+import { getConnInfo as getAwsLambdaConnInfo } from '@hono/aws-lambda';
 import type { ApiHandlerContext, ApiContextStore } from '../../api/context';
 import { getRequestIp } from '../../api/security/turnstile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
@@ -18,8 +18,7 @@ export interface HonoAdapterInput {
 }
 
 type AwsRequestContextLike = {
-  requestId?: unknown;
-  http?: { sourceIp?: unknown };
+  extendedRequestId?: unknown;
   identity?: { sourceIp?: unknown };
 };
 
@@ -54,7 +53,7 @@ function tryResolveIpWithAwsConnInfo(context: Context): string | null {
   }
 }
 
-export function resolveAwsSourceIp(context: Context): string | null {
+function resolveAwsSourceIp(context: Context): string | null {
   const awsConnInfoIp = tryResolveIpWithAwsConnInfo(context);
   if (awsConnInfoIp) {
     return awsConnInfoIp;
@@ -70,11 +69,6 @@ export function resolveAwsRequestContextSourceIp(context: HonoEnvContextLike): s
     return null;
   }
 
-  const httpSourceIp = asNonEmptyString(requestContext.http?.sourceIp);
-  if (httpSourceIp) {
-    return httpSourceIp;
-  }
-
   const identitySourceIp = asNonEmptyString(requestContext.identity?.sourceIp);
   if (identitySourceIp) {
     return identitySourceIp;
@@ -86,7 +80,7 @@ export function resolveAwsRequestContextSourceIp(context: HonoEnvContextLike): s
 export function resolveAwsRequestId(context: HonoEnvContextLike): string | null {
   const env = context.env as AwsEnvLike | undefined;
   const requestContext = env?.requestContext ?? env?.event?.requestContext;
-  return asNonEmptyString(requestContext?.requestId);
+  return asNonEmptyString(requestContext?.extendedRequestId);
 }
 
 /**

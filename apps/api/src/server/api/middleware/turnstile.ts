@@ -4,23 +4,19 @@ import { logger } from '@stark-ballot/diagnostics/logger';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
-/**
- * Input for Turnstile validation helper.
- */
-export interface TurnstileValidationOptions {
-  payload: unknown;
-  explicitToken?: string;
-  clientIp?: string | null;
-  expectedAction?: string;
-}
-
-/**
- * Validate Turnstile token extracted from request payload.
- */
+/** Validate the token from admitted route input with the resolved rate-limit client identity. */
 export async function requireTurnstileToken(
   profile: ResolvedRuntimeProfile,
-  options: TurnstileValidationOptions,
+  input: { body: unknown },
+  rate: { clientIp: string },
+  expectedAction: 'session' | 'vote' | 'finalize',
 ): Promise<void> {
+  const options = {
+    payload: input.body,
+    ...omitUndefinedProperties({ explicitToken: extractTurnstileToken(input.body) }),
+    clientIp: rate.clientIp,
+    expectedAction,
+  };
   const token = options.explicitToken ?? extractTurnstileToken(options.payload);
   try {
     await validateTurnstileToken(profile, {

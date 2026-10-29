@@ -31,16 +31,24 @@ profile から決まる。
 
 ### `pending`
 
-`queuedAtMs` は finalization work を queue に投入した時刻（epoch ms）である。
+`queuedAtMs` は finalization attempt の開始基準時刻（epoch ms）であり、pending
+state の保存、S3 への入力保存、SQS publish より前に finalization ID とともに決まる。
 Target async flow の `pending` は、SQS 待機、dispatcher handoff、Step Functions
-setup、および DynamoDB semaphore の slot 待ちを含む。Dispatcher が
-`StartExecution` に成功しただけでは `running` に遷移しない。
+setup、AWS Batch の capacity 待ち、および container の起動と start admission までを含む。
+Step Functions の `RunProver` は `batch:submitJob.sync` で job を投入する。
+Dispatcher の `StartExecution` や Batch への投入が成功しただけでは `running` に遷移しない。
 
 ### `running`
 
-Step Functions が prover slot を取得した後、`MarkProverStarted` が running state
-を記録する。`startedAtMs` はこの proof 実行開始時刻（epoch ms）であり、UI と API
-の擬似進捗はこの時刻を起点にする。
+Batch が起動した Fargate container は、入力の読み出しや host の実行より先に
+finalization writer を同期呼び出しし、current finalization の start admission と
+running state の保存を確認する。`startedAtMs` はこの admission request を作る際の
+container 時刻（epoch ms）であり、UI と API の擬似進捗は保存されたこの値を起点にする。
+Step Functions や Batch の状態遷移時刻、実際の proof 計算開始時刻を表す値ではない。
+Admission が拒否された container は入力の読み出しや host の実行へ進まない。
+
+Batch は job ごとに replenishable resource を 1 unit 消費し、attempt が終了するまで
+capacity を保持する。
 
 ### Terminal state
 
@@ -51,8 +59,8 @@ pending/running の presentation aid なので、current resource の terminal s
 ## Queue estimate の authority
 
 Queue info path は SQS `GetQueueAttributes` を呼ばない。SQS の
-`ApproximateNumberOfMessages*` は dispatcher backlog の運用指標であり、Step
-Functions semaphore の待機 execution 数や exact queue position ではないため、
+`ApproximateNumberOfMessages*` は dispatcher backlog の運用指標であり、Batch の
+capacity 待ち job 数や exact queue position ではないため、
 public queue payload の source にしない。
 
 `runtimeDiagnostics.queue` が存在する場合の shape は次の 2 field だけである。
@@ -65,9 +73,10 @@ type FinalizationQueue = {
 ```
 
 - `concurrencyLimit` は `PROVER_MAX_CONCURRENT_PROVERS` を数値化し、有限かつ
-  `0` より大きい場合は `Math.floor` した値を使い、それ以外は `2` とする。Target Terraform は
-  `var.prover_max_concurrent_provers` を positive integer として検証し、この環境変数へ
-  渡す。Terraform default は `2` である。
+  `0` より大きい場合は `Math.floor` した値を使い、それ以外は `2` とする。これは API の
+  parsing rule である。Target Terraform の `var.prover_max_concurrent_provers` は
+  **`2` のみ**を受理し（default も `2`）、Batch の replenishable resource の総量に使う。
+  現行 Terraform はこの環境変数を設定せず、API の fallback 値 `2` と一致する。
 - `estimatedDurationMs` は典型所要時間であり、現在は **360000**（6分）の固定値である。
 - `position`、`depth`、`estimatedStartAt`、`estimatedCompletionAt`、source label は
   public queue payload に含めない。
@@ -116,7 +125,7 @@ Finalization success response は共通して top-level の
 
 ### GET `/api/sessions/:sessionId/finalizations/current`（200 / pending）
 
-Pending resource は `runtimeDiagnostics.progress` を返さない。Semaphore slot 待ち中も
+Pending resource は `runtimeDiagnostics.progress` を返さない。Batch capacity 待ち中も
 pending のままであり、SQS depth が 0 であっても target queue authority が存在する
 限り static estimate object を返す。
 
@@ -143,9 +152,9 @@ pending のままであり、SQS depth が 0 であっても target queue author
 ### GET `/api/sessions/:sessionId/finalizations/current`（200 / running）
 
 Running resource は queue estimate に加え、`runtimeDiagnostics.progress` を derived
-hint として返しうる。`runtimeDiagnostics.orchestrator` は Step Functions details を
-取得できた場合だけ返す optional diagnostics であり、progress や finalization state
-の authority ではない。
+hint として返しうる。GET は保存済み state を返し、診断値は finalization state
+の authority ではない。実行基盤との照合は閲覧とは独立した
+[定期 writer](../../architecture/context-map.md#finalization-reconciliation) が担う。
 
 ```json
 {
@@ -165,11 +174,6 @@ hint として返しうる。`runtimeDiagnostics.orchestrator` は Step Function
         "source": "derived",
         "percent": 12,
         "updatedAtMs": 1730000390000
-      },
-      "orchestrator": {
-        "status": "RUNNING",
-        "startTimeMs": 1730000060000,
-        "stopTimeMs": null
       }
     }
   },

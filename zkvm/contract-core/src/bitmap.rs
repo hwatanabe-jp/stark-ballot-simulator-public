@@ -95,11 +95,11 @@ fn bitmap_merkle_tree_levels(bitmap: &[bool]) -> Vec<Vec<[u8; 32]>> {
     while levels.last().map(|level| level.len()).unwrap_or(0) > 1 {
         let current = levels.last().expect("level exists");
         let mut next = Vec::with_capacity(current.len().div_ceil(2));
-        let mut iter = current.chunks_exact(2);
-        for pair in &mut iter {
+        let (pairs, remainder) = current.as_chunks::<2>();
+        for pair in pairs {
             next.push(crate::inclusion_proof::hash_internal(&pair[0], &pair[1]));
         }
-        if let Some(rem) = iter.remainder().first() {
+        if let Some(rem) = remainder.first() {
             next.push(*rem);
         }
         levels.push(next);

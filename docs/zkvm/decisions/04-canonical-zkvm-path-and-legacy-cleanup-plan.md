@@ -1,5 +1,11 @@
 # Canonical zkVM Path and Legacy Cleanup Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: refreshed after the 01-03 cutover.** This document now
 > reflects the current repository state after the generation boundary,
 > authority, and public-contract work landed. It is a cleanup and
@@ -150,7 +156,7 @@ canonical.
   `publicInputArtifact`, and the proof-bound journal.
 - Report delivery should remain scoped by
   `verificationResult.s3ReportKey` under that same `(sessionId,
-verificationExecutionId)` authority rather than becoming an
+  verificationExecutionId)` authority rather than becoming an
   independent selector model.
 - Raw URLs, mirror fields, and caller-specific heuristics should not
   remain alternate authority.

@@ -1,3 +1,9 @@
+import {
+  requireContractString as requireString,
+  requireExactContractKeys,
+  requireContractRecord as requireRecord,
+  canonicalContractJson,
+} from './contract-values';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { CURRENT_METHOD_VERSION, INPUT_COMMITMENT_FORMAT_VERSION, UINT32_MAX, VERIFIED_TALLY_WIDTH } from './types';
@@ -308,30 +314,8 @@ function fail(label: string, message: string): never {
   throw new Error(`${label} ${message}`);
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    fail(label, 'must be an object');
-  }
-  return value as Record<string, unknown>;
-}
-
-function requireExactKeys(record: Record<string, unknown>, expectedKeys: readonly string[], label: string): void {
-  const actualKeys = Object.keys(record).sort();
-  const sortedExpectedKeys = [...expectedKeys].sort();
-  if (
-    actualKeys.length !== sortedExpectedKeys.length ||
-    actualKeys.some((key, index) => key !== sortedExpectedKeys[index])
-  ) {
-    fail(label, 'must contain the exact keys for the current formal vector contract');
-  }
-}
-
-function requireString(record: Record<string, unknown>, key: string, label: string): string {
-  const value = record[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    fail(`${label}.${key}`, 'must be a non-empty string');
-  }
-  return value;
+function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  requireExactContractKeys(record, keys, label, 'current formal vector contract');
 }
 
 function requireBoolean(record: Record<string, unknown>, key: string, label: string): boolean {
@@ -461,7 +445,7 @@ function parseModeledBounds(value: unknown): FormalVectorModeledBounds {
       tallyBucketMax: MAX_GUEST_TREE_SIZE,
     },
   };
-  if (canonicalJson(parsed) !== canonicalJson(expected)) {
+  if (canonicalContractJson(parsed, 'formal vector') !== canonicalContractJson(expected, 'formal vector')) {
     fail('formal vector.modeledBounds', 'does not match the current TypeScript contract constants');
   }
   return parsed;
@@ -786,22 +770,8 @@ function requireArrayIndex(values: number[], index: number, label: string): numb
   return value;
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
-  if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value)) fail('formal vector canonical JSON', 'admits only safe integers');
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const record = requireRecord(value, 'formal vector canonical value');
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(',')}}`;
-}
-
 function canonicalSha256(value: unknown): string {
-  return bytesToHex(sha256(utf8ToBytes(canonicalJson(value))));
+  return bytesToHex(sha256(utf8ToBytes(canonicalContractJson(value, 'formal vector'))));
 }
 
 interface ParsedEnvelopeHead {

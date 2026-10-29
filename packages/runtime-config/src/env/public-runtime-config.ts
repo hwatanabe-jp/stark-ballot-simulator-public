@@ -14,7 +14,7 @@ export type BrowserPublicEnvKey = (typeof BROWSER_PUBLIC_ENV_KEYS)[number];
 
 export type PublicRuntimeEnvKey = BrowserPublicEnvKey;
 
-export const SUPPORTED_BROWSER_RUNTIME_PROFILES = Object.freeze([
+const SUPPORTED_BROWSER_RUNTIME_PROFILES = Object.freeze([
   'local-demo',
   'static-mock-e2e',
   'local-proof-development',
@@ -22,9 +22,9 @@ export const SUPPORTED_BROWSER_RUNTIME_PROFILES = Object.freeze([
   'target-aws-async',
 ] as const);
 
-export type BrowserRuntimeProfileSelector = (typeof SUPPORTED_BROWSER_RUNTIME_PROFILES)[number];
-export type BrowserApiMode = 'mock' | 'same-origin';
-export type BrowserTargetEnvironment = 'develop' | 'main';
+type BrowserRuntimeProfileSelector = (typeof SUPPORTED_BROWSER_RUNTIME_PROFILES)[number];
+type BrowserApiMode = 'mock' | 'same-origin';
+type BrowserTargetEnvironment = 'develop' | 'main';
 
 interface BrowserRuntimeProfileBase {
   readonly name: BrowserRuntimeProfileSelector;
@@ -81,11 +81,6 @@ export function clearPublicRuntimeEnvForTests(): void {
 
 export function readPublicRuntimeEnv(key: BrowserPublicEnvKey): string | undefined {
   return readPublicRuntimeEnvKey(key);
-}
-
-export function readPublicRuntimeFlag(key: BrowserPublicEnvKey): boolean {
-  const value = readPublicRuntimeEnv(key);
-  return value === '1' || value === 'true';
 }
 
 function configError(name: BrowserPublicEnvKey, message: string): RuntimeConfigValidationError {

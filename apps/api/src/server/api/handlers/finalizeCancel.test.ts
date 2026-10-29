@@ -18,7 +18,7 @@ import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpe
 import { getApiErrorCode, readJsonRecord } from '@stark-ballot/test-support/testing/response-helpers';
 import { StandardErrorResponseSchema } from '@stark-ballot/api-contract/schemas/errors';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
-import { getNumberProperty, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getNumberProperty, getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { getGlobalStore } from '@stark-ballot/aws-adapters/store/storeInstance';
 import {
   localRuntimeProfile,
@@ -169,6 +169,20 @@ function buildSucceededState(
   };
 }
 
+function installTargetRuntimeReferenceFixtures(env: NodeJS.ProcessEnv): void {
+  installStaticRuntimeConfigReferenceResolver(
+    new Map([
+      [env['SESSION_CAPABILITY_SECRET_REF'] ?? '', capabilitySecret],
+      [env['SESSION_CAPABILITY_TTL_SECONDS_REF'] ?? '', '3600'],
+      [env['VOTE_SECRET_ENCRYPTION_KEY_REF'] ?? '', '11'.repeat(32)],
+      [env['TURNSTILE_SECRET_KEY_REF'] ?? '', 'turnstile-secret-value'],
+      [env['EXPECTED_ORIGIN_VERIFY_HEADER_REF'] ?? '', originVerifyHeader],
+      [env['LOG_IP_HASH_SALT_REF'] ?? '', 'resolved-finalize-cancel-log-hash-salt'],
+    ]),
+    { expectedDeploymentEnvironment: 'develop' },
+  );
+}
+
 function installTargetRuntimeTestEnvironment(): void {
   const env = targetRuntimeProfileEnv();
   for (const [name, value] of Object.entries(env)) {
@@ -191,17 +205,7 @@ function installTargetRuntimeTestEnvironment(): void {
   vi.stubEnv('DEPLOYMENT_ID', `dep_${'1'.repeat(32)}`);
   vi.stubEnv('APP_SOURCE_SHA', '2'.repeat(40));
   vi.stubEnv('DEPLOY_MODE', 'normal');
-  installStaticRuntimeConfigReferenceResolver(
-    new Map([
-      [env['SESSION_CAPABILITY_SECRET_REF'] ?? '', capabilitySecret],
-      [env['SESSION_CAPABILITY_TTL_SECONDS_REF'] ?? '', '3600'],
-      [env['VOTE_SECRET_ENCRYPTION_KEY_REF'] ?? '', '11'.repeat(32)],
-      [env['TURNSTILE_SECRET_KEY_REF'] ?? '', 'turnstile-secret-value'],
-      [env['EXPECTED_ORIGIN_VERIFY_HEADER_REF'] ?? '', originVerifyHeader],
-      [env['LOG_IP_HASH_SALT_REF'] ?? '', 'resolved-finalize-cancel-log-hash-salt'],
-    ]),
-    { expectedDeploymentEnvironment: 'develop' },
-  );
+  installTargetRuntimeReferenceFixtures(env);
 }
 
 function createCancelTestApp(runtimeProfile: ResolvedRuntimeProfile) {
@@ -240,7 +244,7 @@ function expectRequestStatusLog(spy: MockInstance<typeof logger.warn>, expectedS
   expect(spy).toHaveBeenCalledTimes(1);
   expect(call?.[0]).toBe('request completed');
   expect(getStringProperty(fields, 'event')).toBe('http_request');
-  expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(expectedStatus);
+  expect(getNumberProperty(getObjectProperty(fields, 'http'), 'status')).toBe(expectedStatus);
 }
 
 describe('cancelFinalizationHandler', () => {

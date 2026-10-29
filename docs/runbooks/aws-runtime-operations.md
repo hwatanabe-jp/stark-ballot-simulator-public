@@ -4,8 +4,8 @@
 > Production `stark-prod/main` is also deployed, with a separate public ingress
 > and target-bound operator procedure. All commands here remain develop-only;
 > never turn them into production commands by substituting names or profiles.
-> The live finalization state machine invokes the qualified cryptographic
-> `image-signature-verifier:runtime` alias. The retired status-only
+> The current finalization state machine invokes the cryptographic
+> image-signature verifier's exact published numeric Lambda version. The retired status-only
 > `image-signature-gate` is not part of the current runtime.
 
 Use this runbook for read-only incident triage and evidence collection. It does
@@ -15,10 +15,10 @@ documentation.
 
 ## 1. Safety boundary
 
-| Phase              | In scope                                                                                     | Out of scope                                                                                                                                                  |
-| ------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Read-only triage   | Identity checks; non-mutating `list`, `describe`, `get`, `head`, logs, and retained evidence | Resource, queue, execution, secret, key, policy, object, or state mutation                                                                                    |
-| Change application | Evidence handoff and selection of an approved deployment/recovery story                      | Local Terraform, ad hoc console repair, direct CodeBuild, unreviewed pipeline starts, redrive/purge, `StopExecution`, semaphore edits, or key/secret rotation |
+| Phase              | In scope                                                                                     | Out of scope                                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read-only triage   | Identity checks; non-mutating `list`, `describe`, `get`, `head`, logs, and retained evidence | Resource, queue, execution, secret, key, policy, object, or state mutation                                                                                           |
+| Change application | Evidence handoff and selection of an approved deployment/recovery story                      | Local Terraform, ad hoc console repair, direct CodeBuild, unreviewed pipeline starts, redrive/purge, `StopExecution`, Batch capacity changes, or key/secret rotation |
 
 All service commands below are read-only and explicitly select the current
 profile and region, JSON output, and no pager. Ensure an active Identity Center
@@ -40,6 +40,10 @@ aws configure get region --profile "${AWS_PROFILE_NAME}"
 The region must be `ap-northeast-1`, and STS must identify the reviewed
 `stark-dev` account and role. Do not paste full account IDs or ARNs into shared
 evidence. Stop on an identity mismatch; do not compensate by changing targets.
+Expired SSO or AWS credentials stop AWS work immediately. Report the expiry and
+wait for the operator to reauthenticate; do not log in, refresh credentials, or
+switch profiles to continue. Wait 180 seconds between AWS or GitHub CI status
+checks.
 
 Never record capability tokens, signed cookies, private keys, secret values,
 origin-verification headers, vote openings, private zkVM inputs, Terraform
@@ -56,9 +60,10 @@ Browser / approved CLI
      -> API Gateway -> Hono public-api Lambda -> DynamoDB
         -> async finalization:
            prover SQS -> dispatcher -> Step Functions
-             -> qualified cryptographic image-signature-verifier:runtime alias
-             -> semaphore -> ECS prover -> private proof S3
+             -> exact published cryptographic image-signature-verifier version
+             -> AWS Batch queue/capacity -> Fargate prover -> private proof S3
              -> finalization writer -> DynamoDB terminal state and artifact metadata
+           one-minute EventBridge sweep -> finalization writer -> reconciliation
         -> async verification:
            verification SQS -> verification-worker Lambda
              -> bundled verifier-service -> private report S3 + DynamoDB
@@ -72,9 +77,9 @@ Authenticated delivery
   -> GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report
 ```
 
-Finalization uses Step Functions, the semaphore, and ECS. Verification uses a
+Finalization uses Step Functions and AWS Batch on Fargate. Verification uses a
 separate SQS queue and Lambda worker; it does not normally use Step Functions
-or ECS.
+or Batch.
 
 The repository lifecycle uses one `finalizationId` (`finalization_id` in
 snake-case events/messages) across create/current/cancel, verification
@@ -100,7 +105,7 @@ token. Any path that can display **Verified** while a required check has not
 passed is a security escalation.
 
 Before interpreting live symptoms as new drift, read the dated inventory and
-the exact retained acceptance and latest root-specific report evidence
+the exact root checkpoint, plan package, and root-specific local drift evidence
 selected by the private operator procedure. `no-drift`, `drift-detected`, and
 `check-failed` describe report-only evidence; none authorizes a saved plan,
 Apply, remediation, rollback, or recovery operation.
@@ -129,108 +134,36 @@ first failed build log and retained artifact before considering a retry.
 
 ### Current App deployment authority
 
-The target App acceptance family and its bounded-history current pointer are
-the sole live App deployment authority. The predecessor authority, bounded
-converter, and sealed conversion-only machinery are absent. Use the current
-pointer's exact selected acceptance for incident correlation, rollback, and
-consumer projections; never reconstruct authority from retired predecessor
-records or `index.json`.
+The current App root checkpoint identifies the successful deployment and its
+exact immutable plan package. In the restricted workspace, verify the selected
+checkpoint's object version and bytes, then bind its source, execution, backend,
+runtime identity, and package reference to the package's exact object version
+and SHA-256. The package binds the saved plan, provider lock, nonsecret inputs,
+immutable artifacts, dependencies, and pre-Plan publication observations.
+The private operator procedure owns exact storage coordinates and invocation.
 
-For an accepted App deployment, identify the content-addressed acceptance key,
-CodePipeline execution ID, and acceptance-attempt ID. The retained authority is
-immutable under
-`accepted-deployments/stark-dev/develop/app/acceptances/<bodySha256>.json`; the
-mutable `accepted-deployments/stark-dev/develop/app/current.json` pointer is
-updated by compare-and-swap and retains bounded rollback history. In a
-restricted workspace, exact-read the selected acceptance and verify its
-observed S3 `VersionId` and body SHA-256, then bind it to its exact `tfplan`,
-checksum, approval-evidence object version and SHA-256,
-apply outputs, static deploy record, and smoke report before treating the
-runtime as accepted. Multiple smoke attempts can share one pipeline execution,
-so the pipeline execution ID alone is not sufficient evidence.
+The plan package is the approval object. Correlate native successful approval,
+Apply, static publication, and owning Smoke with that exact execution/package;
+only successful Smoke publishes the checkpoint. A failed execution may have
+partially changed resources while the checkpoint still identifies the previous
+success. Inspect mutation-owner and action evidence through the operator
+procedure before concluding that the live runtime matches the checkpoint.
 
-Normal evidence must have no rollback selection. Rollback evidence must bind
-the current control source to the selected historical source and App
-acceptance, historical approval
-evidence, and immutable App authority plus content-addressed Toolchain/Prover
-ledger selections. Do not infer rollback authority from a successful stage or
-source SHA alone.
+Old acceptance pointers and historical checkpoint versions are audit history,
+not active readers or rollback selectors. A retry or corrective deployment
+requires a fresh execution, plan, and approval. Neither a successful stage nor
+a source SHA alone establishes deployment authority.
 
 ### Recovery posture
 
-After target App acceptance activation, establish the selected DynamoDB
-recovery phase before diagnosing admission, queue-consumer, or store behavior.
-Read the selected App acceptance's recovery projection, `apply-outputs.json`, and
-`app-smoke-dynamodb-recovery-phase-evidence.json`; do not obtain a phase by
-editing Terraform inputs or starting a pipeline.
-
-| Phase                  | Served pair | Public session creation | Prover/verifier SQS consumers |
-| ---------------------- | ----------- | ----------------------- | ----------------------------- |
-| `primary_active`       | Primary     | Enabled                 | Enabled                       |
-| `primary_quiesced`     | Primary     | Disabled                | Disabled                      |
-| `replacement_quiesced` | Replacement | Disabled                | Disabled                      |
-| `replacement_active`   | Replacement | Enabled                 | Enabled                       |
-
-Corroborate the retained phase against live configuration. Table ARNs and
-mapping UUIDs are restricted incident evidence:
-
-```bash
-aws lambda get-function-configuration \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --function-name "${TARGET_PREFIX}-public-api" \
-  --query 'Environment.Variables.{RuntimeProfile:RUNTIME_PROFILE,Sessions:DYNAMODB_SESSIONS_TABLE,Votes:DYNAMODB_VOTES_TABLE}' \
-  --output json --no-cli-pager
-
-for function_name in proof-dispatcher verification-worker; do
-  aws lambda list-event-source-mappings \
-    --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-    --function-name "${TARGET_PREFIX}-${function_name}" \
-    --query 'EventSourceMappings[].{UUID:UUID,State:State,LastProcessingResult:LastProcessingResult}' \
-    --output json --no-cli-pager
-done
-```
-
-In either quiesced phase, the public API must select
-`target-aws-async-quiesced`; active phases select `target-aws-async`. Rejected
-session creation and disabled mappings are the intended containment posture,
-not by themselves an outage. A served-pair, runtime profile, or mapping state
-that disagrees with the accepted phase is drift and requires escalation. Queue
-drain, in-flight Lambda/Step Functions/ECS work, and data reconciliation are
-separate evidence; phase smoke does not prove them. Recovery moves one ordered
-phase per newly reviewed saved-plan execution and is outside this runbook's
-mutation scope.
-
-Discover logs instead of relying on remembered names:
-
-```bash
-aws logs describe-log-groups \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --log-group-name-prefix "/aws/lambda/${TARGET_PREFIX}-" \
-  --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' \
-  --output json --no-cli-pager
-
-aws logs describe-log-groups \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --log-group-name-prefix "/aws/lambda/${IMAGE_SIGNATURE_PREFIX}-image-signature-verifier" \
-  --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' \
-  --output json --no-cli-pager
-
-aws logs describe-log-groups \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --log-group-name-prefix "/aws/vendedlogs/states/${TARGET_PREFIX}-finalization" \
-  --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' \
-  --output json --no-cli-pager
-
-aws logs describe-log-groups \
-  --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --log-group-name-prefix "/aws/ecs/${TARGET_PREFIX}-prover" \
-  --query 'logGroups[].{Name:logGroupName,RetentionDays:retentionInDays}' \
-  --output json --no-cli-pager
-```
-
-Use the narrowest useful time range and redact excerpts before sharing. The
-detailed Logs Insights query catalog remains in private operator
-documentation.
+The four-phase recovery engine, manifest selectors and historical App rollback
+are retired. Keep PITR, deletion protection and original tables. A stopped
+restore creates a distinct sessions/votes pair, validates its data and settings,
+then changes exact source/configuration through a fresh App plan and approval.
+The source-owned `application_quiesced` setting closes new-session and queue/
+sweeper admission in develop; existing-session writes and in-flight work must
+be blocked/drained separately. Runtime admission smoke checks saved-plan
+settings and live Lambda/table/mapping bindings. The private stopped-recovery runbook owns authorization, RTO/RPO, resume and retained-data boundaries.
 
 ### Hash-first session timeline
 
@@ -263,7 +196,7 @@ Expected boundaries:
   bounded client-IP header before cache lookup or origin access. The token is
   removed before forwarding, while the API receives `CF-Connecting-IP`;
 - static files use private S3 through OAC;
-- `/api` and `/api/*` route through CloudFront to the HTTP API;
+- `/api` and `/api/*` route through CloudFront to the REST API's `live` stage;
 - the execute-api endpoint remains enabled as the CloudFront origin, while the
   application must reject requests without the expected origin header;
 - DNS is externally owned, and the CloudFront certificate is in ACM
@@ -305,9 +238,9 @@ aws cloudfront list-distributions \
   --query "DistributionList.Items[?Comment=='${TARGET_PREFIX} static frontend'].{Enabled:Enabled,Status:Status,Aliases:Aliases.Items,Origins:Origins.Items[].DomainName,TrustedKeyGroups:DefaultCacheBehavior.TrustedKeyGroups.Items}" \
   --output json --no-cli-pager
 
-aws apigatewayv2 get-apis \
+aws apigateway get-rest-apis \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --query "Items[?Name=='${TARGET_PREFIX}-api'].{Name:Name,Protocol:ProtocolType,DisableExecuteEndpoint:DisableExecuteApiEndpoint,Created:CreatedDate}" \
+  --query "items[?name=='${TARGET_PREFIX}-api'].{Name:name,Id:id,DisableExecuteEndpoint:disableExecuteApiEndpoint,Created:createdDate}" \
   --output json --no-cli-pager
 
 aws lambda get-function-configuration \
@@ -403,8 +336,8 @@ workspace and retain only a redacted summary. See
 
 ```text
 POST /api/sessions/:sessionId/finalizations -> prover SQS -> proof-dispatcher
-  -> Step Functions -> qualified runtime image-signature verifier alias
-  -> semaphore -> ECS prover
+  -> Step Functions -> exact published image-signature verifier version
+  -> AWS Batch queue/capacity -> Fargate prover -> startup admission
   -> finalization writer -> terminal state and bundle metadata
 ```
 
@@ -438,8 +371,8 @@ aws sqs get-queue-attributes \
   --query 'Attributes' --output json --no-cli-pager
 ```
 
-A queue backlog is pre-dispatch work; it does not count Step Functions executions waiting for
-a semaphore slot. Queue age is the `AWS/SQS` CloudWatch
+An SQS backlog is pre-dispatch work; it does not count jobs already submitted
+to Batch and waiting for capacity. Queue age is the `AWS/SQS` CloudWatch
 `ApproximateAgeOfOldestMessage` metric, not a `GetQueueAttributes` field. Check
 `public-api` for enqueue errors and `proof-dispatcher` for parsing,
 session-state preconditions, duplicate handling, and
@@ -452,7 +385,7 @@ same named execution is already closed; it records the caller-side guard and
 does not claim that persistence occurred. Preserve the queue/DLQ item and
 inspect reconciliation evidence instead of treating it as a safe stale drop.
 
-### Step Functions, cryptographic signature verifier, semaphore, and ECS
+### Step Functions, cryptographic signature verifier, and Batch
 
 ```bash
 FINALIZATION_EXECUTION_ARN="<restricted-execution-arn>"
@@ -466,40 +399,56 @@ aws stepfunctions describe-execution \
 aws stepfunctions get-execution-history \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
   --execution-arn "${FINALIZATION_EXECUTION_ARN}" --reverse-order --max-results 40 \
+  --no-paginate --no-include-execution-data \
   --query 'events[].{Id:id,Timestamp:timestamp,Type:type,PreviousEventId:previousEventId}' \
   --output json --no-cli-pager
 ```
 
-- `VerifyImageSignature`: confirm the accepted state-machine definition invokes
-  only the qualified `runtime` alias, then bind its typed
+- `VerifyImageSignature`: confirm the accepted state-machine definition and
+  invocation permission select the exact published numeric Lambda version,
+  then bind its typed
   `result = VERIFIED`, `mode = cryptographic` response to the exact digest and
   signing profile, `verifierVersion`, `trustPolicySha256`,
   `assetManifestSha256`, and `verifierAssets.trustRootSha256`. Successful
   pinned Notation verification under that strict trust policy is the
   certificate-chain, trusted-identity, and revocation-enforcement evidence;
-  `DescribeImageSigningStatus` is readiness evidence only. Do not accept an
-  unqualified function or `$LATEST`, a status-only ECR observation, or a
+  `DescribeImageSigningStatus` is readiness evidence only. Do not accept a
+  mutable alias, unqualified function or `$LATEST`, a status-only ECR observation, or a
   bypass.
-- Semaphore states: compare the counter, owner markers, execution status, and
-  janitor logs. The work has already left the SQS backlog.
-- `RunProver`: inspect ECS capacity/retries, task status, stopped reason, exit
-  code, and prover log.
+- `RunProver`: inspect the exact Batch job and queue, capacity, status, exit
+  code and restricted prover logs using the checks below. Work submitted to
+  Batch has already left the SQS backlog.
+- Container startup: confirm the finalization writer admitted the current
+  attempt before input download and host execution. Cancelled or superseded attempts and rejected admission cannot start the
+  proof; matching repeated RUNNING updates can be idempotent.
 - Callback states: inspect `finalization-writer`, DynamoDB/KMS, bundle metadata,
   and sticky terminal-state persistence.
 
 ```bash
-ECS_CLUSTER="${TARGET_PREFIX}-prover"
-ECS_TASK_ARN="<restricted-task-arn>"
+BATCH_JOB_ID="<restricted-job-id-from-reviewed-execution>"
 
-aws ecs describe-tasks \
+aws batch describe-jobs \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --cluster "${ECS_CLUSTER}" --tasks "${ECS_TASK_ARN}" \
-  --query 'tasks[].{LastStatus:lastStatus,StopCode:stopCode,StoppedReason:stoppedReason,StartedAt:startedAt,StoppedAt:stoppedAt,Containers:containers[].{Name:name,ExitCode:exitCode,Reason:reason}}' \
+  --jobs "${BATCH_JOB_ID}" \
+  --query 'jobs[].{Status:status,CreatedAt:createdAt,StartedAt:startedAt,StoppedAt:stoppedAt,AttemptLimit:retryStrategy.attempts,AttemptTimeout:timeout.attemptDurationSeconds,Tasks:ecsProperties.taskProperties[].{Containers:containers[].{Name:name,ExitCode:exitCode}}}' \
   --output json --no-cli-pager
 ```
 
-ECS retains stopped-task descriptions briefly; use execution history and logs
-when the task is no longer describable.
+Use the exact job selected from restricted execution evidence; do not guess a
+job ID or print environment overrides, input payloads, task ARNs or free-form
+AWS failure reasons. Missing job metadata is an evidence gap, not proof that
+work never ran. Keep the bounded status/timestamp/exit-code result with the
+execution history and redacted prover logs.
+
+`RunProver` has one combined deadline of `prover_task_timeout_seconds + 1800 +
+180` seconds covering Batch queue wait and execution. There is no separately
+enforced 30-minute capacity-wait timer. The Batch attempt limit is
+`prover_task_timeout_seconds` (default 1,800), excluding queue wait. Inside the
+container, the host has its own `ZKVM_TIMEOUT_SECONDS` limit (default 900) and
+`ZKVM_TERMINATION_GRACE_SECONDS` (default 10). The container stop grace is 120
+seconds. Identify which boundary expired before attributing a timeout to
+capacity. Step Functions does not retry `SubmitJob`, whose ambiguous response
+cannot be safely resubmitted; Batch also allows only one attempt.
 
 State reconciliation is fail closed:
 
@@ -510,21 +459,35 @@ State reconciliation is fail closed:
 - a closed execution without recorded outcome becomes
   `FINALIZATION_OUTCOME_UNRECORDED`, even if Step Functions says `SUCCEEDED`;
 - terminal application states are sticky per `finalizationId`;
-- cancellation during slot wait prevents later proof start and releases the
-  superseded slot.
+- cancellation during Batch wait prevents later proof through container
+  startup admission; Batch owns capacity replenishment.
+
+The finalization writer runs reconciliation from an EventBridge rule every
+minute, independently of browser polling. Current-finalization GET only reads
+and projects stored authority; repeated reads do not repair a stuck attempt.
+The writer queries unexpired candidates through `finalization-expiry-index`,
+then rereads current authority before a transition. Candidate failures are
+reported after processing the remaining candidates. Diagnose the rule's
+delivery alarm, writer errors, index access, and Step Functions observations.
+Develop quiescence disables this rule, both queue consumers, and the Batch
+queue. It does not itself drain in-flight work. The retained `semaphore-janitor`
+Lambda normalizes operations-ledger events only; it owns neither capacity
+release nor persisted finalization outcomes.
 
 Closed lifecycle reasons have these operator responses:
 
-| Reason                                 | Interpretation and response                                                                                                                  |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROVER_INPUT_PERSISTENCE_UNAVAILABLE` | Target dependency wiring refused work before enqueue. Confirm the accepted deployment/config and persisted failed state; do not retry blind. |
-| `STEP_FUNCTIONS_EXECUTION_CLOSED`      | Dispatcher found a closed same-name execution while state remained pending. Preserve retry/DLQ evidence and reconcile the missing outcome.   |
-| `FINALIZATION_NOT_CANCELLABLE`         | Authenticated cancellation was refused before persistence. Compare requested `finalizationId` with the current sticky/terminal state.        |
-| `INVALID_FINALIZATION_ARTIFACT`        | Current finalization artifact admission failed closed. Escalate as artifact integrity; do not overwrite or retry to force a green result.    |
+| Reason                                 | Interpretation and response                                                                                                                                                                                      |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROVER_INPUT_PERSISTENCE_UNAVAILABLE` | Target dependency wiring refused work before enqueue. Confirm the accepted deployment/config and persisted failed state; do not retry blind.                                                                     |
+| `STEP_FUNCTIONS_EXECUTION_CLOSED`      | Dispatcher found a closed same-name execution while state remained pending. Preserve retry/DLQ evidence and reconcile the missing outcome.                                                                       |
+| `FINALIZATION_NOT_CANCELLABLE`         | Authenticated cancellation was refused before persistence. Compare requested `finalizationId` with the current sticky/terminal state.                                                                            |
+| `INVALID_FINALIZATION_ARTIFACT`        | Current finalization artifact admission failed closed. Escalate as artifact integrity; do not overwrite or retry to force a green result.                                                                        |
+| `PROVER_CAPACITY_WAIT_TIMEOUT`         | This remains an admitted failure code, but the current Batch state machine does not emit it. Bind the observation to its source/execution; diagnose current timeouts using the combined workflow deadline above. |
 
 Cancellation changes state and requires the matching capability plus owner
-approval. Direct `StopExecution` can split session state from semaphore
-ownership and is not the standard path. No mutation command is provided here.
+approval. Direct `StopExecution` or Batch cancellation/termination is not the
+standard application cancellation path and can leave an unrecorded outcome.
+No mutation command is provided here.
 
 ## 7. Async verification
 
@@ -571,10 +534,10 @@ aws lambda list-event-source-mappings \
 Check `public-api` enqueue/marker logs; queue depth, age, DLQ, and mapping;
 worker parsing/idempotency, bundle download, verifier, report upload, and
 result-persistence logs; then canonical bundle/report metadata and the
-authenticated report response. Do not use Step Functions or ECS unless a
+authenticated report response. Do not use Step Functions or Batch unless a
 separate finalization failure prevented creation of the bundle.
 
-## 8. DLQ and semaphore
+## 8. DLQ and Batch capacity
 
 Do not receive, redrive, purge, delete, or edit messages during initial triage.
 Preserve queue attributes, restricted message identity, application state,
@@ -594,26 +557,38 @@ stored result. A cryptographic `failed` result is not retryable infrastructure
 work. Redrive/drop requires an owner decision documenting identity,
 idempotency, expected result, containment, and evidence.
 
-Read only the semaphore counter and seed limit during routine triage:
+For capacity symptoms, first follow [async finalization](#6-async-finalization)
+to distinguish SQS dispatch, signature verification, Batch wait, startup
+admission, proof execution and callback persistence. Inspect the target queue
+without printing job payloads or free-form status reasons:
 
 ```bash
-PROVER_SEMAPHORE_TABLE="${TARGET_PREFIX}-prover-semaphore"
+BATCH_QUEUE_NAME="${TARGET_PREFIX}-prover"
 
-aws dynamodb get-item \
+aws batch describe-job-queues \
   --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}" \
-  --table-name "${PROVER_SEMAPHORE_TABLE}" \
-  --key '{"LockName":{"S":"prover-fargate"}}' \
-  --projection-expression 'LockName,currentLockCount,#limit' \
-  --expression-attribute-names '{"#limit":"limit"}' --consistent-read \
+  --job-queues "${BATCH_QUEUE_NAME}" \
+  --query 'jobQueues[].{State:state,Status:status,Priority:priority}' \
   --output json --no-cli-pager
 ```
 
-The stored limit is inventory; the deployed state-machine variable is the
-enforcement authority. Full owner markers contain restricted execution IDs.
-Compare them only in the incident workspace with execution status and
-`semaphore-janitor` terminal-event/30-minute-sweep logs. Do not use
-`update-item` to release owners or recreate the row. Such repair requires an
-approved recovery and post-repair gated smoke.
+Compare the accepted job definition's one-unit replenishable requirement,
+`prover_max_concurrent_provers` capacity, compute-environment vCPU ceiling and
+Fargate quota with the exact job's status and timestamps. Batch owns scheduling
+and capacity replenishment. There is no application semaphore table, owner
+marker or scheduled capacity-release repair. A disabled queue may be reviewed
+develop quiescence; read-only triage never enables it, raises capacity, retries
+a submission or cancels/terminates a job.
+
+The terminal-event ledger records `prover_job_finished` for the exact target
+Batch queue, with resource `prover-job`, state `SUCCEEDED` or `FAILED`, and the
+admitted deployment ID. The retained `semaphore-janitor` Lambda validates and
+writes these normalized events. Its errors/throttles indicate ledger delivery
+problems. The record deliberately omits job IDs, task ARNs and free-form
+reasons; it supports deployment correlation, not a per-attempt outcome or
+cryptographic verdict. Bind detailed diagnosis to the restricted execution/job
+and current finalization record. Missing ledger evidence does not authorize
+retry or establish that no job ran.
 
 ## 9. IAM and configuration drift
 
@@ -622,27 +597,37 @@ Map `AccessDenied` to the actual caller and intended owner:
 - public-api: DynamoDB, enqueue, authenticated artifact reads, references;
 - dispatcher: queue consumption, artifacts, Step Functions;
 - verification worker: queue, bundle read/report write, DynamoDB, KMS;
-- finalization writer: terminal state and artifact metadata;
+- finalization writer: terminal state and artifact metadata, reconciliation-index
+  reads, and Step Functions execution observations;
 - qualified runtime image-signature verifier: exact prover ECR
   manifest/layer and authorization-token reads, signing-readiness observation,
   and scoped Signer revocation reads; Notation success under the strict trust
   policy is the acceptance authority;
-- ECS roles: proof-artifact read/write, without delete;
-- Step Functions role: ECS, selected Lambda invoke, semaphore, and logs.
+- Batch prover task roles: proof-artifact read/write without delete, plus
+  finalization-writer invocation for startup admission;
+- Step Functions role: target Batch submission/tagging, job observation and
+  tag-scoped termination, its Batch integration EventBridge rule, selected
+  Lambda invoke, and logs;
+- retained `semaphore-janitor`: validated operations-ledger writes, without
+  semaphore or capacity mutation.
 
 Record caller role, action, resource class, time, and source SHA. Compare with
 app IaC and the accepted plan; never attach a broad policy as a shortcut.
 
-For suspected Terraform drift, bind the diagnosis to the immutable accepted
-authority and exact-version report selected by the current inventory. The
-installed root-specific runners plan the accepted historical configuration
-with refresh and `-lock=false`; their `no-drift`, `drift-detected`, and
-`check-failed` classifications do not write state, move an accepted pointer,
-approve a saved plan, apply, or remediate. Preserve the report and escalate a
-required correction to the ordinary saved-plan lane owned by Bootstrap,
-Foundation, or App. Rollback and recovery have no readiness-report project to
-start as alarm or drift diagnosis; follow the separately authorized real
-operation in the conditional runbook.
+For suspected Terraform drift, use the private local read-only procedure for
+the selected root. It reproduces one exact checkpoint version and its package-
+bound source, provider lock, nonsecret inputs, and immutable artifacts under
+the root's read role, with refresh and `-lock=false`. It checks native work,
+state, checkpoint, mutation-owner, and image availability before and after.
+Missing dependencies or a changed observation fail the check. Exit 0 means
+`no-drift`, 2 means `drift-detected`, and 1 means `check-failed`.
+
+There is no managed drift runner or remote report publication. Preserve the
+local redacted report; it does not write state, publish a checkpoint, approve
+a plan, apply, or remediate. Corrections use reviewed local Bootstrap or the
+managed Foundation/App saved-plan lane as appropriate. Stopped recovery keeps
+its separate authorization; an alarm or drift report cannot select a historical
+rollback or authorize state repair.
 
 Inspect reference metadata without secret values:
 
@@ -674,8 +659,11 @@ separate evidence.
 
 ## 10. Monitoring, investigation, and escalation
 
-The dated live inventory records 36 Terraform-defined alarms. Thirty remain
-passive detectors. The isolated `verification-invariant-contradiction` alarm
+Current App source defines 35 alarms per target, including the finalization
+sweep delivery alarm. Twenty-nine remain passive detectors. Historical 36-alarm
+observations in the dated inventory describe the configuration observed then;
+they are not a fresh measurement of current deployment. The isolated
+`verification-invariant-contradiction` alarm
 has the only direct SNS action. Five separate sustained alarms—two DLQ, two
 queue-age, and one API 5xx—route exact `ALARM` events through EventBridge to the
 notification-only `ops-actionable` topic. An exact owned-pipeline `FAILED` rule
@@ -690,24 +678,30 @@ aws cloudwatch describe-alarms \
   --output json --no-cli-pager
 ```
 
-Use DLQ alarms to enter the evidence-first decision above; Step Functions
-failure/timeout alarms to inspect history, semaphore, ECS, and callback;
-Lambda alarms to inspect the named handler; Fargate usage to inspect quota,
-tasks, retries, and slot limit; and DynamoDB throttling to identify the affected
-table and request path. Queue depth is not a user-visible position estimate.
+REST metrics use `ApiName` and `Stage=live` dimensions. Use `Count` with
+`SampleCount`, `5XXError` and `4XXError` with `Sum`, and latency metrics in
+milliseconds. Correlate the REST access-log request IDs with application logs;
+pre-handler rejections can have no application event.
+
+Use [DLQ and capacity triage](#8-dlq-and-batch-capacity) for queue or Fargate
+alarms and [async finalization](#6-async-finalization) for Step Functions
+failure/timeout alarms. Lambda alarms identify the named handler; DynamoDB
+throttling identifies the affected table and request path. Queue depth is not
+a user-visible position estimate.
 The current detector set also includes:
 
 | Alarm suffix                           | First response                                                                                                                                                                               |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `finalization-sweep-delivery`          | Inspect the exact EventBridge rule, target permission, exhausted delivery retries, and writer logs; repeated GETs do not reconcile state.                                                    |
 | `public-api-errors`                    | Correlate API access/request IDs, `api_error`, config, and the accepted deployment; distinguish handler error from API 5xx/throttle.                                                         |
 | `verification-worker-errors`           | Inspect queue retry/DLQ, bundle read, verifier category, report write, and terminal persistence; never retry a cryptographic red verdict.                                                    |
-| `image-signature-verifier-errors`      | Inspect the qualified runtime-alias invocation, typed result, selected digest, strict trust-policy/trust-root evidence, revocation enforcement, and state-machine history; do not bypass it. |
+| `image-signature-verifier-errors`      | Inspect the exact published-version invocation, typed result, selected digest, strict trust-policy/trust-root evidence, revocation enforcement, and state-machine history; do not bypass it. |
 | `public-api-throttles`                 | Compare API count/5xx, Lambda concurrency, and global rate-limit evidence; do not infer abuse from one demo request.                                                                         |
 | `finalization-writer-throttles`        | Preserve the Step Functions attempt and check whether the terminal outcome was recorded before considering replay.                                                                           |
 | `proof-dispatcher-throttles`           | Inspect SQS age/retry/DLQ and each execution attempt; do not redrive before confirming owner/idempotency state.                                                                              |
 | `verification-worker-throttles`        | Inspect verification queue age/retry/DLQ and the current finalization result; keep demo red separate from infrastructure failure.                                                            |
 | `image-signature-verifier-throttles`   | Inspect state-machine retry/timeout and verifier concurrency; never replace signature evidence with a retry-only conclusion.                                                                 |
-| `semaphore-janitor-throttles`          | Compare the scheduled/terminal invocation, owner markers, and live executions; do not edit the semaphore during triage.                                                                      |
+| `semaphore-janitor-throttles`          | Inspect normalized operations-ledger delivery, EventBridge invocation, and log-write errors; this retained Lambda does not release capacity.                                                 |
 | `api-gateway-5xx`                      | Join the access-log request ID to Lambda/system logs and native Lambda metrics; identify integration/pre-handler versus application 5xx.                                                     |
 | `prover-work-oldest-message-age`       | Inspect queue consumer, dispatcher, DLQ, state-machine attempts, and recovery quiescence before any receive/redrive/delete action.                                                           |
 | `verification-work-oldest-message-age` | Inspect mapping state, worker throttles/errors, DLQ, and current verification record before any queue mutation.                                                                              |
@@ -726,25 +720,25 @@ the named resource/pipeline, its configured alarm/rule, and a bounded UTC
 window. Preserve the first failing attempt and evidence before considering any
 mutation.
 
-| Condition                                                                                                   | Owner / severity                                                                  | Preservation-first dashboard/query and diagnosis                                                                                                                                                                                                                              | No-data / false-positive interpretation                                                                                                                                                                                                             | Normal authorized lane and warnings                                                                                                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPS-DLQ-01`: visible messages in either owned DLQ for 3/3 five-minute periods                              | Async-runtime owner / high                                                        | Open the async dashboard, correlate the named DLQ with source-queue age, Lambda errors/throttles, Q2, each Step Functions attempt, current finalization state, and accepted deployment. Preserve message/attempt metadata without copying a private body.                     | Missing data is configured non-breaching but is insufficient evidence of end-to-end health. Delayed metrics, an already-investigated retained message, or duplicate notification can be non-current; prove age and current depth before escalation. | A code/config fix uses the full App saved-plan lane. Do not receive, redrive, delete, purge, alter visibility, cancel an execution, or edit the semaphore until ownership, idempotency, and the terminal record are proven and the specific mutation is separately authorized.              |
-| `OPS-QUEUE-AGE-01`: oldest work exceeds 900 seconds for 3/3 five-minute periods                             | Async-runtime owner / high                                                        | Open the queue/finalization dashboard and use Q2 plus queue depth/age, event-source mapping, consumer errors/throttles, DLQ, Step Functions/ECS/semaphore state, and accepted deployment. Preserve the oldest attempt and current owner state.                                | Missing data is non-breaching but not proof that admission works. A long valid prover job, planned quiescence, low consumer volume, or one delayed CloudWatch point can look old; require the configured consecutive periods.                       | A runtime/config fix uses the full App lane; a prover-image defect follows the Prover release and then App lane. Do not receive/redrive/delete, raise concurrency, repair semaphore ownership, or bypass quiescence during triage.                                                          |
-| `OPS-API-5XX-01`: in each of 3/3 five-minute periods, at least 20 requests and 5 errors with a rate over 5% | API-runtime owner / high                                                          | Open the API SLI/dashboard and correlate API Gateway `Count`/`5xx`, access-log request IDs, Q1, Lambda errors/throttles, dependencies, and the exact accepted deployment. Separate integration/pre-handler failure from application 5xx.                                      | Missing/low traffic is non-breaching and `insufficient_evidence`, not 100% success. Expected 4xx is excluded. Retries, health probes, or one client burst can duplicate symptoms; all count/rate/period conditions must hold.                       | Application/config fixes use the full App lane. A frontend-only fix may use static-fast only if that lane's default-deny path gate admits it. Do not weaken auth/origin/capability/rate-limit behavior, manufacture requests, or retry a failed deployment blind.                           |
-| `OPS-PIPELINE-FAILED-01`: owned deployment pipeline enters `FAILED`                                         | Deployment operator / high; escalate immediately for partial apply or user impact | Open the pipeline execution and Q8/change-health ledger views. Bind the bounded execution ID to requested/resolved source, stage/action result, state/backend, saved-plan checksum, approval, Apply, smoke, and accepted record. Preserve the failed execution and artifacts. | EventBridge is at least once, so duplicate rows/notifications are expected. A later success does not erase a prior partial failure. Missing ledger or acceptance data is insufficient evidence, not proof that no mutation occurred.                | Follow the exact owning deployment-lane runbook. A reviewed source correction starts a normal lane; do not blind-rerun, reuse a saved plan, approve a different checksum, repoint an accepted record, roll back, or repair state out of band.                                               |
-| Repeated Step Functions platform failures                                                                   | Async-runtime owner / deferred                                                    | Continue using the existing passive failed/timed-out alarms, Q2/Q10, execution history, ECS/semaphore evidence, and accepted deployment during the 30-day calibration. Keep expected-domain outcomes separate.                                                                | Sparse traffic, duplicate events, expected-domain failures, and one isolated platform failure cannot establish a low-noise repeated condition. No data is insufficient evidence.                                                                    | No Step Functions actionable route or automatic action is enabled until a post-calibration review approves a bounded low-noise condition. If a defect is found, use the full App lane; never retry a cryptographic red outcome, cancel/redrive automatically, or bypass the signature gate. |
+| Condition                                                                                                   | Owner / severity                                                                  | Preservation-first dashboard/query and diagnosis                                                                                                                                                                                                                                                            | No-data / false-positive interpretation                                                                                                                                                                                                             | Normal authorized lane and warnings                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPS-DLQ-01`: visible messages in either owned DLQ for 3/3 five-minute periods                              | Async-runtime owner / high                                                        | Open the async dashboard, correlate the named DLQ with source-queue age, Lambda errors/throttles, Q2, each Step Functions attempt, current finalization state, and accepted deployment. Preserve message/attempt metadata without copying a private body.                                                   | Missing data is configured non-breaching but is insufficient evidence of end-to-end health. Delayed metrics, an already-investigated retained message, or duplicate notification can be non-current; prove age and current depth before escalation. | A code/config fix uses the full App saved-plan lane. Do not receive, redrive, delete, purge, alter visibility, cancel an execution, or change Batch capacity until ownership, idempotency, and the terminal record are proven and the specific mutation is separately authorized.           |
+| `OPS-QUEUE-AGE-01`: oldest work exceeds 900 seconds for 3/3 five-minute periods                             | Async-runtime owner / high                                                        | Open the queue/finalization dashboard and use Q2 plus queue depth/age, event-source mapping, consumer errors/throttles, DLQ, [Batch diagnosis](#6-async-finalization) and [capacity checks](#8-dlq-and-batch-capacity), and accepted deployment. Preserve the oldest attempt and current application state. | Missing data is non-breaching but not proof that admission works. A long valid prover job, planned quiescence, low consumer volume, or one delayed CloudWatch point can look old; require the configured consecutive periods.                       | A runtime/config fix uses the full App lane; a prover-image defect follows the Prover release and then App lane. Do not receive/redrive/delete, raise concurrency, change Batch capacity, or bypass quiescence during triage.                                                               |
+| `OPS-API-5XX-01`: in each of 3/3 five-minute periods, at least 20 requests and 5 errors with a rate over 5% | API-runtime owner / high                                                          | Open the API SLI/dashboard and correlate REST API `Count`/`5XXError`, access-log request IDs, Q1, Lambda errors/throttles, dependencies, and the exact accepted deployment. Separate integration/pre-handler failure from application 5xx.                                                                  | Missing/low traffic is non-breaching and `insufficient_evidence`, not 100% success. Expected 4xx is excluded. Retries, health probes, or one client burst can duplicate symptoms; all count/rate/period conditions must hold.                       | Application, configuration and frontend fixes use the normal App saved-plan lane. Do not weaken auth/origin/capability/rate-limit behavior, manufacture requests, or retry a failed deployment blind.                                                                                       |
+| `OPS-PIPELINE-FAILED-01`: owned deployment pipeline enters `FAILED`                                         | Deployment operator / high; escalate immediately for partial apply or user impact | Open the pipeline execution and Q8/change-health ledger views. Bind the bounded execution ID to requested/resolved source, stage/action result, state/backend, saved-plan checksum, approval, Apply, smoke, and accepted record. Preserve the failed execution and artifacts.                               | EventBridge is at least once, so duplicate rows/notifications are expected. A later success does not erase a prior partial failure. Missing ledger or acceptance data is insufficient evidence, not proof that no mutation occurred.                | Follow the exact owning deployment-lane runbook. A reviewed source correction starts a normal lane; do not blind-rerun, reuse a saved plan, approve a different checksum, repoint an accepted record, roll back, or repair state out of band.                                               |
+| Repeated Step Functions platform failures                                                                   | Async-runtime owner / deferred                                                    | Continue using the existing passive failed/timed-out alarms, Q2/Q10, [finalization evidence](#6-async-finalization) and [Batch ledger](#8-dlq-and-batch-capacity), and accepted deployment during the 30-day calibration. Keep expected-domain outcomes separate.                                           | Sparse traffic, duplicate events, expected-domain failures, and one isolated platform failure cannot establish a low-noise repeated condition. No data is insufficient evidence.                                                                    | No Step Functions actionable route or automatic action is enabled until a post-calibration review approves a bounded low-noise condition. If a defect is found, use the full App lane; never retry a cryptographic red outcome, cancel/redrive automatically, or bypass the signature gate. |
 
 An operations notification may initiate diagnosis or, after evidence and normal
 authorization, the relevant deployment lane. It cannot initiate Apply,
-rollback, recovery, redrive, deletion, cancellation, semaphore repair, or
+rollback, recovery, redrive, deletion, cancellation, capacity changes, or
 accepted-pointer changes. It also never changes a verification result.
 
-The invariant SNS topic carries only the last alarm. A subscription in
-`PendingConfirmation` cannot notify, and a confirmed subscription proves
-confirmation rather than test delivery. Use the dated AWS inventory for current
-subscription and delivery evidence. Never copy the endpoint or subscription ARN
-into incident notes. Enabling or changing the recipient is a deployment and
-secret-entry story in private operator documentation, not incident repair.
+For each notification route, use the dated inventory to distinguish endpoint
+presence, subscription creation, confirmation and actual delivery.
+`PendingConfirmation` cannot notify; a confirmed subscription alone does not
+prove delivery. Never copy an endpoint or subscription ARN into incident
+notes. Enabling or changing recipients is a deployment and secret-entry story
+under the private operator procedure, not incident repair.
 
 The operations route has its own fixed SSM SecureString endpoint contract:
 
@@ -757,36 +751,37 @@ non-SecureString type, or invalid/untrimmed email fails the saved plan. Terrafor
 may output only the fixed parameter name and configured state; the value must not
 enter tfvars, environment variables, command lines, logs, notification evidence,
 or incident notes. The provider necessarily retains the sensitive decrypted
-value in encrypted, access-restricted App state. Treat endpoint presence,
-subscription creation, `PendingConfirmation`/confirmed state, and actual message
-delivery as four separate facts.
+value in encrypted, access-restricted App state.
 
 Operations notification bodies are limited to the closed environment,
 resource/pipeline name, approved bounded pipeline execution identity, timestamp,
 alarm state, dashboard, and runbook ID. They contain no source SHA, ARN, account,
 session/finalization identifier, raw reason, secret, or artifact locator.
 
-The alarms, rules, topics, saved queries, and metric filters are deployed. The
-actionable recipient's configuration and confirmation, benign notification
-delivery, post-rollout metric-filter observation, query calibration, and
-completion of the first 30 live days remain separate evidence boundaries. Use
-the dated AWS inventory for their current status; do not infer an actionable
-recipient from the installed topic or from the invariant subscription. Do not
-create traffic or publish a synthetic notification solely to manufacture
-evidence. A test publish still needs separate explicit authorization. The first
-30 live days are measurement-only: no burn-rate alarm, error-budget gate, or
-automatic operator policy is active. No traffic is insufficient evidence, not
-100% reliability.
+Resource deployment, recipient/delivery evidence, post-rollout metric-filter
+observation, query calibration and completion of the first 30 live days are
+separate inventory observations. Do not infer an actionable recipient from an
+installed topic or the invariant subscription. Do not create traffic or publish
+a synthetic notification solely to manufacture evidence; test publication
+requires separate explicit authorization. The first 30 live days are
+measurement-only: no burn-rate alarm, error-budget gate or automatic operator
+policy is active. No traffic is insufficient evidence, not 100% reliability.
 
 Dispatcher, finalization, and verification custom metrics have only closed
 reason/category dimensions and are investigation aids, not verdict inputs.
 Lambda metric filters select canonical fields below the outer `$.message`
 object. The private operator documentation provides a bounded, read-only saved
-query smoke that prints query status, not query results.
+query smoke that prints query status, not query results. The retained monitoring
+window at source `3c2f0353…` already records completion of all ten canonical
+queries and readback/execution of corrected saved cohort/reason definitions.
+That bounded historical evidence is not fresh calibration of every later
+source or target. Runtime log retention is 90 days in develop and 180 in main;
+operations-ledger retention is 365 and 731 days respectively. A retained report
+does not make its expired underlying logs queryable.
 
 Escalate immediately for identity/state-scope uncertainty; possible secret or
 private-artifact leakage; direct-origin bypass; false **Verified** presentation;
-private files in a public bundle; a DLQ/semaphore/IAM/KMS/signing issue that
+private files in a public bundle; a DLQ/Batch/IAM/KMS/signing issue that
 needs mutation; or Terraform/live drift or partial apply. Route a production
 incident to its exact target-bound operator authority because these command
 procedures cover develop; production deployment does not authorize target
@@ -796,14 +791,14 @@ substitution.
 
 Each workflow begins with the identity check and a bounded UTC window.
 
-| Workflow                  | First evidence                                                                                       | Supported conclusion required before recovery                                                               |
-| ------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| W1 stuck finalization     | `describe-session`, dispatcher/DLQ, each SFN attempt, ECS-stop ledger                                | what/where/why per attempt; `SUCCEEDED` without canonical outcome remains `FINALIZATION_OUTCOME_UNRECORDED` |
-| W2 bundle/report failure  | admission status, `bundle_download_failed`, canonical metadata                                       | distinguish 401/403, 404/409, missing/expired object, IAM denial, range/integrity failure                   |
-| W3 red verification       | server scenario, exact-finalization browser observation, required checks, `verification_run_summary` | infrastructure category, expected S1–S5 educational red, or unexpected S0/product defect                    |
-| W4 quiet system           | API count/access log, queues, invocations, throttles, SFN, latest deploy                             | traffic lull versus broken admission/dispatch; gated journey only when explicitly authorized                |
-| W5 post-deploy regression | one accepted deployment/attempt plus before/after Q1/Q8 windows                                      | bind actual source/mode and keep resource smoke, operator probe, and full journey as separate evidence      |
-| W6 alarm or DLQ           | alarm definition/reason/window plus correlated deploy/traffic/runtime state                          | safe-to-redrive, stale-to-drop, or preserve untouched; returning to `OK` does not close the incident        |
+| Workflow                  | First evidence                                                                                                         | Supported conclusion required before recovery                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| W1 stuck finalization     | `describe-session`, [finalization evidence](#6-async-finalization), [Batch ledger/capacity](#8-dlq-and-batch-capacity) | what/where/why per attempt; `SUCCEEDED` without canonical outcome remains `FINALIZATION_OUTCOME_UNRECORDED` |
+| W2 bundle/report failure  | admission status, `bundle_download_failed`, canonical metadata                                                         | distinguish 401/403, 404/409, missing/expired object, IAM denial, range/integrity failure                   |
+| W3 red verification       | server scenario, exact-finalization browser observation, required checks, `verification_run_summary`                   | infrastructure category, expected S1–S5 educational red, or unexpected S0/product defect                    |
+| W4 quiet system           | API count/access log, queues, invocations, throttles, SFN, latest deploy                                               | traffic lull versus broken admission/dispatch; gated journey only when explicitly authorized                |
+| W5 post-deploy regression | one accepted deployment/attempt plus before/after Q1/Q8 windows                                                        | bind actual source/mode and keep resource smoke, operator probe, and full journey as separate evidence      |
+| W6 alarm or DLQ           | alarm definition/reason/window plus correlated deploy/traffic/runtime state                                            | safe-to-redrive, stale-to-drop, or preserve untouched; returning to `OK` does not close the incident        |
 
 For W1, preserve ambiguity when multiple AWS execution ARNs exist, but do not
 invent a second repository lifecycle ID alongside `finalizationId`. For W2, use
@@ -814,7 +809,7 @@ escalation. `verification_run_summary` is emitted only after the authenticated
 browser submits the four local cast-check statuses for the current finalization;
 the server supplies the other checks and all scenario/failure metadata. For
 W5, do not mix action results from different pipeline executions. For W6,
-inspect before redrive, purge, deletion, cancellation, or semaphore repair.
+inspect before redrive, purge, deletion, cancellation, or Batch capacity changes.
 
 ### Incident note and TTU
 
@@ -831,14 +826,14 @@ conclusion time, not merely time to first response:
 - TTU: <minutes from engagement to evidence-backed conclusion>
 - Surfaces touched: <count and short list>
 - Trigger: <user report / alarm review / gated smoke>
-- Deployment: <control and selected source SHAs; mode; pipeline execution; acceptance attempt; authoritative record; exact stage results>
-- Approval evidence: <saved-plan checksum; versioned approval; normal or rollback retained authority>
+- Deployment: <exact source SHA; execution; checkpoint object version; plan-package reference; exact stage results>
+- Approval evidence: <exact plan-package version/hash and saved-plan checksum; native approval action and execution>
 - Edge/API: <path and sanitized request/error IDs>
 - Restricted identifiers: <stable hashes or session/finalization/AWS execution IDs>
 - What: <one sentence>
 - Where: <journey stage and component>
 - Why: <expected invariant; observed divergence; closed reason codes; supported hypothesis>
-- Runtime evidence: <queue / Step Functions / ECS / semaphore / object metadata / alarms>
+- Runtime evidence: <SQS / Step Functions / Batch / object metadata / alarms>
 - Logs: <query IDs/windows and short redacted excerpts>
 - Expired evidence: <expected expiry or none>
 - Unanswerable questions: <questions no longer supported or none>
@@ -860,8 +855,8 @@ Diagnosis is not repair authorization. After owner approval:
    drift;
 2. bind source SHA, account, region, state scope/backend, immutable artifact or
    image coordinates, and approvals;
-3. use the selected AWS-managed saved-plan or image-release lane, never routine
-   local Terraform or a reused saved plan;
+3. use reviewed local Bootstrap for deployment-control changes, or the selected
+   managed Foundation/App or image-release lane; never reuse a saved plan;
 4. distinguish resource smoke from the gated
    session -> vote -> finalize -> verify -> bundle/report flow;
 5. require same-execution apply and smoke evidence; partial updates in a failed

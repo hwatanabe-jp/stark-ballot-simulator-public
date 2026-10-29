@@ -357,6 +357,120 @@ const SUMMARY_TEXT_STYLES: Record<SummaryStatus, string> = {
 
 const OPERATIONAL_STEP_ERROR_PATTERN = /(fetch|network|timeout|internal|\bapi\b|unavailable|parse)/i;
 
+type CheckDefinition = (typeof VERIFICATION_CHECK_DEFINITIONS)[number];
+
+function resolveDetailEvidence(check: VerificationCheck | undefined, definition: CheckDefinition | undefined) {
+  const evidence: VerificationEvidence = check?.evidence ?? definition?.evidence ?? 'public';
+  return { evidence, rawInputs: check?.inputs ?? definition?.inputs };
+}
+
+interface DetailItemContext {
+  checkById: Map<VerificationCheckId, VerificationCheck> | null;
+  baseStatus: CheckStatus;
+  gateStatus: CheckStatus;
+  visibleKnowledgeItems: ReturnType<typeof selectKnowledgeItems>;
+}
+
+function prepareDetailItem(
+  item: VerificationDetailItemDefinition,
+  { checkById, baseStatus, gateStatus, visibleKnowledgeItems }: DetailItemContext,
+) {
+  const check = checkById?.get(item.checkId);
+  const definition = CHECK_DEFINITION_BY_ID.get(item.checkId);
+  const rawStatus = check?.status ?? resolveMissingCheckStatus(checkById !== null, definition, baseStatus);
+  const normalizedStatus = normalizeStatus(rawStatus);
+  const status = applyStarkGate(normalizedStatus, gateStatus, item.dependsOnStark);
+  const { evidence, rawInputs } = resolveDetailEvidence(check, definition);
+  const knowledgeKeys = rawInputs?.filter(isKnowledgeKey) ?? [];
+  const noteKey = check?.noteKey ?? item.noteKey;
+  return {
+    ...item,
+    evidence,
+    knowledgeKeys,
+    knowledgeItems: selectKnowledgeItems(visibleKnowledgeItems, knowledgeKeys),
+    status,
+    visualStatus: resolveVisualStatus(status, evidence),
+    ...(noteKey ? { noteKey } : {}),
+  };
+}
+
+function VerificationDownloadAction({ download }: { download: DownloadData }): React.ReactElement {
+  const { t } = useTranslation();
+  const loading = download.status === 'loading';
+  return (
+    <div className="verification-report__download">
+      <Button
+        variant="secondary"
+        onClick={download.onDownload}
+        disabled={!download.available || loading}
+        aria-busy={loading}
+      >
+        {loading ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <Download className="h-4 w-4" aria-hidden="true" />
+        )}
+        {loading ? t('pages.verify.download.loading') : t('pages.verify.download.cta')}
+      </Button>
+      <p>{t('pages.verify.download.description')}</p>
+    </div>
+  );
+}
+
+function VerificationSummaryRegion({
+  summary,
+  sequenceComplete,
+  download,
+}: Pick<UnifiedVerificationCardProps, 'summary' | 'sequenceComplete' | 'download'>): React.ReactElement | null {
+  const { t } = useTranslation();
+  if (!summary && !sequenceComplete) return null;
+  return (
+    <div className="verification-report__summary-region">
+      {summary && (
+        <div
+          role="status"
+          aria-label={t('pages.verify.resultSummary.ariaLabel')}
+          data-testid="result-summary"
+          data-status={summary.status}
+          className="verification-report__summary"
+        >
+          <SummaryStatusIcon status={summary.status} />
+          <div>
+            <h2 className={SUMMARY_TEXT_STYLES[summary.status]} data-testid="overall-status">
+              {summary.message}
+            </h2>
+            {summary.subMessage && <p>{summary.subMessage}</p>}
+          </div>
+        </div>
+      )}
+      {sequenceComplete && <VerificationDownloadAction download={download} />}
+      {download.status === 'success' && <InlineAlert message={t('pages.verify.download.success')} variant="success" />}
+      {download.status === 'error' && download.error && <InlineAlert message={download.error} variant="error" />}
+    </div>
+  );
+}
+
+function useCheckEvidenceSelection(
+  preparedCategories: ReadonlyArray<{ items: Array<ReturnType<typeof prepareDetailItem>> }>,
+  sequenceComplete: boolean,
+) {
+  const { highlightedKeys, setHighlightedKeys } = useKnowledgeHighlight();
+  const [selectedCheck, setSelectedCheck] = useState<VerificationCheckId | null>(null);
+  useEffect(() => {
+    const check = preparedCategories
+      .flatMap((category) => category.items)
+      .find((item) => item.checkId === selectedCheck);
+    const nextKeys = sequenceComplete && check ? check.knowledgeItems.map((item) => item.key) : [];
+    if (highlightedKeys.length !== nextKeys.length || highlightedKeys.some((key, index) => key !== nextKeys[index])) {
+      setHighlightedKeys(nextKeys);
+    }
+  }, [highlightedKeys, preparedCategories, selectedCheck, sequenceComplete, setHighlightedKeys]);
+
+  useEffect(() => () => setHighlightedKeys([]), [setHighlightedKeys]);
+
+  return { selectedCheck, setSelectedCheck };
+}
+
 export function UnifiedVerificationCard({
   summary,
   knowledgeFilterKeys = [],
@@ -373,8 +487,6 @@ export function UnifiedVerificationCard({
     () => selectKnowledgeItems(knowledgeItems, knowledgeFilterKeys),
     [knowledgeItems, knowledgeFilterKeys],
   );
-  const { highlightedKeys, setHighlightedKeys } = useKnowledgeHighlight();
-  const [selectedCheck, setSelectedCheck] = useState<VerificationCheckId | null>(null);
   const [expandedCategories, setExpandedCategories] = useState<Set<VerificationStepId>>(
     new Set(['cast_as_intended', 'recorded_as_cast', 'counted_as_recorded', 'stark_verification']),
   );
@@ -413,26 +525,9 @@ export function UnifiedVerificationCard({
 
     return VERIFICATION_CATEGORIES.map((category) => {
       const baseStatus = baseStatusMap[category.id];
-      const items = category.items.map((item) => {
-        const check = checkById?.get(item.checkId);
-        const definition = CHECK_DEFINITION_BY_ID.get(item.checkId);
-        const rawStatus = check?.status ?? resolveMissingCheckStatus(checkById !== null, definition, baseStatus);
-        const normalizedStatus = normalizeStatus(rawStatus);
-        const status = applyStarkGate(normalizedStatus, gateStatus, item.dependsOnStark);
-        const evidence: VerificationEvidence = check?.evidence ?? definition?.evidence ?? 'public';
-        const rawInputs = check?.inputs ?? definition?.inputs;
-        const knowledgeKeys = rawInputs?.filter(isKnowledgeKey) ?? [];
-        const noteKey = check?.noteKey ?? item.noteKey;
-        return {
-          ...item,
-          evidence,
-          knowledgeKeys,
-          knowledgeItems: selectKnowledgeItems(visibleKnowledgeItems, knowledgeKeys),
-          status,
-          visualStatus: resolveVisualStatus(status, evidence),
-          ...(noteKey ? { noteKey } : {}),
-        };
-      });
+      const items = category.items.map((item) =>
+        prepareDetailItem(item, { checkById, baseStatus, gateStatus, visibleKnowledgeItems }),
+      );
       const categoryStatus = aggregateStatus(items);
       const categoryVisualStatus: CheckVisualStatus =
         categoryStatus === 'success' && items.some((item) => item.visualStatus === 'demo') ? 'demo' : categoryStatus;
@@ -451,17 +546,7 @@ export function UnifiedVerificationCard({
     });
   }, [checkById, starkGateStatus, stepStatusMap, t, visibleKnowledgeItems]);
 
-  useEffect(() => {
-    const check = preparedCategories
-      .flatMap((category) => category.items)
-      .find((item) => item.checkId === selectedCheck);
-    const nextKeys = sequenceComplete && check ? check.knowledgeItems.map((item) => item.key) : [];
-    if (highlightedKeys.length !== nextKeys.length || highlightedKeys.some((key, index) => key !== nextKeys[index])) {
-      setHighlightedKeys(nextKeys);
-    }
-  }, [highlightedKeys, preparedCategories, selectedCheck, sequenceComplete, setHighlightedKeys]);
-
-  useEffect(() => () => setHighlightedKeys([]), [setHighlightedKeys]);
+  const { selectedCheck, setSelectedCheck } = useCheckEvidenceSelection(preparedCategories, sequenceComplete);
 
   const displayedCategories = preparedCategories.slice(0, Math.min(visibleStepCount, preparedCategories.length));
   const isPreparing = visibleStepCount === 0;
@@ -480,49 +565,7 @@ export function UnifiedVerificationCard({
 
   return (
     <div className="verification-report">
-      {(summary || sequenceComplete) && (
-        <div className="verification-report__summary-region">
-          {summary && (
-            <div
-              role="status"
-              aria-label={t('pages.verify.resultSummary.ariaLabel')}
-              data-testid="result-summary"
-              data-status={summary.status}
-              className="verification-report__summary"
-            >
-              <SummaryStatusIcon status={summary.status} />
-              <div>
-                <h2 className={SUMMARY_TEXT_STYLES[summary.status]} data-testid="overall-status">
-                  {summary.message}
-                </h2>
-                {summary.subMessage && <p>{summary.subMessage}</p>}
-              </div>
-            </div>
-          )}
-          {sequenceComplete && (
-            <div className="verification-report__download">
-              <Button
-                variant="secondary"
-                onClick={download.onDownload}
-                disabled={!download.available || download.status === 'loading'}
-                aria-busy={download.status === 'loading'}
-              >
-                {download.status === 'loading' ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Download className="h-4 w-4" aria-hidden="true" />
-                )}
-                {download.status === 'loading' ? t('pages.verify.download.loading') : t('pages.verify.download.cta')}
-              </Button>
-              <p>{t('pages.verify.download.description')}</p>
-            </div>
-          )}
-          {download.status === 'success' && (
-            <InlineAlert message={t('pages.verify.download.success')} variant="success" />
-          )}
-          {download.status === 'error' && download.error && <InlineAlert message={download.error} variant="error" />}
-        </div>
-      )}
+      <VerificationSummaryRegion summary={summary} sequenceComplete={sequenceComplete} download={download} />
       {isPreparing ? (
         <p className="verification-report__preparing" role="status">
           {t('pages.verify.stepsCard.preparing')}

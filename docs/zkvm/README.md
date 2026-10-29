@@ -16,10 +16,9 @@ truth.
 | [References](./references.md)                   | External RISC Zero and cryptographic references                                         | English  |
 | [Decision records](./decisions/README.md)       | The reasoning and rollout evidence behind the current contract                          | English  |
 
-The final-design document records design intent and historical rationale; it is
-not an evergreen replacement for implementation-oriented verification docs.
-Private expert feedback and historical phase notes are not part of this public
-guide set.
+Use the final-design document for design intent and historical rationale, and
+the verification pipeline for current implementation contracts. Private expert
+feedback and private phase notes remain outside this public guide set.
 
 ## Current Contract at a Glance
 
@@ -37,9 +36,10 @@ guide set.
 
 ## Evidence Framing
 
-The decision files show how the contract evolved and which trade-offs were
-accepted. The formal area machine-checks selected invariants and feeds vectors
-into implementation tests. Neither body of evidence proves the complete
-application or makes this PoC suitable for real elections.
+The decision files record how the contract evolved and which trade-offs were
+accepted. The formal area proves selected model invariants and tests their
+correspondence with the implementation through generated vectors. These claims
+are limited to their stated scope; they do not establish correctness of the
+complete application or readiness for real elections.
 
 Forward-looking priorities are tracked in the [roadmap](../roadmap.md).

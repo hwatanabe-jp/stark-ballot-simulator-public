@@ -10,13 +10,7 @@ export default defineConfig({
   arrowParens: 'always',
   endOfLine: 'lf',
   sortPackageJson: true,
-  ignorePatterns: [
-    'public-book/book/',
-    'public-book/fzf.umd.js',
-    'public-book/mermaid.min.js',
-    'AGENTS.md',
-    'formal/.lake/',
-  ],
+  ignorePatterns: ['public-book/book/', 'public-book/fzf.umd.js', 'public-book/mermaid.min.js', 'formal/.lake/'],
   sortImports: false,
   sortTailwindcss: {
     stylesheet: 'apps/web/src/styles/globals.css',

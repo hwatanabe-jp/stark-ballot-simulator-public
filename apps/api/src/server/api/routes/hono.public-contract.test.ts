@@ -35,7 +35,7 @@ import {
 import {
   getArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
 } from '@stark-ballot/validation/unknown-value-guards';
 import { computeIncludedBitmapRoot } from '@stark-ballot/zkvm-contract/zkvm/bitmap';
@@ -390,12 +390,12 @@ function expectLoggerWarnings(
     if (warning.kind === 'http_request') {
       expect(call?.[0]).toBe('request completed');
       expect(getStringProperty(fields, 'event')).toBe('http_request');
-      expect(getNumberProperty(getRecordProperty(fields, 'http'), 'status')).toBe(warning.status);
+      expect(getNumberProperty(getObjectProperty(fields, 'http'), 'status')).toBe(warning.status);
       continue;
     }
 
     if (warning.kind === 'verification_failed') {
-      const verification = getRecordProperty(fields, 'verification');
+      const verification = getObjectProperty(fields, 'verification');
       expect(call?.[0]).toBe('verification check failed');
       expect(getStringProperty(fields, 'event')).toBe('verification_failed');
       expect(getStringProperty(verification, 'stage')).toBe(warning.stage);
@@ -726,7 +726,7 @@ describe('mounted Hono public contract behavior', () => {
     expect(bulletinData).not.toHaveProperty('timestamp');
     expect(bulletinData).not.toHaveProperty('nextOffset');
     expect(bulletinData).not.toHaveProperty('hasMore');
-    expect(getRecordProperty(bulletinPayload, 'meta')).toMatchObject({
+    expect(getObjectProperty(bulletinPayload, 'meta')).toMatchObject({
       page: {
         nextOffset: null,
         hasMore: false,
@@ -801,7 +801,7 @@ describe('mounted Hono public contract behavior', () => {
     const sthData = requireDataRecord(await readJsonRecord(sth, 'canonical STH'), 'canonical STH data');
 
     expect(sth.status).toBe(200);
-    expect(getRecordProperty(sthData, 'sth')).toMatchObject({
+    expect(getObjectProperty(sthData, 'sth')).toMatchObject({
       timestamp: session.voting.lastActivityMs,
       logId: session.identity.logId,
     });
@@ -845,7 +845,7 @@ describe('mounted Hono public contract behavior', () => {
     expect(status.headers.get('Cache-Control')).toBe('no-store');
     expect(getStringProperty(data, 'finalizationId')).toBe(finalizationId);
     expect(getStringProperty(data, 'status')).toBe('succeeded');
-    expect(getRecordProperty(data, 'result')).not.toBeUndefined();
+    expect(getObjectProperty(data, 'result')).not.toBeUndefined();
     expect(data).not.toHaveProperty('sessionId');
   });
 
@@ -939,7 +939,7 @@ describe('mounted Hono public contract behavior', () => {
     expect(response.status).toBe(200);
     expect(getStringProperty(data, 'availability')).toBe('available');
     expect(getBitmapData).toHaveBeenCalledTimes(2);
-    expect(getRecordProperty(data, 'journal')).toEqual({
+    expect(getObjectProperty(data, 'journal')).toEqual({
       representation: 'included',
       value: currentFinalizationResult.journal,
     });
@@ -1029,13 +1029,13 @@ describe('mounted Hono public contract behavior', () => {
       { headers: authHeaders() },
     );
     const data = requireDataRecord(await readJsonRecord(response, `verification with mismatched ${defect}`));
-    const checks = getArrayProperty(getRecordProperty(data, 'verification'), 'checks');
+    const checks = getArrayProperty(getObjectProperty(data, 'verification'), 'checks');
     const includedCheck = checks?.find(
-      (check) => getStringProperty(getRecordProperty({ check }, 'check'), 'id') === 'counted_my_vote_included',
+      (check) => getStringProperty(getObjectProperty({ check }, 'check'), 'id') === 'counted_my_vote_included',
     );
 
     expect(response.status).toBe(200);
-    expect(getStringProperty(getRecordProperty({ includedCheck }, 'includedCheck'), 'status')).not.toBe('success');
+    expect(getStringProperty(getObjectProperty({ includedCheck }, 'includedCheck'), 'status')).not.toBe('success');
   });
 
   it('keeps mock-profile verifier evidence successful but ineligible for the Verified label', async () => {
@@ -1108,19 +1108,19 @@ describe('mounted Hono public contract behavior', () => {
       },
     );
     const data = requireDataRecord(await readJsonRecord(response, 'mock verification evidence'));
-    const checks = getArrayProperty(getRecordProperty(data, 'verification'), 'checks') ?? [];
+    const checks = getArrayProperty(getObjectProperty(data, 'verification'), 'checks') ?? [];
     const starkReceiptCheck = checks.find((check) => getStringProperty(check, 'id') === 'stark_receipt_verify');
-    const presentation = getRecordProperty(data, 'presentation');
-    const policy = getRecordProperty(presentation ?? {}, 'policy');
+    const presentation = getObjectProperty(data, 'presentation');
+    const policy = getObjectProperty(presentation ?? {}, 'policy');
 
     expect(response.status).toBe(200);
-    expect(getStringProperty(getRecordProperty(data, 'verifierResult') ?? {}, 'status')).toBe('dev_mode');
+    expect(getStringProperty(getObjectProperty(data, 'verifierResult') ?? {}, 'status')).toBe('dev_mode');
     expect(getStringProperty(starkReceiptCheck, 'status')).toBe('success');
     expect(policy).toMatchObject({
       devModeEvidence: true,
       fullyVerifiedLabelEligible: false,
     });
-    expect(getStringProperty(getRecordProperty(policy ?? {}, 'display') ?? {}, 'renderedStatus')).not.toBe('verified');
+    expect(getStringProperty(getObjectProperty(policy ?? {}, 'display') ?? {}, 'renderedStatus')).not.toBe('verified');
   });
 
   it('does not mount the retired verification paths', async () => {
@@ -1349,8 +1349,8 @@ describe('mounted Hono public contract behavior', () => {
       headers: authHeaders(),
     });
     const payload = await readJsonRecord(verify, 'verify response');
-    const data = getRecordProperty(payload, 'data');
-    const checks = getRecordProperty(data ?? {}, 'verification')?.['checks'];
+    const data = getObjectProperty(payload, 'data');
+    const checks = getObjectProperty(data ?? {}, 'verification')?.['checks'];
     const statusById = new Map(
       Array.isArray(checks)
         ? checks
@@ -1389,7 +1389,7 @@ describe('mounted Hono public contract behavior', () => {
     });
     expect(observation.status).toBe(200);
     expect(observation.headers.get('Cache-Control')).toBe('no-store');
-    expect(getStringProperty(getRecordProperty(await readJsonRecord(observation), 'data') ?? {}, 'status')).toBe(
+    expect(getStringProperty(getObjectProperty(await readJsonRecord(observation), 'data') ?? {}, 'status')).toBe(
       'recorded',
     );
     expect(loggerInfo).toHaveBeenCalledWith('verification_run_summary', {
@@ -1420,7 +1420,7 @@ describe('mounted Hono public contract behavior', () => {
     });
     expect(duplicateObservation.status).toBe(200);
     expect(
-      getStringProperty(getRecordProperty(await readJsonRecord(duplicateObservation), 'data') ?? {}, 'status'),
+      getStringProperty(getObjectProperty(await readJsonRecord(duplicateObservation), 'data') ?? {}, 'status'),
     ).toBe('idempotent');
     expect(loggerInfo.mock.calls.filter(([message]) => message === 'verification_run_summary')).toHaveLength(1);
     loggerInfo.mockRestore();
@@ -1705,6 +1705,6 @@ describe('mounted Hono public contract behavior', () => {
 
     expect(proof.status).toBe(400);
     expect(getApiErrorCode(payload)).toBe('INVALID_BITMAP_PROOF_REQUEST');
-    expect(getRecordProperty(payload, 'error')).not.toHaveProperty('details');
+    expect(getObjectProperty(payload, 'error')).not.toHaveProperty('details');
   });
 });

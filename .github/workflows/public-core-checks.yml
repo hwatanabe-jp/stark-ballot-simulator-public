@@ -46,6 +46,9 @@ jobs:
       - name: Check generated OpenAPI reference
         run: pnpm api-contract:openapi:check
 
+      - name: Check reviewed Gateway contract
+        run: pnpm api-contract:gateway:check
+
       - name: Check catalog and TechDocs inputs
         run: pnpm catalog:check
 

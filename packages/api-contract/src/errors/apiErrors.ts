@@ -48,6 +48,7 @@ export const ErrorCode = {
   ASYNC_FINALIZATION_DISABLED: 'ASYNC_FINALIZATION_DISABLED',
   CANCELLATION_UNSUPPORTED: 'CANCELLATION_UNSUPPORTED',
   FINALIZATION_NOT_CANCELLABLE: 'FINALIZATION_NOT_CANCELLABLE',
+  FINALIZATION_NOT_CURRENT: 'FINALIZATION_NOT_CURRENT',
   VERIFICATION_OBSERVATION_CONFLICT: 'VERIFICATION_OBSERVATION_CONFLICT',
 
   // Additional error codes used in routes
@@ -104,6 +105,7 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.ASYNC_FINALIZATION_DISABLED]: '非同期集計は無効です',
   [ErrorCode.CANCELLATION_UNSUPPORTED]: 'キャンセルはサポートされていません',
   [ErrorCode.FINALIZATION_NOT_CANCELLABLE]: '現在の状態では集計をキャンセルできません',
+  [ErrorCode.FINALIZATION_NOT_CURRENT]: '指定された集計は現在の集計ではありません',
   [ErrorCode.VERIFICATION_OBSERVATION_CONFLICT]: '現在の検証結果と観測内容が一致しません',
 
   // Additional messages
@@ -131,25 +133,21 @@ export function getErrorMessage(code: ErrorCode): string {
   return ERROR_MESSAGES[code];
 }
 
+type PublicErrorDetailFields = Omit<Extract<PublicErrorDetail, { kind: 'validation' }>, 'kind'> &
+  Omit<Extract<PublicErrorDetail, { kind: 'rateLimit' }>, 'kind'> &
+  Omit<Extract<PublicErrorDetail, { kind: 'bodyLimit' }>, 'kind'> &
+  Omit<Extract<PublicErrorDetail, { kind: 'verificationState' }>, 'kind'> &
+  Omit<Extract<PublicErrorDetail, { kind: 'proofRange' }>, 'kind'>;
+
 type ErrorDetailInputFields = {
+  -readonly [K in keyof PublicErrorDetailFields]?: Exclude<PublicErrorDetailFields[K], undefined>;
+} & {
   message?: string;
   details?: string | PublicErrorDetail;
-  issues?: FlattenedSchemaError;
   reason?: string;
   retryAfter?: number;
-  retryAfterSeconds?: number;
-  limitBytes?: number;
-  receivedBytes?: number;
   nextAvailableAt?: string;
-  nextAvailableAtMs?: number;
-  remainingExecutions?: number;
-  status?: VerificationStatus;
-  finalizationId?: string;
   verificationReport?: unknown;
-  voteIndex?: number;
-  expectedTreeSize?: number;
-  actualTreeSize?: number;
-  errorCodes?: string[];
 };
 
 export type ApiErrorPayload = StandardErrorResponse;
@@ -242,6 +240,59 @@ function sanitizeFinalizationId(value: unknown): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+function resolveRetryAfterSeconds(details: ErrorDetails): number | undefined {
+  const retryAfterSeconds = isNonNegativeFiniteNumber(details.retryAfterSeconds)
+    ? details.retryAfterSeconds
+    : isNonNegativeFiniteNumber(details.retryAfter)
+      ? details.retryAfter
+      : undefined;
+  return retryAfterSeconds;
+}
+
+function sanitizeRateLimitDetail(details: ErrorDetails): PublicErrorDetail | undefined {
+  const retryAfterSeconds = resolveRetryAfterSeconds(details);
+  const nextAvailableAtMs = sanitizeNextAvailableAtMs(details);
+  const remainingExecutions = isNonNegativeInteger(details.remainingExecutions)
+    ? details.remainingExecutions
+    : undefined;
+  if (retryAfterSeconds !== undefined || nextAvailableAtMs !== undefined || remainingExecutions !== undefined) {
+    return {
+      kind: 'rateLimit',
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+      ...(nextAvailableAtMs !== undefined ? { nextAvailableAtMs } : {}),
+      ...(remainingExecutions !== undefined ? { remainingExecutions } : {}),
+    };
+  }
+
+  return undefined;
+}
+
+function sanitizeOperationalErrorDetail(details: ErrorDetails): PublicErrorDetail | undefined {
+  const rateLimit = sanitizeRateLimitDetail(details);
+  if (rateLimit) return rateLimit;
+  if (isVerificationStatus(details.status)) {
+    const finalizationId = sanitizeFinalizationId(details.finalizationId);
+    const errorCodes = sanitizeErrorCodes(details.errorCodes);
+    return {
+      kind: 'verificationState',
+      status: details.status,
+      ...(finalizationId ? { finalizationId } : {}),
+      ...(errorCodes ? { errorCodes } : {}),
+    };
+  }
+
+  if (isNonNegativeInteger(details.voteIndex) && isNonNegativeInteger(details.expectedTreeSize)) {
+    return {
+      kind: 'proofRange',
+      voteIndex: details.voteIndex,
+      expectedTreeSize: details.expectedTreeSize,
+      ...(isNonNegativeInteger(details.actualTreeSize) ? { actualTreeSize: details.actualTreeSize } : {}),
+    };
+  }
+
+  return undefined;
+}
+
 function sanitizeTaggedErrorDetail(details: ErrorDetails): PublicErrorDetail | undefined {
   const nested = publicErrorDetailSchema.safeParse(details.details);
   if (nested.success) {
@@ -266,45 +317,7 @@ function sanitizeTaggedErrorDetail(details: ErrorDetails): PublicErrorDetail | u
     };
   }
 
-  const retryAfterSeconds = isNonNegativeFiniteNumber(details.retryAfterSeconds)
-    ? details.retryAfterSeconds
-    : isNonNegativeFiniteNumber(details.retryAfter)
-      ? details.retryAfter
-      : undefined;
-  const nextAvailableAtMs = sanitizeNextAvailableAtMs(details);
-  const remainingExecutions = isNonNegativeInteger(details.remainingExecutions)
-    ? details.remainingExecutions
-    : undefined;
-  if (retryAfterSeconds !== undefined || nextAvailableAtMs !== undefined || remainingExecutions !== undefined) {
-    return {
-      kind: 'rateLimit',
-      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
-      ...(nextAvailableAtMs !== undefined ? { nextAvailableAtMs } : {}),
-      ...(remainingExecutions !== undefined ? { remainingExecutions } : {}),
-    };
-  }
-
-  if (isVerificationStatus(details.status)) {
-    const finalizationId = sanitizeFinalizationId(details.finalizationId);
-    const errorCodes = sanitizeErrorCodes(details.errorCodes);
-    return {
-      kind: 'verificationState',
-      status: details.status,
-      ...(finalizationId ? { finalizationId } : {}),
-      ...(errorCodes ? { errorCodes } : {}),
-    };
-  }
-
-  if (isNonNegativeInteger(details.voteIndex) && isNonNegativeInteger(details.expectedTreeSize)) {
-    return {
-      kind: 'proofRange',
-      voteIndex: details.voteIndex,
-      expectedTreeSize: details.expectedTreeSize,
-      ...(isNonNegativeInteger(details.actualTreeSize) ? { actualTreeSize: details.actualTreeSize } : {}),
-    };
-  }
-
-  return undefined;
+  return sanitizeOperationalErrorDetail(details);
 }
 
 function sanitizeErrorDetails(details?: ErrorDetails): { message?: string; details?: PublicErrorDetail } {
@@ -407,6 +420,7 @@ const ERROR_STATUS_CODES: Readonly<Record<ErrorCode, number>> = {
   [ErrorCode.ASYNC_FINALIZATION_DISABLED]: 404,
   [ErrorCode.CANCELLATION_UNSUPPORTED]: 501,
   [ErrorCode.FINALIZATION_NOT_CANCELLABLE]: 409,
+  [ErrorCode.FINALIZATION_NOT_CURRENT]: 409,
   [ErrorCode.VERIFICATION_OBSERVATION_CONFLICT]: 409,
   [ErrorCode.INVALID_VOTE_CHOICE]: 400,
   [ErrorCode.ALREADY_VOTED]: 400,

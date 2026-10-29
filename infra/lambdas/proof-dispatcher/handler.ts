@@ -169,6 +169,149 @@ async function describeExistingExecutionStatus(
   }
 }
 
+async function acknowledgeExistingExecution(
+  store: ReturnType<typeof getGlobalStore>,
+  stepFunctionsClient: SFNClient,
+  stateMachineArn: string,
+  message: ParsedProverWorkMessage,
+): Promise<boolean> {
+  const freshRecord = await store.getCurrentFinalizationRecord(message.sessionId);
+  const freshFinalizationState = freshRecord?.state ?? null;
+  if (!shouldDispatchFinalizationWork(freshFinalizationState, message.finalizationId)) {
+    logger.info('[ProofDispatcher] Treating existing Step Functions execution as processed after state re-read', {
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      finalizationId: message.finalizationId,
+      currentFinalizationId: freshFinalizationState?.finalizationId,
+      currentStatus: freshFinalizationState?.status,
+      reason: freshRecord ? 'finalization_state_not_pending_for_execution' : 'finalization_record_not_found',
+    });
+    emitDispatchDropped(freshRecord ? 'already_processed' : 'session_missing', message);
+    return true;
+  }
+  const executionStatus = await describeExistingExecutionStatus(
+    stepFunctionsClient,
+    stateMachineArn,
+    message.finalizationId,
+  );
+  if (executionStatus === 'RUNNING') {
+    logger.info('[ProofDispatcher] Treating existing open Step Functions execution as already dispatched', {
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      finalizationId: message.finalizationId,
+      currentStatus: freshFinalizationState.status,
+      executionStatus,
+    });
+    emitDispatchDropped('already_dispatched', message);
+    return true;
+  }
+  logger.warn(
+    '[ProofDispatcher] Step Functions execution already exists but finalization is still pending and execution is closed',
+    {
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      finalizationId: message.finalizationId,
+      currentStatus: freshFinalizationState.status,
+      executionStatus,
+    },
+  );
+  emitCanonicalEvent({
+    event: 'finalize_transition_attempted',
+    to: 'running',
+    source: 'proof_dispatcher',
+    reason: 'STEP_FUNCTIONS_EXECUTION_CLOSED',
+    session_id_hash: hashSessionIdForLogging(message.sessionId),
+    finalization_id: message.finalizationId,
+  });
+  return false;
+}
+
+function admitProverRecord(
+  runtimeProfile: ResolvedRuntimeProfile,
+  record: { body: string },
+): {
+  message: ParsedProverWorkMessage;
+  artifactKeys: ReturnType<typeof resolveTargetArtifactKeys>;
+} {
+  let message: ParsedProverWorkMessage;
+  try {
+    message = parseProverWorkMessage(JSON.parse(record.body));
+  } catch {
+    logInvalidSqsInvocation('record_body_invalid');
+    emitDispatchDropped('malformed');
+    throw new Error('Invalid SQS invocation');
+  }
+
+  let artifactKeys: ReturnType<typeof resolveTargetArtifactKeys>;
+  try {
+    artifactKeys = resolveTargetArtifactKeys(runtimeProfile, message);
+  } catch (error) {
+    logInvalidSqsInvocation('record_body_invalid');
+    emitDispatchDropped('malformed', message);
+    throw error;
+  }
+  return { message, artifactKeys };
+}
+
+async function admitPendingFinalization(
+  store: ReturnType<typeof getGlobalStore>,
+  message: ParsedProverWorkMessage,
+): Promise<boolean> {
+  const currentRecord = await store.getCurrentFinalizationRecord(message.sessionId);
+  const finalizationState = currentRecord?.state ?? null;
+
+  if (!currentRecord || !shouldDispatchFinalizationWork(finalizationState, message.finalizationId)) {
+    logger.info('[ProofDispatcher] Dropping stale finalization work item', {
+      session_id_hash: hashSessionIdForLogging(message.sessionId),
+      finalizationId: message.finalizationId,
+      currentFinalizationId: finalizationState?.finalizationId,
+      currentStatus: finalizationState?.status,
+      reason: currentRecord ? 'finalization_state_not_pending_for_execution' : 'finalization_record_not_found',
+    });
+    emitDispatchDropped(
+      currentRecord ? resolveStateDropReason(finalizationState, message.finalizationId) : 'session_missing',
+      message,
+    );
+    return false;
+  }
+
+  return true;
+}
+
+async function dispatchProverRecord(
+  runtimeProfile: ResolvedRuntimeProfile,
+  stepFunctionsClient: SFNClient,
+  stateMachineArn: string,
+  store: ReturnType<typeof getGlobalStore>,
+  record: { body: string },
+): Promise<void> {
+  const { message, artifactKeys } = admitProverRecord(runtimeProfile, record);
+  if (!(await admitPendingFinalization(store, message))) return;
+
+  emitCanonicalEvent({
+    event: 'finalize_transition_attempted',
+    to: 'running',
+    source: 'proof_dispatcher',
+    reason: 'DISPATCH_REQUESTED',
+    session_id_hash: hashSessionIdForLogging(message.sessionId),
+    finalization_id: message.finalizationId,
+  });
+  try {
+    await stepFunctionsClient.send(
+      new StartExecutionCommand({
+        stateMachineArn,
+        name: message.finalizationId,
+        input: JSON.stringify(buildStepFunctionsInput(message, artifactKeys)),
+      }),
+    );
+  } catch (error) {
+    if (
+      isExecutionAlreadyExists(error) &&
+      (await acknowledgeExistingExecution(store, stepFunctionsClient, stateMachineArn, message))
+    ) {
+      return;
+    }
+    throw error;
+  }
+}
+
 export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [] }> => {
   const env = process.env;
   const runtimeProfile = (resolvedRuntimeProfile ??= resolveRuntimeProfile(env));
@@ -215,107 +358,7 @@ export const handler = async (rawEvent: unknown): Promise<{ batchItemFailures: [
   const store = getGlobalStore(runtimeProfile);
 
   for (const record of rawEvent.Records) {
-    let message: ParsedProverWorkMessage;
-    try {
-      message = parseProverWorkMessage(JSON.parse(record.body));
-    } catch {
-      logInvalidSqsInvocation('record_body_invalid');
-      emitDispatchDropped('malformed');
-      throw new Error('Invalid SQS invocation');
-    }
-
-    let artifactKeys: ReturnType<typeof resolveTargetArtifactKeys>;
-    try {
-      artifactKeys = resolveTargetArtifactKeys(runtimeProfile, message);
-    } catch (error) {
-      logInvalidSqsInvocation('record_body_invalid');
-      emitDispatchDropped('malformed', message);
-      throw error;
-    }
-    const currentRecord = await store.getCurrentFinalizationRecord(message.sessionId);
-    const finalizationState = currentRecord?.state ?? null;
-
-    if (!currentRecord || !shouldDispatchFinalizationWork(finalizationState, message.finalizationId)) {
-      logger.info('[ProofDispatcher] Dropping stale finalization work item', {
-        session_id_hash: hashSessionIdForLogging(message.sessionId),
-        finalizationId: message.finalizationId,
-        currentFinalizationId: finalizationState?.finalizationId,
-        currentStatus: finalizationState?.status,
-        reason: currentRecord ? 'finalization_state_not_pending_for_execution' : 'finalization_record_not_found',
-      });
-      emitDispatchDropped(
-        currentRecord ? resolveStateDropReason(finalizationState, message.finalizationId) : 'session_missing',
-        message,
-      );
-      continue;
-    }
-
-    emitCanonicalEvent({
-      event: 'finalize_transition_attempted',
-      to: 'running',
-      source: 'proof_dispatcher',
-      reason: 'DISPATCH_REQUESTED',
-      session_id_hash: hashSessionIdForLogging(message.sessionId),
-      finalization_id: message.finalizationId,
-    });
-    try {
-      await stepFunctionsClient.send(
-        new StartExecutionCommand({
-          stateMachineArn,
-          name: message.finalizationId,
-          input: JSON.stringify(buildStepFunctionsInput(message, artifactKeys)),
-        }),
-      );
-    } catch (error) {
-      if (isExecutionAlreadyExists(error)) {
-        const freshRecord = await store.getCurrentFinalizationRecord(message.sessionId);
-        const freshFinalizationState = freshRecord?.state ?? null;
-        if (!shouldDispatchFinalizationWork(freshFinalizationState, message.finalizationId)) {
-          logger.info('[ProofDispatcher] Treating existing Step Functions execution as processed after state re-read', {
-            session_id_hash: hashSessionIdForLogging(message.sessionId),
-            finalizationId: message.finalizationId,
-            currentFinalizationId: freshFinalizationState?.finalizationId,
-            currentStatus: freshFinalizationState?.status,
-            reason: freshRecord ? 'finalization_state_not_pending_for_execution' : 'finalization_record_not_found',
-          });
-          emitDispatchDropped(freshRecord ? 'already_processed' : 'session_missing', message);
-          continue;
-        }
-        const executionStatus = await describeExistingExecutionStatus(
-          stepFunctionsClient,
-          stateMachineArn,
-          message.finalizationId,
-        );
-        if (executionStatus === 'RUNNING') {
-          logger.info('[ProofDispatcher] Treating existing open Step Functions execution as already dispatched', {
-            session_id_hash: hashSessionIdForLogging(message.sessionId),
-            finalizationId: message.finalizationId,
-            currentStatus: freshFinalizationState.status,
-            executionStatus,
-          });
-          emitDispatchDropped('already_dispatched', message);
-          continue;
-        }
-        logger.warn(
-          '[ProofDispatcher] Step Functions execution already exists but finalization is still pending and execution is closed',
-          {
-            session_id_hash: hashSessionIdForLogging(message.sessionId),
-            finalizationId: message.finalizationId,
-            currentStatus: freshFinalizationState.status,
-            executionStatus,
-          },
-        );
-        emitCanonicalEvent({
-          event: 'finalize_transition_attempted',
-          to: 'running',
-          source: 'proof_dispatcher',
-          reason: 'STEP_FUNCTIONS_EXECUTION_CLOSED',
-          session_id_hash: hashSessionIdForLogging(message.sessionId),
-          finalization_id: message.finalizationId,
-        });
-      }
-      throw error;
-    }
+    await dispatchProverRecord(runtimeProfile, stepFunctionsClient, stateMachineArn, store, record);
   }
 
   return { batchItemFailures: [] };

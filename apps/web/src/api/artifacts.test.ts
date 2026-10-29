@@ -1,17 +1,15 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { downloadBundle, fetchVerificationReport, type DownloadCandidate, type ReportCandidate } from './artifacts';
 import {
-  clearBrowserPublicEnvForTests,
-  setBrowserPublicEnvForTests,
-} from '@stark-ballot/runtime-config/env/browserPublic';
+  clearPublicRuntimeEnvForTests,
+  setPublicRuntimeEnvForTests,
+} from '@stark-ballot/runtime-config/env/public-runtime-config';
 import type { VerifierServiceWireReport } from '@stark-ballot/verification/verifier-service-report';
 
 const originalCreateObjectURL = URL.createObjectURL.bind(URL);
 const originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
-const identity = {
-  sessionId: 'session-1',
-  capabilityToken: 'capability-token',
-};
+const identity = admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'capability-token' });
 const authenticatedBundleCandidate: DownloadCandidate = {
   kind: 'bundle',
   source: 'authenticated-endpoint',
@@ -70,14 +68,14 @@ function s3ObjectUrl(hostParts: string[], objectPath: string): string {
 }
 
 beforeEach(() => {
-  setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'static-mock-e2e');
+  setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'static-mock-e2e');
 });
 
 describe('downloadBundle', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    clearBrowserPublicEnvForTests();
+    clearPublicRuntimeEnvForTests();
     Object.defineProperty(URL, 'createObjectURL', {
       configurable: true,
       value: originalCreateObjectURL,
@@ -409,7 +407,7 @@ describe('fetchVerificationReport', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    clearBrowserPublicEnvForTests();
+    clearPublicRuntimeEnvForTests();
   });
 
   it('rejects non-report candidates before issuing an authenticated fetch', async () => {
@@ -455,7 +453,7 @@ describe('fetchVerificationReport', () => {
   });
 
   it('fetches configured cross-origin report candidates with session auth headers and no range header', async () => {
-    setBrowserPublicEnvForTests('VITE_API_BASE_URL', 'https://api.example.com');
+    setPublicRuntimeEnvForTests('VITE_API_BASE_URL', 'https://api.example.com');
     const report = verifierWireReport('success');
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify(report), {
@@ -493,7 +491,7 @@ describe('fetchVerificationReport', () => {
   });
 
   it('rejects raw cross-origin report URLs even when an API origin is configured', async () => {
-    setBrowserPublicEnvForTests('VITE_API_BASE_URL', 'https://api.example.com');
+    setPublicRuntimeEnvForTests('VITE_API_BASE_URL', 'https://api.example.com');
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal('fetch', fetchMock);
 

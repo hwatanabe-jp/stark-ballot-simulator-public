@@ -14,7 +14,7 @@ import {
   type ProverFailureCategory,
 } from '@stark-ballot/application/finalize/finalization-types';
 import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
-import { getRecordProperty, getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getObjectProperty, getStringProperty, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { buildFinalizationArtifactS3Keys } from '@stark-ballot/aws-adapters/finalize/artifact-key-layout';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
@@ -24,8 +24,8 @@ export interface AsyncProverArtifactKeys {
   bundleS3Key: string;
 }
 
-export const PROVER_FAILURE_MARKER_FILENAME = 'failure-marker.json';
-export const MAX_PROVER_FAILURE_MARKER_BYTES = 256;
+const PROVER_FAILURE_MARKER_FILENAME = 'failure-marker.json';
+const MAX_PROVER_FAILURE_MARKER_BYTES = 256;
 const PROVER_FAILURE_CATEGORIES = new Set<string>(PROVER_FAILURE_CATEGORY_VALUES);
 
 export interface PersistAsyncProverInputOptions {
@@ -75,7 +75,7 @@ export function parseProverFailureMarker(input: Buffer): ProverFailureCategory |
 
   try {
     const parsed: unknown = JSON.parse(input.toString('utf8'));
-    if (!isRecord(parsed) || Object.keys(parsed).join(',') !== 'category') {
+    if (!isNonNullObject(parsed) || Object.keys(parsed).join(',') !== 'category') {
       return undefined;
     }
     const category = getStringProperty(parsed, 'category');
@@ -86,12 +86,12 @@ export function parseProverFailureMarker(input: Buffer): ProverFailureCategory |
 }
 
 function isMissingS3Object(error: unknown): boolean {
-  if (!isRecord(error)) {
+  if (!isNonNullObject(error)) {
     return false;
   }
   const name = getStringProperty(error, 'name');
   const code = getStringProperty(error, 'code');
-  const metadata = getRecordProperty(error, '$metadata');
+  const metadata = getObjectProperty(error, '$metadata');
   return (
     name === 'NoSuchKey' ||
     name === 'NotFound' ||
@@ -208,38 +208,25 @@ export async function persistAsyncProverInputToS3(
 }
 
 function isReceiptWithImageId(value: unknown): value is ReceiptWithImageId {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return false;
   }
   const seal = getStringProperty(value, 'seal');
   const journal = value['journal'];
-  return typeof seal === 'string' && (typeof journal === 'string' || isRecord(journal));
+  return typeof seal === 'string' && (typeof journal === 'string' || isNonNullObject(journal));
+}
+
+function receiptImageId(value: unknown): string | undefined {
+  return getStringProperty(value, 'imageId') ?? getStringProperty(value, 'image_id');
 }
 
 function resolveImageId(restoredReceipt: unknown, restoredRaw: unknown, journal: ZkVMJournal): string {
-  if (typeof journal.imageId === 'string') {
-    return journal.imageId;
-  }
-  if (isRecord(restoredReceipt)) {
-    const receiptImageId =
-      getStringProperty(restoredReceipt, 'imageId') ?? getStringProperty(restoredReceipt, 'image_id');
-    if (receiptImageId) {
-      return receiptImageId;
-    }
-  }
-  if (isRecord(restoredRaw)) {
-    const rawImageId = getStringProperty(restoredRaw, 'imageId') ?? getStringProperty(restoredRaw, 'image_id');
-    if (rawImageId) {
-      return rawImageId;
-    }
-    const nestedReceipt = getRecordProperty(restoredRaw, 'receipt');
-    const nestedImageId =
-      nestedReceipt && (getStringProperty(nestedReceipt, 'imageId') ?? getStringProperty(nestedReceipt, 'image_id'));
-    if (nestedImageId) {
-      return nestedImageId;
-    }
-  }
-  return '';
+  if (typeof journal.imageId === 'string') return journal.imageId;
+  const fromReceipt = receiptImageId(restoredReceipt);
+  if (fromReceipt) return fromReceipt;
+  const fromRaw = receiptImageId(restoredRaw);
+  if (fromRaw) return fromRaw;
+  return receiptImageId(getObjectProperty(restoredRaw, 'receipt')) || '';
 }
 
 function buildBitmapData(

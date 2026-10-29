@@ -3,18 +3,24 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 (() => {
+  function isLightTheme(classList, darkThemes) {
+    let lastThemeWasLight = true;
+    for (const cssClass of classList) {
+      if (darkThemes.includes(cssClass)) {
+        lastThemeWasLight = false;
+        break;
+      }
+    }
+
+    return lastThemeWasLight;
+  }
+
   const darkThemes = ['ayu', 'navy', 'coal'];
   const lightThemes = ['light', 'rust'];
 
   const classList = document.getElementsByTagName('html')[0].classList;
 
-  let lastThemeWasLight = true;
-  for (const cssClass of classList) {
-    if (darkThemes.includes(cssClass)) {
-      lastThemeWasLight = false;
-      break;
-    }
-  }
+  const lastThemeWasLight = isLightTheme(classList, darkThemes);
 
   const theme = lastThemeWasLight ? 'default' : 'dark';
   mermaid.initialize({

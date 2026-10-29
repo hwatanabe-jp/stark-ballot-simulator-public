@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "paths": {
-      "@stark-ballot/api": ["../../apps/api/src/index.ts"],
       "@stark-ballot/api/server": ["../../apps/api/src/server/index.ts"],
       "@stark-ballot/api-contract": ["../../packages/api-contract/src/index.ts"],
       "@stark-ballot/api-contract/errors/*": ["../../packages/api-contract/src/errors/*"],
@@ -27,32 +26,27 @@
       "@stark-ballot/aws-adapters/store/*": ["../../packages/aws-adapters/src/store/*"],
       "@stark-ballot/crypto-primitives": ["../../packages/crypto-primitives/src/index.ts"],
       "@stark-ballot/deployment-authority": ["../../packages/deployment-authority/src/index.js"],
-      "@stark-ballot/deployment-authority/app-acceptance-ledger": [
-        "../../packages/deployment-authority/src/app-acceptance-ledger.js"
-      ],
       "@stark-ballot/deployment-authority/app-execution-authority": [
         "../../packages/deployment-authority/src/app-execution-authority.js"
       ],
       "@stark-ballot/deployment-authority/authority-bucket-policy": [
         "../../packages/deployment-authority/src/authority-bucket-policy.js"
       ],
-      "@stark-ballot/deployment-authority/conditional-object-ledger": [
-        "../../packages/deployment-authority/src/conditional-object-ledger.js"
-      ],
       "@stark-ballot/deployment-authority/descriptor-snapshot": [
         "../../packages/deployment-authority/src/descriptor-snapshot.js"
       ],
-      "@stark-ballot/deployment-authority/dynamodb-recovery-phase": [
-        "../../packages/deployment-authority/src/dynamodb-recovery-phase.js"
+      "@stark-ballot/deployment-authority/mutation-owner": [
+        "../../packages/deployment-authority/src/mutation-owner.js"
       ],
-      "@stark-ballot/deployment-authority/ecr-retention": ["../../packages/deployment-authority/src/ecr-retention.js"],
-      "@stark-ballot/deployment-authority/exact-bytes": ["../../packages/deployment-authority/src/exact-bytes.js"],
-      "@stark-ballot/deployment-authority/plan-approval": ["../../packages/deployment-authority/src/plan-approval.js"],
+      "@stark-ballot/deployment-authority/plan-package": ["../../packages/deployment-authority/src/plan-package.js"],
       "@stark-ballot/deployment-authority/release-ledger": [
         "../../packages/deployment-authority/src/release-ledger.js"
       ],
-      "@stark-ballot/deployment-authority/saved-plan-review": [
-        "../../packages/deployment-authority/src/saved-plan-review.js"
+      "@stark-ballot/deployment-authority/root-checkpoint": [
+        "../../packages/deployment-authority/src/root-checkpoint.js"
+      ],
+      "@stark-ballot/deployment-authority/static-frontend-manifest": [
+        "../../packages/deployment-authority/src/static-frontend-manifest.js"
       ],
       "@stark-ballot/deployment-authority/terraform-authority": [
         "../../packages/deployment-authority/src/terraform-authority.js"
@@ -81,7 +75,6 @@
       "@stark-ballot/domain/types/*": ["../../packages/domain/src/types/*"],
       "@stark-ballot/domain/utils/hex": ["../../packages/domain/src/lib/utils/hex.ts"],
       "@stark-ballot/domain/vote/*": ["../../packages/domain/src/lib/vote/*"],
-      "@stark-ballot/merkle": ["../../packages/merkle/src/index.ts"],
       "@stark-ballot/merkle/consistency-proof": ["../../packages/merkle/src/consistency-proof.ts"],
       "@stark-ballot/merkle/rfc6962-merkle-tree": ["../../packages/merkle/src/rfc6962-merkle-tree.ts"],
       "@stark-ballot/merkle/rfc6962-proof": ["../../packages/merkle/src/rfc6962-proof.ts"],
@@ -98,16 +91,12 @@
         "../../packages/node-adapters/src/zkvm/executor-factory.ts"
       ],
       "@stark-ballot/node-adapters/zkvm/mock-executor": ["../../packages/node-adapters/src/zkvm/mock-executor.ts"],
-      "@stark-ballot/runtime-config": ["../../packages/runtime-config/src/index.ts"],
       "@stark-ballot/runtime-config/env/*": ["../../packages/runtime-config/src/env/*"],
       "@stark-ballot/test-support": ["../../packages/test-support/src/index.ts"],
       "@stark-ballot/test-support/testing/*": ["../../packages/test-support/src/testing/*"],
       "@stark-ballot/validation": ["../../packages/validation/src/index.ts"],
       "@stark-ballot/validation/definedProperties": ["../../packages/validation/src/definedProperties.ts"],
       "@stark-ballot/validation/duplicate-detector": ["../../packages/validation/src/duplicate-detector.ts"],
-      "@stark-ballot/validation/duplicate-detector-cache": [
-        "../../packages/validation/src/duplicate-detector-cache.ts"
-      ],
       "@stark-ballot/validation/image-id-mapping": ["../../packages/validation/src/image-id-mapping.js"],
       "@stark-ballot/validation/image-id-policy": ["../../packages/validation/src/image-id-policy.js"],
       "@stark-ballot/validation/log-hash-salt": ["../../packages/validation/src/log-hash-salt.ts"],
@@ -115,6 +104,7 @@
       "@stark-ballot/validation/schema": ["../../packages/validation/src/schema.ts"],
       "@stark-ballot/validation/schema-openapi": ["../../packages/validation/src/schema-openapi.ts"],
       "@stark-ballot/validation/unknown-value-guards": ["../../packages/validation/src/unknown-value-guards.ts"],
+      "@stark-ballot/validation/vote-id": ["../../packages/validation/src/vote-id.ts"],
       "@stark-ballot/verification": ["../../packages/verification/src/index.ts"],
       "@stark-ballot/verification/bitmap-proof-types": [
         "../../packages/verification/src/verification/bitmap-proof-types.ts"
@@ -184,7 +174,6 @@
       "@stark-ballot/verification/verifier-service-report": [
         "../../packages/verification/src/verification/verifier-service-report.ts"
       ],
-      "@stark-ballot/web": ["../../apps/web/src/index.ts"],
       "@stark-ballot/web/api/*": ["../../apps/web/src/api/*"],
       "@stark-ballot/web/components/*": ["../../apps/web/src/components/*"],
       "@stark-ballot/web/finalize/*": ["../../apps/web/src/finalize/*"],

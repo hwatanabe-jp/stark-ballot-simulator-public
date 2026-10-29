@@ -18,20 +18,6 @@ variable "aws_account_id" {
   }
 }
 
-variable "protected_production_aws_account_id" {
-  description = "Expected AWS account ID for repository-only protected-production app lane contract rendering."
-  type        = string
-  default     = null
-
-  validation {
-    condition = (
-      var.protected_production_aws_account_id == null
-      || can(regex("^[0-9]{12}$", var.protected_production_aws_account_id))
-    )
-    error_message = "protected_production_aws_account_id must be a 12-digit AWS account ID when set."
-  }
-}
-
 variable "account_alias" {
   description = "Target AWS account alias, for example stark-dev."
   type        = string
@@ -159,11 +145,11 @@ variable "control_source_sha" {
 variable "terraform_version" {
   description = "Terraform CLI version installed by pipeline CodeBuild jobs."
   type        = string
-  default     = "1.15.8"
+  default     = "1.17.0"
 
   validation {
-    condition     = var.terraform_version == "1.15.8"
-    error_message = "terraform_version must be the exact reviewed Terraform version 1.15.8."
+    condition     = var.terraform_version == "1.17.0"
+    error_message = "terraform_version must be the exact reviewed Terraform version 1.17.0."
   }
 }
 

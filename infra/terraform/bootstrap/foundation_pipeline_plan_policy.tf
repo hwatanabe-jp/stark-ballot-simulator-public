@@ -8,12 +8,6 @@ data "aws_iam_policy_document" "foundation_codebuild_common" {
     resources = ["*"]
   }
 
-  statement {
-    sid       = "ReadExactSourcePathProjectConfiguration"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [for project in values(local.source_path_foundation_start_build_projects) : project.project_arn]
-  }
 
   statement {
     sid    = "WriteFoundationCodeBuildLogs"
@@ -64,7 +58,7 @@ data "aws_iam_policy_document" "foundation_codebuild_common" {
 data "aws_iam_policy_document" "foundation_terraform_plan" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.foundation_codebuild_common[0].json]
+  source_policy_documents = concat([data.aws_iam_policy_document.foundation_codebuild_common[0].json, data.aws_iam_policy_document.foundation_gateway_logging_read.json, data.aws_iam_policy_document.foundation_retained_image_logs_read.json], data.aws_iam_policy_document.foundation_image_retirement_read[*].json)
 
   statement {
     sid       = "ReadFoundationPlanActionExecutions"
@@ -173,66 +167,6 @@ data "aws_iam_policy_document" "foundation_terraform_plan" {
     resources = ["*"]
   }
 
-  statement {
-    sid    = "ReadFoundationEcrRetentionRole"
-    effect = "Allow"
-    actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionBoundary"
-    effect = "Allow"
-    actions = [
-      "iam:GetPolicy",
-      "iam:GetPolicyVersion",
-      "iam:ListPolicyVersions",
-    ]
-    resources = [local.foundation_ecr_retention_boundary_policy_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionLambda"
-    effect = "Allow"
-    actions = [
-      "lambda:GetFunction",
-      "lambda:GetFunctionCodeSigningConfig",
-      "lambda:GetFunctionConcurrency",
-      "lambda:GetPolicy",
-      "lambda:GetRuntimeManagementConfig",
-      "lambda:ListTags",
-      "lambda:ListVersionsByFunction",
-    ]
-    resources = [local.foundation_ecr_retention_function_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionSchedule"
-    effect = "Allow"
-    actions = [
-      "events:DescribeRule",
-      "events:ListTagsForResource",
-      "events:ListTargetsByRule",
-    ]
-    resources = [local.foundation_ecr_retention_schedule_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionLogGroup"
-    effect = "Allow"
-    actions = [
-      "logs:DescribeLogGroups",
-      "logs:ListTagsForResource",
-    ]
-    resources = ["*"]
-  }
 }
 
 resource "aws_iam_role_policy" "foundation_terraform_plan" {

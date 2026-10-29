@@ -12,6 +12,7 @@
 FROM debian:bookworm-slim AS build
 
 ARG RUST_VERSION=1.97.1
+ARG RISC0_BUILD_RUST_VERSION=1.97.1
 ARG RISC0_RUST_VERSION=1.97.0
 ARG RISC0_VERSION=3.0.6
 ARG RISC0_GIT_TAG=v3.0.6
@@ -72,7 +73,9 @@ RUN git -c advice.detachedHead=false clone \
     && ACTUAL_COMMIT="$(git rev-parse HEAD)" \
     && test "$ACTUAL_COMMIT" = "$RISC0_COMMIT" \
     && git log -1 --oneline \
-    && cargo "+${RUST_VERSION}" install --path rzup --locked \
+    && test "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" = "${RISC0_BUILD_RUST_VERSION%.*}" \
+    && rustup toolchain install "${RISC0_BUILD_RUST_VERSION}" --profile minimal \
+    && cargo "+${RISC0_BUILD_RUST_VERSION}" install --path rzup --locked \
     && rzup --version
 
 # Install pinned RISC Zero components.
@@ -82,10 +85,10 @@ RUN git -c advice.detachedHead=false clone \
 RUN /root/.cargo/bin/rzup install rust ${RISC0_RUST_VERSION} \
     && /root/.cargo/bin/rzup install r0vm ${RISC0_VERSION} \
     && /root/.cargo/bin/rzup install cargo-risczero ${RISC0_VERSION} \
-    && cargo risczero --version \
+    && cargo "+${RISC0_BUILD_RUST_VERSION}" risczero --version \
     && r0vm --version
 
-# Cleanup build workspace
+# Keep the CI toolchain compiler; application Rust is installed by the test job.
 RUN rm -rf /tmp/risc0-build
 
 # ============================================================

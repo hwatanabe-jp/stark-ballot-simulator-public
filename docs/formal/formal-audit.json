@@ -2,13 +2,33 @@
   "schema": "stark-ballot:formal-audit|v1",
   "reportPath": "docs/formal/formal-report.json",
   "proofHygiene": {
-    "scannedLeanFiles": 9,
+    "scannedLeanFiles": 10,
     "forbiddenTokens": ["sorry", "axiom", "admit", "unsafe"],
     "allowedCoreAxioms": ["propext", "Quot.sound", "Classical.choice"],
     "allowedNativeDecideSources": ["formal/StarkBallotFormal/Bitmap.lean"],
     "allowedNativeDecideDependencyPrefixes": ["StarkBallotFormal.byteValueAt_get_bit._native.native_decide."]
   },
   "theoremStatements": [
+    {
+      "name": "batch_step_preserves_invariant",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "statementSha256": "1aac45eb26c24ae408eed45642b814a3bfeda1df7a884a6c219aa7608ee2e90c"
+    },
+    {
+      "name": "batch_reachable_invariant",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "statementSha256": "24c1108337588f723e39841e23a1c5f1e8aa0ca3e5837b8f95f5b9314ca40fa2"
+    },
+    {
+      "name": "batch_workers_at_most_two",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "statementSha256": "06244b657fb289660d677620bd1d29a197b46d29b99fad31ca044e0019c49bfc"
+    },
+    {
+      "name": "batch_can_run_two_and_drain",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "statementSha256": "d789d44c59d56db42f7c05923ea5525abda5735bd8f0b11570dcfe57617a3f33"
+    },
     {
       "name": "excluded_zero_implies_no_slot_loss",
       "source": "formal/StarkBallotFormal/JournalCounts.lean",
@@ -111,6 +131,42 @@
     }
   ],
   "theoremDependencies": [
+    {
+      "name": "batch_step_preserves_invariant",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "qualifiedName": "StarkBallotFormal.batch_step_preserves_invariant",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "batch_reachable_invariant",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "qualifiedName": "StarkBallotFormal.batch_reachable_invariant",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "batch_workers_at_most_two",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "qualifiedName": "StarkBallotFormal.batch_workers_at_most_two",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
+    {
+      "name": "batch_can_run_two_and_drain",
+      "source": "formal/StarkBallotFormal/WorkerConcurrency.lean",
+      "qualifiedName": "StarkBallotFormal.batch_can_run_two_and_drain",
+      "coreAxiomDependencies": ["Quot.sound", "propext"],
+      "nativeDecideAxiomCount": 0,
+      "nativeDecideAxiomSha256": null,
+      "dependencySetSha256": "a734f8f7a30265275665cc90513488db62255abd95d3cdfc20d0aef0563e3f98"
+    },
     {
       "name": "excluded_zero_implies_no_slot_loss",
       "source": "formal/StarkBallotFormal/JournalCounts.lean",

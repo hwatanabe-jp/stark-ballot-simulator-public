@@ -46,6 +46,34 @@ const nonTurnstileEntrypoints = [
   'verification_worker',
 ] as const satisfies readonly AwsRuntimeEntrypoint[];
 
+const referenceResponses = new Map<string, unknown>([
+  [SESSION_SECRET_REF, { SecretString: SESSION_SECRET }],
+  [VOTE_SECRET_REF, { SecretString: VOTE_SECRET }],
+  [SESSION_TTL_REF, { Parameter: { Value: '120' } }],
+  [TURNSTILE_SECRET_REF, { SecretString: 'turnstile-secret-value' }],
+  [ORIGIN_VERIFY_HEADER_REF, { SecretString: ORIGIN_VERIFY_HEADER }],
+  [LOG_IP_HASH_SALT_REF, { SecretString: LOG_IP_HASH_SALT }],
+]);
+
+function readReferenceFixture(reference: string | undefined, includeTurnstile = false): unknown {
+  if (!reference || (!includeTurnstile && reference === TURNSTILE_SECRET_REF) || !referenceResponses.has(reference))
+    throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
+  return structuredClone(referenceResponses.get(reference));
+}
+
+function pendingReferenceReads() {
+  const pending = new Map(
+    [...referenceResponses.keys()].map((reference) => [reference, Promise.withResolvers<unknown>()]),
+  );
+  const send = vi.fn((command: { input?: { Name?: string; SecretId?: string } }) => {
+    const reference = command.input?.Name ?? command.input?.SecretId;
+    const request = reference ? pending.get(reference) : undefined;
+    if (!request) throw new Error('Unexpected runtime reference');
+    return request.promise;
+  });
+  return { pending, send };
+}
+
 function restoreEnv(): void {
   for (const key of Object.keys(process.env)) {
     if (!(key in originalEnv)) {
@@ -96,32 +124,95 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     vi.restoreAllMocks();
   });
 
+  it.each([undefined, 'public_api'] as const)(
+    'loads independent references concurrently and reuses the %s preload',
+    async (entrypoint) => {
+      const { pending, send } = pendingReferenceReads();
+      const env = targetEnv();
+      delete env['EXPECTED_ORIGIN_VERIFY_HEADER'];
+      delete env['LOG_IP_HASH_SALT'];
+      const options = { profile: activeTargetProfile, env, ssmClient: { send }, secretsManagerClient: { send } };
+      const first = ensureAwsRuntimeConfigReferencesLoaded(entrypoint, options);
+      const concurrent = ensureAwsRuntimeConfigReferencesLoaded(entrypoint, options);
+
+      // Every read must start before any response arrives; concurrent callers
+      // must share those reads rather than doubling the cold-start requests.
+      expect(send).toHaveBeenCalledTimes(referenceResponses.size);
+      expect(env['EXPECTED_ORIGIN_VERIFY_HEADER']).toBeUndefined();
+      expect(() =>
+        resolveRuntimeConfigReference({ name: 'SESSION_CAPABILITY_SECRET', reference: SESSION_SECRET_REF }),
+      ).toThrow('no target runtime resolver');
+      for (const [reference, request] of pending) request.resolve(referenceResponses.get(reference));
+      await Promise.all([first, concurrent]);
+      await ensureAwsRuntimeConfigReferencesLoaded(entrypoint, options);
+
+      expect(send).toHaveBeenCalledTimes(referenceResponses.size);
+      expect(env['EXPECTED_ORIGIN_VERIFY_HEADER']).toBe(ORIGIN_VERIFY_HEADER);
+      expect(env['LOG_IP_HASH_SALT']).toBe(LOG_IP_HASH_SALT);
+      expect(resolveRuntimeConfigReference({ name: 'SESSION_CAPABILITY_SECRET', reference: SESSION_SECRET_REF })).toBe(
+        SESSION_SECRET,
+      );
+    },
+  );
+
+  it('drains failed parallel reads without publishing partial config and allows a fresh retry', async () => {
+    const { pending, send } = pendingReferenceReads();
+    const env = targetEnv();
+    delete env['EXPECTED_ORIGIN_VERIFY_HEADER'];
+    delete env['LOG_IP_HASH_SALT'];
+    const invalidNameCollector = { add: vi.fn() };
+    const options = {
+      profile: activeTargetProfile,
+      env,
+      ssmClient: { send },
+      secretsManagerClient: { send },
+      invalidNameCollector,
+    };
+    let settled = false;
+    const loading = ensureAwsRuntimeConfigReferencesLoaded('public_api', options).finally(() => {
+      settled = true;
+    });
+    const rejected = expect(loading).rejects.toThrow('Reference read failed');
+    expect(send).toHaveBeenCalledTimes(referenceResponses.size);
+    for (const [reference, request] of pending) {
+      if (reference === SESSION_SECRET_REF || reference === VOTE_SECRET_REF) {
+        request.reject(new Error('Reference read failed'));
+      } else if (reference !== LOG_IP_HASH_SALT_REF) {
+        request.resolve(referenceResponses.get(reference));
+      }
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(env['EXPECTED_ORIGIN_VERIFY_HEADER']).toBeUndefined();
+    for (const [reference, request] of pending) {
+      if (reference === LOG_IP_HASH_SALT_REF) request.resolve(referenceResponses.get(reference));
+    }
+    await rejected;
+    expect(invalidNameCollector.add.mock.calls).toEqual(
+      expect.arrayContaining([['SESSION_CAPABILITY_SECRET_REF'], ['VOTE_SECRET_ENCRYPTION_KEY_REF']]),
+    );
+    expect(env['EXPECTED_ORIGIN_VERIFY_HEADER']).toBeUndefined();
+    expect(env['LOG_IP_HASH_SALT']).toBeUndefined();
+    expect(() =>
+      resolveRuntimeConfigReference({ name: 'SESSION_CAPABILITY_SECRET', reference: SESSION_SECRET_REF }),
+    ).toThrow('no target runtime resolver');
+
+    send.mockImplementation(async (command) =>
+      referenceResponses.get(command.input?.Name ?? command.input?.SecretId ?? ''),
+    );
+    await ensureAwsRuntimeConfigReferencesLoaded('public_api', options);
+    expect(send).toHaveBeenCalledTimes(referenceResponses.size * 2);
+    expect(env['EXPECTED_ORIGIN_VERIFY_HEADER']).toBe(ORIGIN_VERIFY_HEADER);
+    expect(env['LOG_IP_HASH_SALT']).toBe(LOG_IP_HASH_SALT);
+  });
+
   it('loads target references from AWS sources and installs a synchronous resolver', async () => {
     const send = vi.fn(async (command: { input?: { Name?: string; SecretId?: string } }) => {
       await Promise.resolve();
       if (command.input?.Name === VOTE_SECRET_REF || command.input?.Name === TURNSTILE_SECRET_REF) {
         throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
       }
-      const reference = command.input?.Name ?? command.input?.SecretId;
-      if (!reference) {
-        throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
-      }
-      switch (reference) {
-        case SESSION_SECRET_REF:
-          return { SecretString: SESSION_SECRET };
-        case SESSION_TTL_REF:
-          return { Parameter: { Value: '120' } };
-        case VOTE_SECRET_REF:
-          return { SecretString: VOTE_SECRET };
-        case TURNSTILE_SECRET_REF:
-          return { SecretString: 'turnstile-secret-value' };
-        case ORIGIN_VERIFY_HEADER_REF:
-          return { SecretString: ORIGIN_VERIFY_HEADER };
-        case LOG_IP_HASH_SALT_REF:
-          return { SecretString: LOG_IP_HASH_SALT };
-        default:
-          throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
-      }
+      return readReferenceFixture(command.input?.Name ?? command.input?.SecretId, true);
     });
 
     const env = targetEnv();
@@ -293,23 +384,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
       };
       const send = vi.fn(async (command: { input?: { Name?: string; SecretId?: string } }) => {
         await Promise.resolve();
-        const reference = command.input?.Name ?? command.input?.SecretId;
-        switch (reference) {
-          case undefined:
-            throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
-          case SESSION_SECRET_REF:
-            return { SecretString: SESSION_SECRET };
-          case VOTE_SECRET_REF:
-            return { SecretString: VOTE_SECRET };
-          case SESSION_TTL_REF:
-            return { Parameter: { Value: '120' } };
-          case ORIGIN_VERIFY_HEADER_REF:
-            return { SecretString: ORIGIN_VERIFY_HEADER };
-          case LOG_IP_HASH_SALT_REF:
-            return { SecretString: LOG_IP_HASH_SALT };
-          default:
-            throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
-        }
+        return readReferenceFixture(command.input?.Name ?? command.input?.SecretId);
       });
 
       await expect(
@@ -361,23 +436,7 @@ describe('awsRuntimeConfigReferenceResolver', () => {
     };
     const send = vi.fn(async (command: { input?: { Name?: string; SecretId?: string } }) => {
       await Promise.resolve();
-      const reference = command.input?.Name ?? command.input?.SecretId;
-      switch (reference) {
-        case undefined:
-          throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
-        case SESSION_SECRET_REF:
-          return { SecretString: SESSION_SECRET };
-        case VOTE_SECRET_REF:
-          return { SecretString: VOTE_SECRET };
-        case SESSION_TTL_REF:
-          return { Parameter: { Value: '120' } };
-        case ORIGIN_VERIFY_HEADER_REF:
-          return { SecretString: ORIGIN_VERIFY_HEADER };
-        case LOG_IP_HASH_SALT_REF:
-          return { SecretString: LOG_IP_HASH_SALT };
-        default:
-          throw Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
-      }
+      return readReferenceFixture(command.input?.Name ?? command.input?.SecretId);
     });
 
     const invalidNameCollector = {

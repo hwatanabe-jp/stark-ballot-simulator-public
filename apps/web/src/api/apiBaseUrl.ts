@@ -1,4 +1,4 @@
-import { readBrowserPublicEnv } from '@stark-ballot/runtime-config/env/browserPublic';
+import { readPublicRuntimeEnv } from '@stark-ballot/runtime-config/env/public-runtime-config';
 
 function isAbsoluteUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
@@ -28,7 +28,7 @@ function parseOriginOnlyUrl(value: string): string | null {
  * Invalid configured values are ignored so callers fail closed to same-origin /api paths.
  */
 export function getApiBaseUrl(): string | null {
-  const raw = readBrowserPublicEnv('VITE_API_BASE_URL');
+  const raw = readPublicRuntimeEnv('VITE_API_BASE_URL');
   if (!raw) {
     return null;
   }

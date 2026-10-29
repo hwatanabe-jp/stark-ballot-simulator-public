@@ -1,16 +1,8 @@
 data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
   count = local.foundation_pipeline_enabled ? 1 : 0
   source_policy_documents = concat([
-    # Main first-use reads fit the quota by omitting approval KMS statements
-    # already admitted by this boundary's KMS ceiling. The identity stays exact.
-    local.deployment_target.environmentId == "main" ? jsonencode({
-      Version = "2012-10-17"
-      Statement = [
-        for statement in jsondecode(data.aws_iam_policy_document.saved_plan_approval_apply_read["foundation_terraform"].json).Statement :
-        statement if statement.Sid == "ReadExactFoundationTerraformApprovalEvidenceVersion"
-      ]
-    }) : data.aws_iam_policy_document.saved_plan_approval_apply_read["foundation_terraform"].json,
-    ], [for document in data.aws_iam_policy_document.foundation_initial_state_observation[*].json : jsonencode({
+    data.aws_iam_policy_document.foundation_gateway_logging_ceiling.json,
+    ], data.aws_iam_policy_document.foundation_image_retirement_ceiling[*].json, [for document in data.aws_iam_policy_document.foundation_initial_state_observation[*].json : jsonencode({
       Version = "2012-10-17"
       Statement = [
         for statement in jsondecode(document).Statement :
@@ -18,6 +10,24 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
         statement if statement.Sid != "InspectInitialFoundationStateVersions"
       ]
   })])
+
+  statement {
+    actions   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+    resources = ["${local.deployment_record_prefixes.foundation}/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.deployment_record_roots.foundation.bucket]
+  }
+
+  statement {
+    actions   = ["codebuild:BatchGetBuilds"]
+    resources = ["arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${local.managed_codebuild_executions.foundation_terraform_apply.project}"]
+  }
+  statement {
+    actions   = ["codepipeline:ListActionExecutions", "codepipeline:GetPipelineExecution"]
+    resources = ["arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.managed_codebuild_executions.foundation_terraform_apply.pipeline}"]
+  }
 
   statement {
     effect  = "Allow"
@@ -49,21 +59,6 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
     effect    = "Allow"
     actions   = ["sts:GetCallerIdentity"]
     resources = ["*"]
-  }
-
-  # The identity policy separately limits each action to its reviewed resource
-  # inventory. This boundary intersects BatchGetProjects to the Apply project and
-  # ListActionExecutions to the Foundation pipeline while staying within quota.
-  statement {
-    effect = "Allow"
-    actions = [
-      "codebuild:BatchGetProjects",
-      "codepipeline:ListActionExecutions",
-    ]
-    resources = [
-      local.source_path_foundation_start_build_projects.apply.project_arn,
-      "arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.foundation_pipeline_name}",
-    ]
   }
 
   statement {
@@ -113,81 +108,11 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
   }
 
   statement {
-    effect = "Allow"
-    actions = [
-      "iam:CreateRole",
-      "iam:PutRolePermissionsBoundary",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PermissionsBoundary"
-      values   = [local.foundation_ecr_retention_boundary_policy_arn]
-    }
-  }
-
-  statement {
-    effect = "Allow"
-    actions = [
-      "iam:DeleteRole",
-      "iam:DeleteRolePermissionsBoundary",
-      "iam:DeleteRolePolicy",
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-      "iam:PutRolePolicy",
-      "iam:TagRole",
-      "iam:UntagRole",
-      "iam:UpdateAssumeRolePolicy",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-  }
-
-  statement {
-    effect = "Allow"
-    actions = [
-      "iam:GetPolicy",
-      "iam:GetPolicyVersion",
-      "iam:ListPolicyVersions",
-    ]
-    resources = [local.foundation_ecr_retention_boundary_policy_arn]
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["iam:PassRole"]
-    resources = [local.foundation_ecr_retention_role_arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["lambda.amazonaws.com"]
-    }
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["lambda:*"]
-    resources = [local.foundation_ecr_retention_function_arn]
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["events:*"]
-    resources = [local.foundation_ecr_retention_schedule_arn]
-  }
-
-  statement {
     sid    = "DenyDeletingRetainedFoundationImages"
     effect = "Deny"
     actions = [
       "ecr:BatchDeleteImage",
       "ecr:DeleteRepository",
-      "ecr:PutLifecyclePolicy",
     ]
     resources = local.foundation_ecr_repository_arns
   }
@@ -206,8 +131,8 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
       "${local.foundation_release_manifest_bucket_arn}/deployments/*",
       "${local.foundation_release_manifest_bucket_arn}/rollbacks/*",
       "${local.foundation_release_manifest_bucket_arn}/reissue/*",
-      local.foundation_toolchain_accepted_pointer_object_arn,
-      local.foundation_prover_accepted_pointer_object_arn,
+      local.foundation_toolchain_promotion_object_arn,
+      local.foundation_prover_promotion_object_arn,
     ]
   }
 
@@ -222,12 +147,6 @@ data "aws_iam_policy_document" "foundation_apply_deploy_permissions_boundary" {
 resource "aws_iam_policy" "foundation_apply_deploy_permissions_boundary" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    terraform_data.bootstrap_apply_authorization_propagation,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_pipeline_management,
-  ]
 
   name   = local.foundation_apply_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.foundation_apply_deploy_permissions_boundary[0].json

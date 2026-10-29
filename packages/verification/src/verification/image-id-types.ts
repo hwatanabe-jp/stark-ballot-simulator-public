@@ -3,18 +3,6 @@
  * Cryptographic receipt verification is performed by verifier-service.
  */
 
-export type {
-  AcceptedProverReleaseProvenance,
-  ConfirmedImageIdVariant,
-  ImageIdMapping,
-  ImageIdMethodMapping,
-  ImageIdProvenance,
-  ImageIdVariant,
-  ImageIdVariantAuthority,
-  LocalGuestBuildProvenance,
-  UnconfirmedImageIdVariant,
-} from '@stark-ballot/validation/image-id-mapping';
-
 /**
  * Receipt structure from zkVM execution with ImageID
  */

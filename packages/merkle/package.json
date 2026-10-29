@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
     "./consistency-proof": "./src/consistency-proof.ts",
     "./rfc6962-merkle-tree": "./src/rfc6962-merkle-tree.ts",
     "./rfc6962-proof": "./src/rfc6962-proof.ts"

@@ -1,7 +1,7 @@
 data "aws_iam_policy_document" "foundation_terraform_smoke" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = [data.aws_iam_policy_document.foundation_codebuild_common[0].json]
+  source_policy_documents = concat([data.aws_iam_policy_document.foundation_codebuild_common[0].json, data.aws_iam_policy_document.foundation_gateway_logging_read.json], [data.aws_iam_policy_document.foundation_retained_image_logs_read.json])
 
   statement {
     sid       = "ReadFoundationStateKeyIdentityForSmoke"
@@ -10,12 +10,6 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
     resources = [aws_kms_key.state.arn]
   }
 
-  statement {
-    sid       = "AssumeFoundationAcceptancePublisher"
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
-    resources = [local.foundation_terraform_acceptance_publisher_role_arn]
-  }
 
   statement {
     sid       = "ReadFoundationSigningConfigurationForSmoke"
@@ -58,7 +52,6 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
     actions = [
       "iam:GetRole",
       "iam:ListAttachedRolePolicies",
-      "iam:SimulatePrincipalPolicy",
     ]
     resources = [
       "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_terraform_apply_role_name}",
@@ -78,58 +71,6 @@ data "aws_iam_policy_document" "foundation_terraform_smoke" {
     ]
   }
 
-  statement {
-    sid    = "ReadFoundationEcrRetentionRoleForSmoke"
-    effect = "Allow"
-    actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionBoundaryForSmoke"
-    effect = "Allow"
-    actions = [
-      "iam:GetPolicy",
-      "iam:GetPolicyVersion",
-      "iam:ListPolicyVersions",
-    ]
-    resources = [local.foundation_ecr_retention_boundary_policy_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionLambdaForSmoke"
-    effect = "Allow"
-    actions = [
-      "lambda:GetFunction",
-      "lambda:GetFunctionConcurrency",
-      "lambda:GetPolicy",
-      "lambda:ListTags",
-    ]
-    resources = [local.foundation_ecr_retention_function_arn]
-  }
-
-  statement {
-    sid    = "ReadFoundationEcrRetentionScheduleForSmoke"
-    effect = "Allow"
-    actions = [
-      "events:DescribeRule",
-      "events:ListTagsForResource",
-      "events:ListTargetsByRule",
-    ]
-    resources = [local.foundation_ecr_retention_schedule_arn]
-  }
-
-  statement {
-    sid       = "ReadFoundationEcrRetentionLogGroupForSmoke"
-    effect    = "Allow"
-    actions   = ["logs:DescribeLogGroups"]
-    resources = ["*"]
-  }
 }
 
 resource "aws_iam_role_policy" "foundation_terraform_smoke" {

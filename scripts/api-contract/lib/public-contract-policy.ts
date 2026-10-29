@@ -1,3 +1,5 @@
+import { normalizeJsonKeys as stableNormalize } from '../../validation/canonical-json';
+import { requireRecord, requireExactKeys, requireString, requireArray } from '../../validation/manifest-admission';
 import { createHash } from 'node:crypto';
 import type { BaselineApiRouteContract } from '../typed-route-baseline-projection';
 import { SCHEMA_SEMANTIC_ALGORITHM } from '../schema-semantic-fingerprint';
@@ -91,35 +93,6 @@ export interface DriftClassification {
   currentContractHash: string;
   reason: string;
   allowedDriftPaths: string[];
-}
-
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
-  const actual = Object.keys(record).sort();
-  const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
-    throw new Error(`${label} must contain exactly: ${expected.join(', ')}`);
-  }
-}
-
-function requireString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`${label} must be a nonempty string`);
-  }
-  return value;
-}
-
-function requireArray(value: unknown, label: string): unknown[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`${label} must be an array`);
-  }
-  return value;
 }
 
 function requireStringArray(value: unknown, label: string): string[] {
@@ -315,21 +288,6 @@ export function comparePublicContractSnapshots(
   return observedDrift.filter((drift) => !allowed.has(drift.path));
 }
 
-export function stableNormalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stableNormalize);
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    const normalized: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      normalized[key] = stableNormalize(record[key]);
-    }
-    return normalized;
-  }
-  return value;
-}
-
 function hashStable(value: unknown): string {
   return createHash('sha256').update(stableStringify(value)).digest('hex');
 }
@@ -443,6 +401,10 @@ function schemaEvidenceFromSnapshot(snapshot: PublicContractSnapshot): Comparabl
   };
 }
 
+function isDriftRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function collectDrift(before: unknown, after: unknown, currentPath: string[] = []): PublicContractDrift[] {
   if (stableStringify(before) === stableStringify(after)) {
     return [];
@@ -453,19 +415,10 @@ function collectDrift(before: unknown, after: unknown, currentPath: string[] = [
       collectDrift(before[index], after[index], [...currentPath, String(index)]),
     ).flat();
   }
-  if (
-    !before ||
-    !after ||
-    typeof before !== 'object' ||
-    typeof after !== 'object' ||
-    Array.isArray(before) ||
-    Array.isArray(after)
-  ) {
+  if (!isDriftRecord(before) || !isDriftRecord(after)) {
     return [{ path: currentPath.join('.') || '$', before, after }];
   }
 
-  const beforeRecord = before as Record<string, unknown>;
-  const afterRecord = after as Record<string, unknown>;
-  const keys = [...new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])].sort();
-  return keys.flatMap((key) => collectDrift(beforeRecord[key], afterRecord[key], [...currentPath, key]));
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  return keys.flatMap((key) => collectDrift(before[key], after[key], [...currentPath, key]));
 }

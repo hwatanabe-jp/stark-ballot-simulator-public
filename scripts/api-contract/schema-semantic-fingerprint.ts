@@ -1,5 +1,6 @@
+import { normalizeJsonKeys as stableNormalize } from '../validation/canonical-json';
 import { createHash } from 'node:crypto';
-import { Schema, getSchemaDescriptor, type AnySchema } from '@stark-ballot/validation/schema';
+import { Schema, getSchemaDescriptor, type AnySchema, type SchemaDescriptor } from '@stark-ballot/validation/schema';
 
 export const SCHEMA_SEMANTIC_ALGORITHM = 'json-wire-admission' as const;
 
@@ -64,21 +65,6 @@ function isRuntimeSchema(value: unknown): value is AnySchema {
   return value instanceof Schema;
 }
 
-function stableNormalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stableNormalize);
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .map((key) => [key, stableNormalize(record[key])]),
-    );
-  }
-  return value;
-}
-
 function normalizeSchemaIssues(result: Record<string, unknown>): unknown {
   const error = result['error'];
   if (!isUnknownRecord(error) || !Array.isArray(error['issues'])) {
@@ -132,7 +118,44 @@ function isUndefinedOnlySchema(schema: unknown): boolean {
   return descriptor.kind === 'OptionalSchema' && isUndefinedOnlySchema(descriptor.inner);
 }
 
-export function describeSchemaSemantics(schema: unknown, cache = new WeakMap<object, unknown>()): unknown {
+function describeSchemaStructure(
+  definition: SchemaDescriptor,
+  descriptor: Record<string, unknown>,
+  cache: WeakMap<object, unknown>,
+): void {
+  if (definition.kind === 'ObjectSchema') {
+    descriptor['unknownKeys'] = definition.unknownKeys;
+    descriptor['shape'] = Object.fromEntries(
+      Object.entries(definition.shape)
+        .filter(([, fieldSchema]) => !isUndefinedOnlySchema(fieldSchema))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([fieldName, fieldSchema]) => [fieldName, describeSchemaSemantics(fieldSchema, cache)]),
+    );
+    descriptor['catchall'] = describeSchemaSemantics(definition.catchall, cache);
+  } else if (definition.kind === 'ArraySchema') {
+    descriptor['item'] = describeSchemaSemantics(definition.item, cache);
+  } else if (definition.kind === 'TupleSchema') {
+    descriptor['items'] = definition.items.map((item) => describeSchemaSemantics(item, cache));
+  } else if (
+    definition.kind === 'OptionalSchema' ||
+    definition.kind === 'NullableSchema' ||
+    definition.kind === 'EffectsSchema'
+  ) {
+    descriptor['inner'] = describeSchemaSemantics(definition.inner, cache);
+  } else if (definition.kind === 'UnionSchema') {
+    descriptor['options'] = definition.options.map((option) => describeSchemaSemantics(option, cache));
+  }
+}
+
+function describeSchemaLiterals(definition: SchemaDescriptor, descriptor: Record<string, unknown>): void {
+  if (definition.kind === 'EnumSchema') {
+    descriptor['values'] = definition.values;
+  } else if (definition.kind === 'LiteralSchema') {
+    descriptor['value'] = definition.value;
+  }
+}
+
+function describeSchemaSemantics(schema: unknown, cache = new WeakMap<object, unknown>()): unknown {
   if (!isRuntimeSchema(schema)) {
     return {
       kind: 'OpaqueSchemaExport',
@@ -155,30 +178,8 @@ export function describeSchemaSemantics(schema: unknown, cache = new WeakMap<obj
   };
   cache.set(schemaObject, descriptor);
 
-  if (definition.kind === 'ObjectSchema') {
-    descriptor['unknownKeys'] = definition.unknownKeys;
-    descriptor['shape'] = Object.fromEntries(
-      Object.entries(definition.shape)
-        .filter(([, fieldSchema]) => !isUndefinedOnlySchema(fieldSchema))
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([fieldName, fieldSchema]) => [fieldName, describeSchemaSemantics(fieldSchema, cache)]),
-    );
-    descriptor['catchall'] = describeSchemaSemantics(definition.catchall, cache);
-  } else if (definition.kind === 'ArraySchema') {
-    descriptor['item'] = describeSchemaSemantics(definition.item, cache);
-  } else if (definition.kind === 'TupleSchema') {
-    descriptor['items'] = definition.items.map((item) => describeSchemaSemantics(item, cache));
-  } else if (definition.kind === 'OptionalSchema' || definition.kind === 'NullableSchema') {
-    descriptor['inner'] = describeSchemaSemantics(definition.inner, cache);
-  } else if (definition.kind === 'EffectsSchema') {
-    descriptor['inner'] = describeSchemaSemantics(definition.inner, cache);
-  } else if (definition.kind === 'UnionSchema') {
-    descriptor['options'] = definition.options.map((option) => describeSchemaSemantics(option, cache));
-  } else if (definition.kind === 'EnumSchema') {
-    descriptor['values'] = definition.values;
-  } else if (definition.kind === 'LiteralSchema') {
-    descriptor['value'] = definition.value;
-  }
+  describeSchemaStructure(definition, descriptor, cache);
+  describeSchemaLiterals(definition, descriptor);
 
   return descriptor;
 }

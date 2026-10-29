@@ -1,5 +1,11 @@
 # Current Contract Public API and Download Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: Route-visible contract and download authority implemented**
 > (commit `eaf034f`, on top of the preparatory `653602f` slice).
 > `verificationExecutionId` is the only public selector, finalized reads

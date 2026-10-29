@@ -121,29 +121,55 @@ const asSafeObject = (value: SafeLogValue | undefined): SafeLogObject | undefine
   return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
 };
 
+function logArgumentPriority(arg: unknown): number {
+  if (typeof arg === 'string') return 0;
+  if (arg instanceof Error) return 1;
+  if (isPlainObject(arg)) {
+    const hasCanonicalField = ['event', 'error', 'message'].some(
+      (key) => Object.getOwnPropertyDescriptor(arg, key) !== undefined,
+    );
+    return hasCanonicalField ? 2 : 3;
+  }
+  return 3;
+}
+
+interface ClassifiedLogArguments {
+  message: string | undefined;
+  error: SafeLogObject | undefined;
+  fields: SafeLogObject;
+  extra: SafeLogValue[];
+}
+
+function classifyLogArgument(arg: unknown, sanitized: SafeLogValue, result: ClassifiedLogArguments): void {
+  if (typeof arg === 'string' && !result.message && typeof sanitized === 'string') {
+    result.message = sanitized;
+    return;
+  }
+  if (arg instanceof Error && !result.error) {
+    result.error = asSafeObject(sanitized);
+    return;
+  }
+  if (isPlainObject(arg)) {
+    const object = asSafeObject(sanitized);
+    if (object) Object.assign(result.fields, object);
+    return;
+  }
+  result.extra.push(sanitized);
+}
+
 const extractLogArgs = (
   args: unknown[],
   sanitizer: LogSanitizer,
 ): { message?: string; fields: SafeLogObject; error?: SafeLogObject } => {
-  const fields = createSafeLogObject();
-  let message: string | undefined;
-  let error: SafeLogObject | undefined;
-  const extra: SafeLogValue[] = [];
-
-  const prioritizedArgs = args.slice(0, MAX_ARGUMENTS_TO_CLASSIFY).map((arg, index) => {
-    let priority = 3;
-    if (typeof arg === 'string') {
-      priority = 0;
-    } else if (arg instanceof Error) {
-      priority = 1;
-    } else if (isPlainObject(arg)) {
-      const hasCanonicalField = ['event', 'error', 'message'].some(
-        (key) => Object.getOwnPropertyDescriptor(arg, key) !== undefined,
-      );
-      priority = hasCanonicalField ? 2 : 3;
-    }
-    return { arg, index, priority };
-  });
+  const result: ClassifiedLogArguments = {
+    fields: createSafeLogObject(),
+    message: undefined,
+    error: undefined,
+    extra: [],
+  };
+  const prioritizedArgs = args
+    .slice(0, MAX_ARGUMENTS_TO_CLASSIFY)
+    .map((arg, index) => ({ arg, index, priority: logArgumentPriority(arg) }));
   prioritizedArgs.sort((left, right) => left.priority - right.priority || left.index - right.index);
 
   for (const { arg } of prioritizedArgs) {
@@ -154,23 +180,10 @@ const extractLogArgs = (
     if (sanitized === undefined) {
       continue;
     }
-    if (typeof arg === 'string' && !message && typeof sanitized === 'string') {
-      message = sanitized;
-      continue;
-    }
-    if (arg instanceof Error && !error) {
-      error = asSafeObject(sanitized);
-      continue;
-    }
-    if (isPlainObject(arg)) {
-      const object = asSafeObject(sanitized);
-      if (object) {
-        Object.assign(fields, object);
-      }
-      continue;
-    }
-    extra.push(sanitized);
+    classifyLogArgument(arg, sanitized, result);
   }
+
+  const { fields, message, error, extra } = result;
 
   if (extra.length > 0) {
     fields['extra'] = extra;
@@ -194,31 +207,49 @@ const getStringField = (value: SafeLogObject | undefined, key: string): string |
   return typeof field === 'string' ? field : undefined;
 };
 
-const buildJsonPayload = (level: LogLevel, args: unknown[], includeContext: boolean): string => {
-  const sanitizer = createLogSanitizer();
+function sanitizeLogContext(sanitizer: LogSanitizer, includeContext: boolean): SafeLogObject | undefined {
   const rawContext = includeContext ? getLogContext() : undefined;
   const context = rawContext === undefined ? undefined : asSafeObject(sanitizer.sanitize(rawContext));
-  const { message, fields, error } = extractLogArgs(args, sanitizer);
-  const fieldMessage = getStringField(fields, 'message');
-  const event = getStringField(fields, 'event');
-  const fieldHttp = asSafeObject(fields['http']);
-  const fieldError = fields['error'];
-  const contextHttp = asSafeObject(context?.['http']);
+  return context;
+}
+
+function extraLogFields(fields: SafeLogObject): SafeLogObject {
   const restFields = createSafeLogObject();
   for (const [key, field] of Object.entries(fields)) {
     if (!RESERVED_ENVELOPE_FIELDS.has(key)) {
       restFields[key] = field;
     }
   }
+  return restFields;
+}
+
+function mergedHttpFields(context: SafeLogObject | undefined, fields: SafeLogObject): SafeLogObject | undefined {
+  const mergedHttp = compact({ ...asSafeObject(context?.['http']), ...asSafeObject(fields['http']) });
+  return Object.keys(mergedHttp).length > 0 ? mergedHttp : undefined;
+}
+
+function deploymentLogFields() {
+  return {
+    deployment_id: runtimeConfig.deploymentId ? sanitizeLogString(runtimeConfig.deploymentId) : undefined,
+    app_source_sha: runtimeConfig.appSourceSha ? sanitizeLogString(runtimeConfig.appSourceSha) : undefined,
+    deploy_mode: runtimeConfig.deployMode ? sanitizeLogString(runtimeConfig.deployMode) : undefined,
+  };
+}
+
+const buildJsonPayload = (level: LogLevel, args: unknown[], includeContext: boolean): string => {
+  const sanitizer = createLogSanitizer();
+  const context = sanitizeLogContext(sanitizer, includeContext);
+  const { message, fields, error } = extractLogArgs(args, sanitizer);
+  const fieldMessage = getStringField(fields, 'message');
+  const event = getStringField(fields, 'event');
+  const fieldError = fields['error'];
+  const restFields = extraLogFields(fields);
 
   const resolvedMessage = message ?? fieldMessage ?? event ?? 'log';
   const resolvedRequestId = getStringField(context, 'requestId');
   const resolvedService = sanitizeLogString(resolveServiceName());
   const resolvedEnv = sanitizeLogString(resolveEnvName());
-  const mergedHttp = compact({
-    ...(contextHttp ?? {}),
-    ...(fieldHttp ?? {}),
-  });
+  const http = mergedHttpFields(context, fields);
 
   const payload: SafeLogObject = compact({
     ts: new Date().toISOString(),
@@ -227,11 +258,9 @@ const buildJsonPayload = (level: LogLevel, args: unknown[], includeContext: bool
     event,
     env: resolvedEnv,
     service: resolvedService,
-    deployment_id: runtimeConfig.deploymentId ? sanitizeLogString(runtimeConfig.deploymentId) : undefined,
-    app_source_sha: runtimeConfig.appSourceSha ? sanitizeLogString(runtimeConfig.appSourceSha) : undefined,
-    deploy_mode: runtimeConfig.deployMode ? sanitizeLogString(runtimeConfig.deployMode) : undefined,
+    ...deploymentLogFields(),
     request_id: resolvedRequestId,
-    http: Object.keys(mergedHttp).length > 0 ? mergedHttp : undefined,
+    http,
     ...((error ?? fieldError) ? { error: error ?? fieldError } : {}),
     ...restFields,
   });

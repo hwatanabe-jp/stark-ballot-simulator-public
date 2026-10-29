@@ -49,8 +49,8 @@ production STARK proof や `Verified` 表示の根拠にはなりません。req
 
 ### cast 時点の exact evidence と browser-local opening
 
-「あなたの票が bulletin に記録された」ことは、最終 Journal だけでは確認できません。
-現行フローは次の exact cast-time evidence を照合します。
+「あなたの票が bulletin に記録された」ことは、投票時点の証拠を照合して確認します。
+最終 Journal に加え、次の exact cast-time evidence が必要です。
 
 - `voteReceipt.bulletinRootAtCast`
 - `userVote.proof` または

@@ -1,8 +1,5 @@
-import { DynamoDBClient, GetItemCommand, UpdateItemCommand, type AttributeValue } from '@aws-sdk/client-dynamodb';
 import { CloudWatchLogsClient, CreateLogStreamCommand, PutLogEventsCommand } from '@aws-sdk/client-cloudwatch-logs';
-import { DescribeExecutionCommand, SFNClient } from '@aws-sdk/client-sfn';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { assertSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import { ensureAwsRuntimeConfigReferencesLoaded } from '@stark-ballot/aws-adapters/config/awsRuntimeConfigReferenceResolver';
 import { validateTargetObservabilityEnv } from '@stark-ballot/runtime-config/env/observability';
 import {
@@ -12,17 +9,15 @@ import {
 } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { RuntimeConfigValidationError, bootstrapLambdaRuntime, type RuntimeConfigName } from '../runtimeBootstrap.js';
 
-const RESERVED_SEMAPHORE_ATTRIBUTES = new Set(['LockName', 'currentLockCount', 'limit']);
-const TERMINAL_EXECUTION_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED']);
 const OPS_LEDGER_LOG_STREAM_NAME = 'normalized-events';
 const OPS_LEDGER_EVENT_TYPES = new Set([
   'alarm_state_changed',
-  'ecs_task_stopped',
+  'prover_job_finished',
   'pipeline_execution_changed',
   'deployment_accepted',
 ]);
 let resolvedRuntimeProfile: ResolvedRuntimeProfile | undefined;
-let resolvedAwsClients: SemaphoreJanitorAwsClients | undefined;
+let resolvedAwsClients: OpsLedgerAwsClients | undefined;
 const ALARM_STATES = new Set(['ALARM', 'OK', 'INSUFFICIENT_DATA']);
 const PIPELINE_STATES = new Set([
   'STARTED',
@@ -45,18 +40,7 @@ const SAFE_RESOURCE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 const SAFE_RESOURCE_PREFIX_PATTERN = /^[a-z0-9][a-z0-9-]{2,127}$/;
 const SAFE_PIPELINE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
 const SAFE_OPS_LEDGER_LOG_GROUP_PATTERN = /^\/aws\/events\/[a-z0-9][a-z0-9-]{2,127}-ops-ledger$/;
-const OPS_LEDGER_PIPELINE_SUFFIXES = [
-  '',
-  '-foundation',
-  '-app',
-  '-app-static-fast',
-  '-toolchain-release',
-  '-prover-release',
-] as const;
-
-export interface SemaphoreJanitorResult {
-  released: number;
-}
+const OPS_LEDGER_PIPELINE_SUFFIXES = ['', '-foundation', '-app', '-toolchain-release', '-prover-release'] as const;
 
 export interface OpsLedgerResult {
   recorded: true;
@@ -64,7 +48,7 @@ export interface OpsLedgerResult {
 
 type OpsLedgerEventType =
   | 'alarm_state_changed'
-  | 'ecs_task_stopped'
+  | 'prover_job_finished'
   | 'pipeline_execution_changed'
   | 'deployment_accepted';
 
@@ -80,43 +64,19 @@ interface NormalizedOpsLedgerEvent {
   state: string;
 }
 
-interface SemaphoreJanitorConfig {
-  tableName: string;
-  lockName: string;
-  staleMillis: number;
-  stateMachineArn: string;
+interface OpsLedgerConfig {
   opsLedgerLogGroupName: string;
   opsLedgerResourcePrefix: string;
   opsLedgerPipelineNames: ReadonlySet<string>;
   deploymentEnvironment: string;
 }
 
-interface SemaphoreJanitorAwsClients {
-  ddb: DynamoDBClient;
-  sfn: SFNClient;
+interface OpsLedgerAwsClients {
   logs: CloudWatchLogsClient;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function getStringProperty(value: Record<string, unknown>, key: string): string | undefined {
-  const candidate = value[key];
-  return typeof candidate === 'string' ? candidate : undefined;
-}
-
-function logInvalidEventBridgeInvocation(): void {
-  logger.warn('Invocation payload is invalid', {
-    event: 'invocation_invalid',
-    source_kind: 'eventbridge',
-    reason: 'event_shape_invalid',
-  });
-}
-
-function throwInvalidEventBridgeInvocation(): never {
-  logInvalidEventBridgeInvocation();
-  throw new Error('Invalid EventBridge invocation');
 }
 
 function throwInvalidOpsLedgerInvocation(): never {
@@ -128,23 +88,16 @@ function throwInvalidOpsLedgerInvocation(): never {
   throw new Error('Invalid ops ledger invocation');
 }
 
-function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
-  const value = env[name];
-  if (!value) {
-    throw new Error(`${name} is required for semaphore janitor`);
-  }
-  return value;
+function addInvalidLedgerConfig(names: RuntimeConfigName[], name: RuntimeConfigName): void {
+  if (!names.includes(name)) names.push(name);
 }
 
-function resolveConfig(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): SemaphoreJanitorConfig {
+function missingLedgerConfig(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): RuntimeConfigName[] {
   const invalidNames: RuntimeConfigName[] = [];
   if (profile.target.kind !== 'aws' || profile.external.kind !== 'aws') {
     invalidNames.push('RUNTIME_PROFILE');
   }
   for (const name of [
-    'PROVER_SEMAPHORE_TABLE_NAME',
-    'PROVER_SEMAPHORE_LOCK_NAME',
-    'PROVER_SEMAPHORE_STALE_SECONDS',
     'OPS_LEDGER_LOG_GROUP_NAME',
     'OPS_LEDGER_PIPELINE_BASE_NAME',
     'OPS_LEDGER_RESOURCE_PREFIX',
@@ -154,18 +107,13 @@ function resolveConfig(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv):
     }
   }
 
-  const staleSeconds = Number(env['PROVER_SEMAPHORE_STALE_SECONDS']);
-  if (!Number.isFinite(staleSeconds) || staleSeconds <= 0) {
-    if (!invalidNames.includes('PROVER_SEMAPHORE_STALE_SECONDS')) {
-      invalidNames.push('PROVER_SEMAPHORE_STALE_SECONDS');
-    }
-  }
+  return invalidNames;
+}
 
+function readLedgerResourceConfig(env: NodeJS.ProcessEnv, invalidNames: RuntimeConfigName[]) {
   const opsLedgerResourcePrefix = env['OPS_LEDGER_RESOURCE_PREFIX']?.trim() ?? '';
   if (!SAFE_RESOURCE_PREFIX_PATTERN.test(opsLedgerResourcePrefix)) {
-    if (!invalidNames.includes('OPS_LEDGER_RESOURCE_PREFIX')) {
-      invalidNames.push('OPS_LEDGER_RESOURCE_PREFIX');
-    }
+    addInvalidLedgerConfig(invalidNames, 'OPS_LEDGER_RESOURCE_PREFIX');
   }
   const opsLedgerLogGroupName = env['OPS_LEDGER_LOG_GROUP_NAME']?.trim() ?? '';
   if (
@@ -173,49 +121,57 @@ function resolveConfig(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv):
     (SAFE_RESOURCE_PREFIX_PATTERN.test(opsLedgerResourcePrefix) &&
       opsLedgerLogGroupName !== `/aws/events/${opsLedgerResourcePrefix}-ops-ledger`)
   ) {
-    if (!invalidNames.includes('OPS_LEDGER_LOG_GROUP_NAME')) {
-      invalidNames.push('OPS_LEDGER_LOG_GROUP_NAME');
-    }
+    addInvalidLedgerConfig(invalidNames, 'OPS_LEDGER_LOG_GROUP_NAME');
   }
-  const deploymentEnvironment = profile.target.kind === 'aws' ? profile.target.deploymentEnvironment : '';
-  const accountAlias =
-    deploymentEnvironment === 'develop' ? 'stark-dev' : deploymentEnvironment === 'main' ? 'stark-prod' : '';
-  const basePipelineName = env['OPS_LEDGER_PIPELINE_BASE_NAME']?.trim() ?? '';
-  const pipelineIdentitySuffix = accountAlias ? `-pipeline-${accountAlias}-${deploymentEnvironment}` : '';
-  const expectedPipelineNames = OPS_LEDGER_PIPELINE_SUFFIXES.map((suffix) => `${basePipelineName}${suffix}`);
-  if (
+  return { opsLedgerResourcePrefix, opsLedgerLogGroupName };
+}
+
+function isLedgerPipelineIdentity(
+  basePipelineName: string,
+  pipelineIdentitySuffix: string,
+  expectedPipelineNames: readonly string[],
+): boolean {
+  return !(
     !SAFE_PIPELINE_NAME_PATTERN.test(basePipelineName) ||
     !pipelineIdentitySuffix ||
     !basePipelineName.endsWith(pipelineIdentitySuffix) ||
     basePipelineName.length <= pipelineIdentitySuffix.length ||
     expectedPipelineNames.some((name) => !SAFE_PIPELINE_NAME_PATTERN.test(name))
-  ) {
-    if (!invalidNames.includes('OPS_LEDGER_PIPELINE_BASE_NAME')) {
-      invalidNames.push('OPS_LEDGER_PIPELINE_BASE_NAME');
-    }
+  );
+}
+
+function readLedgerPipelineNames(
+  deploymentEnvironment: string,
+  env: NodeJS.ProcessEnv,
+  invalidNames: RuntimeConfigName[],
+): ReadonlySet<string> {
+  const accountAlias =
+    deploymentEnvironment === 'develop' ? 'stark-dev' : deploymentEnvironment === 'main' ? 'stark-prod' : '';
+  const basePipelineName = env['OPS_LEDGER_PIPELINE_BASE_NAME']?.trim() ?? '';
+  const pipelineIdentitySuffix = accountAlias ? `-pipeline-${accountAlias}-${deploymentEnvironment}` : '';
+  const expectedPipelineNames = OPS_LEDGER_PIPELINE_SUFFIXES.map((suffix) => `${basePipelineName}${suffix}`);
+  if (!isLedgerPipelineIdentity(basePipelineName, pipelineIdentitySuffix, expectedPipelineNames)) {
+    addInvalidLedgerConfig(invalidNames, 'OPS_LEDGER_PIPELINE_BASE_NAME');
   }
+  return new Set(expectedPipelineNames);
+}
+
+function assertLedgerConfig(invalidNames: RuntimeConfigName[]): void {
   if (invalidNames.length > 0) {
     const message = invalidNames.includes('RUNTIME_PROFILE')
       ? 'RUNTIME_PROFILE=target-aws-async is required for semaphore janitor'
-      : invalidNames[0] === 'PROVER_SEMAPHORE_STALE_SECONDS'
-        ? 'PROVER_SEMAPHORE_STALE_SECONDS must be a positive number'
-        : `${invalidNames[0]} is required for semaphore janitor`;
+      : `${invalidNames[0]} is required for operations ledger`;
     throw new RuntimeConfigValidationError(invalidNames, undefined, message);
   }
+}
 
-  return {
-    tableName: requireEnv(env, 'PROVER_SEMAPHORE_TABLE_NAME'),
-    lockName: requireEnv(env, 'PROVER_SEMAPHORE_LOCK_NAME'),
-    staleMillis: Math.floor(staleSeconds * 1000),
-    stateMachineArn:
-      profile.external.kind === 'aws'
-        ? profile.external.asyncRuntime.proverStateMachineArn
-        : requireEnv(env, 'PROVER_STATE_MACHINE_ARN'),
-    opsLedgerLogGroupName,
-    opsLedgerResourcePrefix,
-    opsLedgerPipelineNames: new Set(expectedPipelineNames),
-    deploymentEnvironment,
-  };
+function resolveConfig(profile: ResolvedRuntimeProfile, env: NodeJS.ProcessEnv): OpsLedgerConfig {
+  const invalidNames = missingLedgerConfig(profile, env);
+  const resource = readLedgerResourceConfig(env, invalidNames);
+  const deploymentEnvironment = profile.target.kind === 'aws' ? profile.target.deploymentEnvironment : '';
+  const opsLedgerPipelineNames = readLedgerPipelineNames(deploymentEnvironment, env, invalidNames);
+  assertLedgerConfig(invalidNames);
+  return { ...resource, opsLedgerPipelineNames, deploymentEnvironment };
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -234,24 +190,32 @@ function parseCanonicalOpsLedgerTimestamp(value: unknown): number | undefined {
   if (!Number.isFinite(millis) || (value !== canonical && value !== canonicalWithoutZeroMillis)) {
     return undefined;
   }
-  const now = Date.now();
-  if (millis < now - MAX_OPS_LEDGER_EVENT_AGE_MILLIS || millis > now + MAX_OPS_LEDGER_FUTURE_SKEW_MILLIS) {
-    return undefined;
-  }
-  return millis;
+  return isRetainedLedgerTimestamp(millis) ? millis : undefined;
 }
 
-function parseOpsLedgerEvent(
-  config: SemaphoreJanitorConfig,
-  candidate: Record<string, unknown>,
-): { event: NormalizedOpsLedgerEvent; timestamp: number } | undefined {
-  const eventType = candidate['event_type'];
-  if (typeof eventType !== 'string' || !OPS_LEDGER_EVENT_TYPES.has(eventType)) {
-    return undefined;
-  }
-  const needsDeploymentId = eventType === 'ecs_task_stopped' || eventType === 'deployment_accepted';
+function isRetainedLedgerTimestamp(millis: number): boolean {
+  const now = Date.now();
+  return millis >= now - MAX_OPS_LEDGER_EVENT_AGE_MILLIS && millis <= now + MAX_OPS_LEDGER_FUTURE_SKEW_MILLIS;
+}
+
+interface LedgerEventRequirements {
+  needsDeploymentId: boolean;
+  needsPipelineExecutionId: boolean;
+  needsAcceptanceDisposition: boolean;
+}
+
+function ledgerEventRequirements(eventType: string): LedgerEventRequirements {
+  const needsDeploymentId = eventType === 'prover_job_finished' || eventType === 'deployment_accepted';
   const needsPipelineExecutionId = eventType === 'pipeline_execution_changed' || eventType === 'deployment_accepted';
   const needsAcceptanceDisposition = eventType === 'deployment_accepted';
+  return { needsDeploymentId, needsPipelineExecutionId, needsAcceptanceDisposition };
+}
+
+function ledgerEventKeys({
+  needsDeploymentId,
+  needsPipelineExecutionId,
+  needsAcceptanceDisposition,
+}: LedgerEventRequirements): string[] {
   const expectedKeys = [
     'ts',
     'event_type',
@@ -263,62 +227,128 @@ function parseOpsLedgerEvent(
     'resource_name',
     'state',
   ];
-  if (!hasExactKeys(candidate, expectedKeys)) {
-    return undefined;
-  }
+  return expectedKeys;
+}
 
-  const timestamp = parseCanonicalOpsLedgerTimestamp(candidate['ts']);
+function readLedgerFields(candidate: Record<string, unknown>) {
   const resourceName = candidate['resource_name'];
   const state = candidate['state'];
   const deploymentId = candidate['deployment_id'];
   const deploymentMode = candidate['deployment_mode'];
   const pipelineExecutionId = candidate['pipeline_execution_id'];
   const planDisposition = candidate['plan_disposition'];
-  if (
-    candidate['env'] !== config.deploymentEnvironment ||
-    timestamp === undefined ||
-    typeof resourceName !== 'string' ||
-    !SAFE_RESOURCE_NAME_PATTERN.test(resourceName) ||
-    typeof state !== 'string' ||
-    (needsDeploymentId && (typeof deploymentId !== 'string' || !DEPLOYMENT_ID_PATTERN.test(deploymentId))) ||
-    (needsPipelineExecutionId &&
-      (typeof pipelineExecutionId !== 'string' || !PIPELINE_EXECUTION_ID_PATTERN.test(pipelineExecutionId))) ||
-    (needsAcceptanceDisposition &&
-      (typeof deploymentMode !== 'string' ||
-        !DEPLOYMENT_MODES.has(deploymentMode) ||
-        typeof planDisposition !== 'string' ||
-        !PLAN_DISPOSITIONS.has(planDisposition)))
-  ) {
-    return undefined;
-  }
+  return { resourceName, state, deploymentId, deploymentMode, pipelineExecutionId, planDisposition };
+}
 
-  const validSourceState =
-    (eventType === 'alarm_state_changed' &&
-      resourceName.startsWith(`${config.opsLedgerResourcePrefix}-`) &&
-      ALARM_STATES.has(state)) ||
-    (eventType === 'ecs_task_stopped' && resourceName === 'prover-task' && state === 'STOPPED') ||
-    (eventType === 'pipeline_execution_changed' &&
-      config.opsLedgerPipelineNames.has(resourceName) &&
-      PIPELINE_STATES.has(state)) ||
-    (eventType === 'deployment_accepted' && resourceName === 'app' && state === 'ACCEPTED');
-  if (!validSourceState) {
-    return undefined;
-  }
+type LedgerFields = ReturnType<typeof readLedgerFields>;
+type LedgerResourceFields = LedgerFields & { resourceName: string; state: string };
 
+function hasValidLedgerEnvelope(
+  config: OpsLedgerConfig,
+  candidate: Record<string, unknown>,
+  timestamp: number | undefined,
+  fields: LedgerFields,
+): fields is LedgerResourceFields {
+  return (
+    candidate['env'] === config.deploymentEnvironment &&
+    timestamp !== undefined &&
+    typeof fields.resourceName === 'string' &&
+    SAFE_RESOURCE_NAME_PATTERN.test(fields.resourceName) &&
+    typeof fields.state === 'string'
+  );
+}
+
+function matchesLedgerString(value: unknown, pattern: RegExp): boolean {
+  return typeof value === 'string' && pattern.test(value);
+}
+
+function hasAcceptanceDisposition(fields: LedgerFields): boolean {
+  return (
+    typeof fields.deploymentMode === 'string' &&
+    DEPLOYMENT_MODES.has(fields.deploymentMode) &&
+    typeof fields.planDisposition === 'string' &&
+    PLAN_DISPOSITIONS.has(fields.planDisposition)
+  );
+}
+
+function hasValidLedgerCorrelations(fields: LedgerFields, requirements: LedgerEventRequirements): boolean {
+  return (
+    (!requirements.needsDeploymentId || matchesLedgerString(fields.deploymentId, DEPLOYMENT_ID_PATTERN)) &&
+    (!requirements.needsPipelineExecutionId ||
+      matchesLedgerString(fields.pipelineExecutionId, PIPELINE_EXECUTION_ID_PATTERN)) &&
+    (!requirements.needsAcceptanceDisposition || hasAcceptanceDisposition(fields))
+  );
+}
+
+const ledgerSourceRules = new Map<string, (config: OpsLedgerConfig, resourceName: string, state: string) => boolean>([
+  [
+    'alarm_state_changed',
+    (config, resourceName, state) =>
+      resourceName.startsWith(`${config.opsLedgerResourcePrefix}-`) && ALARM_STATES.has(state),
+  ],
+  [
+    'prover_job_finished',
+    (_config, resourceName, state) => resourceName === 'prover-job' && (state === 'SUCCEEDED' || state === 'FAILED'),
+  ],
+  [
+    'pipeline_execution_changed',
+    (config, resourceName, state) => config.opsLedgerPipelineNames.has(resourceName) && PIPELINE_STATES.has(state),
+  ],
+  ['deployment_accepted', (_config, resourceName, state) => resourceName === 'app' && state === 'ACCEPTED'],
+]);
+
+function normalizedLedgerEvent(
+  config: OpsLedgerConfig,
+  eventType: OpsLedgerEventType,
+  timestamp: number,
+  fields: LedgerResourceFields,
+  requirements: LedgerEventRequirements,
+): NormalizedOpsLedgerEvent {
+  const { resourceName, state, deploymentId, deploymentMode, pipelineExecutionId, planDisposition } = fields;
+  const { needsDeploymentId, needsPipelineExecutionId, needsAcceptanceDisposition } = requirements;
   return {
-    timestamp,
-    event: {
-      ts: new Date(timestamp).toISOString(),
-      event_type: eventType,
-      env: config.deploymentEnvironment,
-      ...(needsDeploymentId ? { deployment_id: deploymentId as string } : {}),
-      ...(needsAcceptanceDisposition ? { deployment_mode: deploymentMode as string } : {}),
-      ...(needsPipelineExecutionId ? { pipeline_execution_id: pipelineExecutionId as string } : {}),
-      ...(needsAcceptanceDisposition ? { plan_disposition: planDisposition as string } : {}),
-      resource_name: resourceName,
-      state,
-    },
+    ts: new Date(timestamp).toISOString(),
+    event_type: eventType,
+    env: config.deploymentEnvironment,
+    ...(needsDeploymentId ? { deployment_id: deploymentId as string } : {}),
+    ...(needsAcceptanceDisposition ? { deployment_mode: deploymentMode as string } : {}),
+    ...(needsPipelineExecutionId ? { pipeline_execution_id: pipelineExecutionId as string } : {}),
+    ...(needsAcceptanceDisposition ? { plan_disposition: planDisposition as string } : {}),
+    resource_name: resourceName,
+    state,
   };
+}
+
+function isOpsLedgerEventType(value: unknown): value is OpsLedgerEventType {
+  return typeof value === 'string' && OPS_LEDGER_EVENT_TYPES.has(value);
+}
+
+function parseOpsLedgerEvent(
+  config: OpsLedgerConfig,
+  candidate: Record<string, unknown>,
+): { event: NormalizedOpsLedgerEvent; timestamp: number } | undefined {
+  const eventType = candidate['event_type'];
+  if (!isOpsLedgerEventType(eventType)) {
+    return undefined;
+  }
+  const requirements = ledgerEventRequirements(eventType);
+  const expectedKeys = ledgerEventKeys(requirements);
+  if (!hasExactKeys(candidate, expectedKeys)) {
+    return undefined;
+  }
+
+  const timestamp = parseCanonicalOpsLedgerTimestamp(candidate['ts']);
+  const fields = readLedgerFields(candidate);
+  if (
+    !hasValidLedgerEnvelope(config, candidate, timestamp, fields) ||
+    !hasValidLedgerCorrelations(fields, requirements)
+  )
+    return undefined;
+
+  if (!ledgerSourceRules.get(eventType)?.(config, fields.resourceName, fields.state)) return undefined;
+
+  if (timestamp === undefined) return undefined;
+  return { timestamp, event: normalizedLedgerEvent(config, eventType, timestamp, fields, requirements) };
 }
 
 function isResourceAlreadyExists(error: unknown): boolean {
@@ -327,7 +357,7 @@ function isResourceAlreadyExists(error: unknown): boolean {
 
 async function writeOpsLedgerEvent(
   logsClient: CloudWatchLogsClient,
-  config: SemaphoreJanitorConfig,
+  config: OpsLedgerConfig,
   event: NormalizedOpsLedgerEvent,
   timestamp: number,
 ): Promise<OpsLedgerResult> {
@@ -367,197 +397,10 @@ async function writeOpsLedgerEvent(
   return { recorded: true };
 }
 
-function isConditionalCheckFailed(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const name = (error as { name?: unknown }).name;
-  const message = error instanceof Error ? error.message : undefined;
-  return name === 'ConditionalCheckFailedException' || message?.includes('ConditionalCheckFailedException') === true;
-}
-
-function isExecutionDoesNotExist(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const name = (error as { name?: unknown }).name;
-  const message = error instanceof Error ? error.message : undefined;
-  return name === 'ExecutionDoesNotExist' || message?.includes('ExecutionDoesNotExist') === true;
-}
-
-function buildExecutionArn(stateMachineArn: string, executionName: string): string {
-  return `${stateMachineArn.replace(':stateMachine:', ':execution:')}:${executionName}`;
-}
-
-function resolveFinalizationIdFromExecutionArn(executionArn: string): string {
-  const segments = executionArn.split(':');
-  const executionName = segments[segments.length - 1];
-  assertSafeVerifierSegment(executionName ?? '', 'finalizationId');
-  return executionName ?? '';
-}
-
-async function isExecutionReleasable(
-  sfnClient: SFNClient,
-  config: SemaphoreJanitorConfig,
-  finalizationId: string,
-): Promise<boolean> {
-  const executionArn = buildExecutionArn(config.stateMachineArn, finalizationId);
-  try {
-    const response = await sfnClient.send(
-      new DescribeExecutionCommand({
-        executionArn,
-      }),
-    );
-    return response.status !== 'RUNNING' && response.status !== 'PENDING_REDRIVE';
-  } catch (error) {
-    if (isExecutionDoesNotExist(error)) {
-      return true;
-    }
-    throw error;
-  }
-}
-
-async function releaseOwner(
-  ddbClient: DynamoDBClient,
-  config: SemaphoreJanitorConfig,
-  finalizationId: string,
-  observedAcquiredAt?: string,
-): Promise<number> {
-  const expressionAttributeValues: Record<string, AttributeValue> = {
-    ':one': { N: '1' },
-    ...(observedAcquiredAt !== undefined ? { ':observedAcquiredAt': { S: observedAcquiredAt } } : {}),
-  };
-  const conditionExpression =
-    observedAcquiredAt !== undefined
-      ? 'attribute_exists(#owner) AND #owner = :observedAcquiredAt AND currentLockCount >= :one'
-      : 'attribute_exists(#owner) AND currentLockCount >= :one';
-
-  try {
-    await ddbClient.send(
-      new UpdateItemCommand({
-        TableName: config.tableName,
-        Key: {
-          LockName: { S: config.lockName },
-        },
-        UpdateExpression: 'SET currentLockCount = currentLockCount - :one REMOVE #owner',
-        ConditionExpression: conditionExpression,
-        ExpressionAttributeNames: {
-          '#owner': finalizationId,
-        },
-        ExpressionAttributeValues: expressionAttributeValues,
-      }),
-    );
-    return 1;
-  } catch (error) {
-    if (isConditionalCheckFailed(error)) {
-      logger.info('[SemaphoreJanitor] Semaphore owner already released', {
-        finalizationId,
-      });
-      return 0;
-    }
-    throw error;
-  }
-}
-
-async function handleExecutionStatusEvent(
-  ddbClient: DynamoDBClient,
-  config: SemaphoreJanitorConfig,
-  event: Record<string, unknown>,
-): Promise<SemaphoreJanitorResult> {
-  const detail = isRecord(event['detail']) ? event['detail'] : {};
-  const status = getStringProperty(detail, 'status');
-  if (!status || !TERMINAL_EXECUTION_STATUSES.has(status)) {
-    return { released: 0 };
-  }
-
-  const stateMachineArn = getStringProperty(detail, 'stateMachineArn');
-  if (stateMachineArn !== config.stateMachineArn) {
-    logger.info('[SemaphoreJanitor] Ignoring Step Functions event for a different state machine', {
-      expectedStateMachineArn: config.stateMachineArn,
-      actualStateMachineArn: stateMachineArn,
-    });
-    return { released: 0 };
-  }
-
-  const resources = Array.isArray(event['resources']) ? event['resources'] : [];
-  const resourceArn = resources.find((value): value is string => typeof value === 'string');
-  const executionArn = getStringProperty(detail, 'executionArn') ?? resourceArn;
-  if (!executionArn) {
-    throwInvalidEventBridgeInvocation();
-  }
-
-  return {
-    released: await releaseOwner(ddbClient, config, resolveFinalizationIdFromExecutionArn(executionArn)),
-  };
-}
-
-function parseOwnerAcquiredAt(finalizationId: string, value: AttributeValue): string | undefined {
-  const acquiredAt = 'S' in value ? value.S : undefined;
-  const parsedMillis = typeof acquiredAt === 'string' ? Date.parse(acquiredAt) : NaN;
-  if (!Number.isFinite(parsedMillis)) {
-    logger.warn('[SemaphoreJanitor] Skipping semaphore owner with invalid acquiredAt timestamp', {
-      finalizationId,
-    });
-    return undefined;
-  }
-  return acquiredAt;
-}
-
-async function handleScheduledSweep(
-  clients: Pick<SemaphoreJanitorAwsClients, 'ddb' | 'sfn'>,
-  config: SemaphoreJanitorConfig,
-): Promise<SemaphoreJanitorResult> {
-  const response = await clients.ddb.send(
-    new GetItemCommand({
-      TableName: config.tableName,
-      Key: {
-        LockName: { S: config.lockName },
-      },
-      ConsistentRead: true,
-    }),
-  );
-
-  const item = response.Item ?? {};
-  const now = Date.now();
-  let released = 0;
-
-  for (const [finalizationId, value] of Object.entries(item)) {
-    if (RESERVED_SEMAPHORE_ATTRIBUTES.has(finalizationId)) {
-      continue;
-    }
-    try {
-      assertSafeVerifierSegment(finalizationId, 'finalizationId');
-    } catch {
-      logger.warn('[SemaphoreJanitor] Skipping semaphore owner with unsafe execution name', {
-        finalizationId,
-      });
-      continue;
-    }
-
-    const acquiredAt = parseOwnerAcquiredAt(finalizationId, value);
-    if (!acquiredAt) {
-      continue;
-    }
-    if (now - Date.parse(acquiredAt) < config.staleMillis) {
-      continue;
-    }
-    if (!(await isExecutionReleasable(clients.sfn, config, finalizationId))) {
-      logger.info('[SemaphoreJanitor] Keeping stale semaphore owner for running execution', {
-        finalizationId,
-      });
-      continue;
-    }
-
-    released += await releaseOwner(clients.ddb, config, finalizationId, acquiredAt);
-  }
-
-  return { released };
-}
-
-export const handler = async (event: unknown): Promise<SemaphoreJanitorResult | OpsLedgerResult> => {
+export const handler = async (event: unknown): Promise<OpsLedgerResult> => {
   const env = process.env;
   const runtimeProfile = (resolvedRuntimeProfile ??= resolveRuntimeProfile(env));
-  let config: SemaphoreJanitorConfig | undefined;
+  let config: OpsLedgerConfig | undefined;
   await bootstrapLambdaRuntime({
     serviceName: 'semaphore-janitor',
     runtimeProfile,
@@ -584,46 +427,21 @@ export const handler = async (event: unknown): Promise<SemaphoreJanitorResult | 
     env,
   });
   if (!config) {
-    throw new Error('Semaphore janitor configuration was not initialized');
+    throw new Error('Operations ledger configuration was not initialized');
   }
   if (runtimeProfile.external.kind !== 'aws') {
-    throw new Error('Target semaphore janitor runtime profile was not resolved');
+    throw new Error('Target operations ledger runtime profile was not resolved');
   }
   const awsClientConfig = { region: runtimeProfile.external.region };
   const clients = (resolvedAwsClients ??= {
-    ddb: new DynamoDBClient(awsClientConfig),
-    sfn: new SFNClient(awsClientConfig),
     logs: new CloudWatchLogsClient(awsClientConfig),
   });
   if (!isRecord(event)) {
-    throwInvalidEventBridgeInvocation();
+    throwInvalidOpsLedgerInvocation();
   }
-
-  if (Object.hasOwn(event, 'event_type')) {
-    const parsed = parseOpsLedgerEvent(config, event);
-    if (!parsed) {
-      throwInvalidOpsLedgerInvocation();
-    }
-    return writeOpsLedgerEvent(clients.logs, config, parsed.event, parsed.timestamp);
+  const parsed = parseOpsLedgerEvent(config, event);
+  if (!parsed) {
+    throwInvalidOpsLedgerInvocation();
   }
-
-  const source = getStringProperty(event, 'source');
-  const detailType = getStringProperty(event, 'detail-type');
-  if (source === 'aws.states') {
-    const detail = isRecord(event['detail']) ? event['detail'] : undefined;
-    if (
-      detailType !== 'Step Functions Execution Status Change' ||
-      !detail ||
-      !getStringProperty(detail, 'status') ||
-      !getStringProperty(detail, 'stateMachineArn')
-    ) {
-      throwInvalidEventBridgeInvocation();
-    }
-    return handleExecutionStatusEvent(clients.ddb, config, event);
-  }
-  if (source === 'aws.events' && detailType === 'Scheduled Event') {
-    return handleScheduledSweep(clients, config);
-  }
-
-  throwInvalidEventBridgeInvocation();
+  return writeOpsLedgerEvent(clients.logs, config, parsed.event, parsed.timestamp);
 };

@@ -96,25 +96,34 @@ function leanModuleForSource(source: string): string {
     .replace(/\//g, '.');
 }
 
-function assertProofHygiene(leanFiles: string[]): void {
+function assertNoForbiddenLeanTokens(repoPath: string, sourceWithoutComments: string): void {
+  for (const token of forbiddenLeanTokens) {
+    const pattern = new RegExp(`\\b${token}\\b`);
+    if (pattern.test(sourceWithoutComments)) {
+      throw new Error(`${repoPath} contains forbidden Lean token: ${token}`);
+    }
+  }
+}
+
+function collectNativeDecideSources(leanFiles: string[]): Set<string> {
   const nativeDecideSources = new Set<string>();
   for (const file of leanFiles) {
     const repoPath = normalizeRepoPath(file);
     const source = readFileSync(file, 'utf8');
     const sourceWithoutComments = stripLeanComments(source);
 
-    for (const token of forbiddenLeanTokens) {
-      const pattern = new RegExp(`\\b${token}\\b`);
-      if (pattern.test(sourceWithoutComments)) {
-        throw new Error(`${repoPath} contains forbidden Lean token: ${token}`);
-      }
-    }
+    assertNoForbiddenLeanTokens(repoPath, sourceWithoutComments);
 
     if (/\bnative_decide\b/.test(sourceWithoutComments)) {
       nativeDecideSources.add(repoPath);
     }
   }
 
+  return nativeDecideSources;
+}
+
+function assertProofHygiene(leanFiles: string[]): void {
+  const nativeDecideSources = collectNativeDecideSources(leanFiles);
   for (const source of nativeDecideSources) {
     if (!allowedNativeDecideSources.includes(source)) {
       throw new Error(`${source} uses native_decide but is not in the audit allowlist`);
@@ -153,12 +162,11 @@ function assertUniqueTheoremNames(theorems: readonly { name: string }[]): void {
   }
 }
 
-function assertAuditEntriesMatchReport(
+function collectAuditedTheoremNames(
   label: string,
-  reportTheorems: readonly { name: string }[],
   entries: readonly { name: string }[],
-): void {
-  const expectedNames = new Set(reportTheorems.map((theorem) => theorem.name));
+  expectedNames: ReadonlySet<string>,
+): Set<string> {
   const actualNames = new Set<string>();
 
   for (const entry of entries) {
@@ -170,6 +178,17 @@ function assertAuditEntriesMatchReport(
     }
     actualNames.add(entry.name);
   }
+
+  return actualNames;
+}
+
+function assertAuditEntriesMatchReport(
+  label: string,
+  reportTheorems: readonly { name: string }[],
+  entries: readonly { name: string }[],
+): void {
+  const expectedNames = new Set(reportTheorems.map((theorem) => theorem.name));
+  const actualNames = collectAuditedTheoremNames(label, entries, expectedNames);
 
   for (const theorem of reportTheorems) {
     if (!actualNames.has(theorem.name)) {
@@ -204,6 +223,57 @@ function parsePrintAxiomsOutput(output: string): Map<string, string[]> {
   return dependenciesByName;
 }
 
+function assertAllowedNativeDecideDependency(theorem: { name: string; source: string }, dependency: string): void {
+  if (
+    allowedNativeDecideDependencyPrefixes.some((prefix) => dependency.startsWith(prefix)) &&
+    allowedNativeDecideSources.includes(theorem.source)
+  )
+    return;
+  throw new Error(`${theorem.name} depends on non-allowlisted axiom: ${dependency}`);
+}
+
+function partitionTheoremAxioms(
+  theorem: { name: string; source: string },
+  dependencies: readonly string[],
+): { coreAxioms: Set<string>; nativeDecideAxioms: string[] } {
+  const coreAxioms = new Set<string>();
+  const nativeDecideAxioms: string[] = [];
+  for (const dependency of dependencies) {
+    if (allowedCoreAxioms.includes(dependency)) {
+      coreAxioms.add(dependency);
+    } else {
+      assertAllowedNativeDecideDependency(theorem, dependency);
+      nativeDecideAxioms.push(dependency);
+    }
+  }
+
+  return { coreAxioms, nativeDecideAxioms };
+}
+
+function projectTheoremDependencies(
+  theorem: { name: string; source: string },
+  dependenciesByName: ReadonlyMap<string, string[]>,
+): TheoremDependencyAuditEntry {
+  const dependencies = dependenciesByName.get(theorem.name);
+  if (!dependencies) {
+    throw new Error(`missing #print axioms output for theorem ${theorem.name}`);
+  }
+
+  const { coreAxioms, nativeDecideAxioms } = partitionTheoremAxioms(theorem, dependencies);
+
+  const sortedDependencies = [...dependencies].sort();
+  const sortedNativeDecideAxioms = nativeDecideAxioms.sort();
+  return {
+    name: theorem.name,
+    source: theorem.source,
+    qualifiedName: `StarkBallotFormal.${theorem.name}`,
+    coreAxiomDependencies: [...coreAxioms].sort(),
+    nativeDecideAxiomCount: sortedNativeDecideAxioms.length,
+    nativeDecideAxiomSha256: sortedNativeDecideAxioms.length > 0 ? sha256(sortedNativeDecideAxioms.join('\n')) : null,
+    dependencySetSha256: sha256(sortedDependencies.join('\n')),
+  };
+}
+
 function collectTheoremDependencies(
   theorems: readonly { name: string; source: string }[],
 ): TheoremDependencyAuditEntry[] {
@@ -227,40 +297,7 @@ function collectTheoremDependencies(
     });
     const dependenciesByName = parsePrintAxiomsOutput(output);
 
-    return theorems.map((theorem) => {
-      const dependencies = dependenciesByName.get(theorem.name);
-      if (!dependencies) {
-        throw new Error(`missing #print axioms output for theorem ${theorem.name}`);
-      }
-
-      const coreAxioms = new Set<string>();
-      const nativeDecideAxioms: string[] = [];
-      for (const dependency of dependencies) {
-        if (allowedCoreAxioms.includes(dependency)) {
-          coreAxioms.add(dependency);
-        } else if (
-          allowedNativeDecideDependencyPrefixes.some((prefix) => dependency.startsWith(prefix)) &&
-          allowedNativeDecideSources.includes(theorem.source)
-        ) {
-          nativeDecideAxioms.push(dependency);
-        } else {
-          throw new Error(`${theorem.name} depends on non-allowlisted axiom: ${dependency}`);
-        }
-      }
-
-      const sortedDependencies = [...dependencies].sort();
-      const sortedNativeDecideAxioms = nativeDecideAxioms.sort();
-      return {
-        name: theorem.name,
-        source: theorem.source,
-        qualifiedName: `StarkBallotFormal.${theorem.name}`,
-        coreAxiomDependencies: [...coreAxioms].sort(),
-        nativeDecideAxiomCount: sortedNativeDecideAxioms.length,
-        nativeDecideAxiomSha256:
-          sortedNativeDecideAxioms.length > 0 ? sha256(sortedNativeDecideAxioms.join('\n')) : null,
-        dependencySetSha256: sha256(sortedDependencies.join('\n')),
-      };
-    });
+    return theorems.map((theorem) => projectTheoremDependencies(theorem, dependenciesByName));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

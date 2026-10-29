@@ -1,3 +1,4 @@
+import { hasOnlyAllowedKeys, isNonNegativeInteger } from '@stark-ballot/validation/unknown-value-guards';
 import type { FinalizationStateUpdatePayload } from '@stark-ballot/application/finalize/finalization-state-update';
 import { admitFinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-storage';
 import {
@@ -8,7 +9,7 @@ import {
 import { parseRequiredAwsFinalizationBundleMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationMetadataAdmission';
 import type { AwsFinalizationBundleMetadata } from '@stark-ballot/aws-adapters/finalize/finalizationRuntimeStore';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
-import { getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getStringProperty, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { asSessionId } from '@stark-ballot/domain/types/identifiers';
 import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 
@@ -83,24 +84,12 @@ export type AwsFinalizationStateUpdatePayload =
       }
     >;
 
-function hasOwn(value: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function hasOnlyAllowedKeys(value: Record<string, unknown>, allowedKeys: ReadonlySet<string>): boolean {
-  return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
-
 function isFinalizationFailureCode(value: string): value is keyof typeof FINALIZATION_FAILURES {
-  return hasOwn(FINALIZATION_FAILURES, value);
+  return Object.hasOwn(FINALIZATION_FAILURES, value);
 }
 
 function parseFinalizationError(value: unknown): AwsFinalizationFailure | undefined {
-  if (!isRecord(value)) {
+  if (!isNonNullObject(value)) {
     return undefined;
   }
   if (!hasOnlyAllowedKeys(value, FINALIZATION_ERROR_KEYS)) {
@@ -162,119 +151,147 @@ export function toApplicationFinalizationStateUpdatePayload(
   }
 }
 
-export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinalizationStateUpdatePayload | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
+type UpdateIdentity = Pick<
+  AwsFinalizationStateUpdatePayload,
+  'sessionId' | 'finalizationId' | 'queuedAtMs' | 'runtimeMetadata'
+>;
 
+const UPDATE_KEYS_BY_STATUS = {
+  RUNNING: RUNNING_UPDATE_KEYS,
+  SUCCEEDED: SUCCEEDED_UPDATE_KEYS,
+  FAILED: FAILED_UPDATE_KEYS,
+  TIMED_OUT: TIMED_OUT_UPDATE_KEYS,
+} as const;
+
+function isUpdateStatus(value: string): value is keyof typeof UPDATE_KEYS_BY_STATUS {
+  return Object.hasOwn(UPDATE_KEYS_BY_STATUS, value);
+}
+
+function parseUpdateIdentity(value: Record<string, unknown>): UpdateIdentity | undefined {
   const rawSessionId = getStringProperty(value, 'sessionId');
   const finalizationId = parseFinalizationId(value['finalizationId']);
-  const stepFunctionsArn = getStringProperty(value, 'stepFunctionsArn');
-  const status = getStringProperty(value, 'status');
   const queuedAtMs = value['queuedAtMs'];
+  if (!rawSessionId || !finalizationId || !isSafeVerifierSegment(rawSessionId) || !isNonNegativeInteger(queuedAtMs))
+    return undefined;
+  return { sessionId: asSessionId(rawSessionId), finalizationId, queuedAtMs };
+}
+
+function parseUpdateRuntimeMetadata(
+  value: Record<string, unknown>,
+): AwsFinalizationStateUpdateRuntimeMetadata | undefined {
+  const stepFunctionsArn = getStringProperty(value, 'stepFunctionsArn');
+  if (Object.hasOwn(value, 'stepFunctionsArn') && typeof stepFunctionsArn !== 'string') return undefined;
+  const metadata: AwsFinalizationStateUpdateRuntimeMetadata = { ...(stepFunctionsArn ? { stepFunctionsArn } : {}) };
+  if (Object.hasOwn(value, 'bundleMetadata')) {
+    const bundleMetadata = parseRequiredAwsFinalizationBundleMetadata(value['bundleMetadata']);
+    if (!bundleMetadata) return undefined;
+    if (Object.keys(bundleMetadata).length > 0) metadata.bundleMetadata = { ...bundleMetadata };
+  }
+  return metadata;
+}
+
+export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinalizationStateUpdatePayload | undefined {
+  if (!isNonNullObject(value)) return undefined;
+  const identity = parseUpdateIdentity(value);
+  if (!identity) return undefined;
+  const status = getStringProperty(value, 'status');
+  if (!status || !isUpdateStatus(status)) return undefined;
+  if (!hasOnlyAllowedKeys(value, UPDATE_KEYS_BY_STATUS[status])) return undefined;
+  const runtimeMetadata = parseUpdateRuntimeMetadata(value);
+  if (!runtimeMetadata) return undefined;
+  const common = { ...identity, ...(Object.keys(runtimeMetadata).length > 0 ? { runtimeMetadata } : {}) };
+  switch (status) {
+    case 'RUNNING':
+      return parseRunningUpdate(value, common);
+    case 'SUCCEEDED':
+      return parseSucceededUpdate(value, common);
+    case 'FAILED':
+      return parseFailedUpdate(value, common);
+    case 'TIMED_OUT':
+      return parseTimedOutUpdate(value, common);
+  }
+}
+
+function parseRunningUpdate(
+  value: Record<string, unknown>,
+  common: UpdateIdentity,
+): AwsFinalizationStateUpdatePayload | undefined {
+  const { queuedAtMs } = common;
+  const startedAtMs = value['startedAtMs'];
+
+  if (!isNonNegativeInteger(startedAtMs) || startedAtMs < queuedAtMs) {
+    return undefined;
+  }
+  return {
+    ...common,
+    status: 'RUNNING',
+    startedAtMs,
+  };
+}
+
+function parseSucceededUpdate(
+  value: Record<string, unknown>,
+  common: UpdateIdentity,
+): AwsFinalizationStateUpdatePayload | undefined {
+  const { queuedAtMs } = common;
   const startedAtMs = value['startedAtMs'];
   const completedAtMs = value['completedAtMs'];
-  const failedAtMs = value['failedAtMs'];
-  const timeoutAtMs = value['timeoutAtMs'];
 
   if (
-    !rawSessionId ||
-    !finalizationId ||
-    (status !== 'RUNNING' && status !== 'SUCCEEDED' && status !== 'FAILED' && status !== 'TIMED_OUT') ||
-    !isSafeVerifierSegment(rawSessionId) ||
-    !isNonNegativeInteger(queuedAtMs) ||
-    (hasOwn(value, 'stepFunctionsArn') && typeof stepFunctionsArn !== 'string')
+    !isNonNegativeInteger(startedAtMs) ||
+    startedAtMs < queuedAtMs ||
+    !isNonNegativeInteger(completedAtMs) ||
+    completedAtMs < startedAtMs
   ) {
     return undefined;
   }
-
-  const allowedKeys =
-    status === 'RUNNING'
-      ? RUNNING_UPDATE_KEYS
-      : status === 'SUCCEEDED'
-        ? SUCCEEDED_UPDATE_KEYS
-        : status === 'FAILED'
-          ? FAILED_UPDATE_KEYS
-          : TIMED_OUT_UPDATE_KEYS;
-  if (!hasOnlyAllowedKeys(value, allowedKeys)) {
+  const finalizationResult = admitFinalizationResultAuthority(value['finalizationResult']);
+  if (!finalizationResult) {
     return undefined;
   }
-
-  const common = {
-    sessionId: asSessionId(rawSessionId),
-    finalizationId,
-    queuedAtMs,
+  return {
+    ...common,
+    status: 'SUCCEEDED',
+    startedAtMs,
+    completedAtMs,
+    finalizationResult,
   };
-  const runtimeMetadata: AwsFinalizationStateUpdateRuntimeMetadata = {
-    ...(stepFunctionsArn ? { stepFunctionsArn } : {}),
+}
+
+function parseFailedUpdate(
+  value: Record<string, unknown>,
+  common: UpdateIdentity,
+): AwsFinalizationStateUpdatePayload | undefined {
+  const { queuedAtMs } = common;
+  const startedAtMs = value['startedAtMs'];
+  const failedAtMs = value['failedAtMs'];
+
+  const error = parseFinalizationError(value['error']);
+  if (
+    !error ||
+    !isNonNegativeInteger(failedAtMs) ||
+    failedAtMs < queuedAtMs ||
+    (startedAtMs !== undefined &&
+      (!isNonNegativeInteger(startedAtMs) || startedAtMs < queuedAtMs || failedAtMs < startedAtMs))
+  ) {
+    return undefined;
+  }
+  return {
+    ...common,
+    status: 'FAILED',
+    ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+    failedAtMs,
+    error,
   };
+}
 
-  if (hasOwn(value, 'bundleMetadata')) {
-    const bundleMetadata = parseRequiredAwsFinalizationBundleMetadata(value['bundleMetadata']);
-    if (!bundleMetadata) {
-      return undefined;
-    }
-    if (Object.keys(bundleMetadata).length > 0) {
-      runtimeMetadata.bundleMetadata = { ...bundleMetadata };
-    }
-  }
-
-  if (status === 'RUNNING') {
-    if (!isNonNegativeInteger(startedAtMs) || startedAtMs < queuedAtMs) {
-      return undefined;
-    }
-    return {
-      ...common,
-      status,
-      startedAtMs,
-      ...(Object.keys(runtimeMetadata).length > 0 ? { runtimeMetadata } : {}),
-    };
-  }
-
-  if (status === 'SUCCEEDED') {
-    if (
-      !isNonNegativeInteger(startedAtMs) ||
-      startedAtMs < queuedAtMs ||
-      !isNonNegativeInteger(completedAtMs) ||
-      completedAtMs < startedAtMs
-    ) {
-      return undefined;
-    }
-    const finalizationResult = admitFinalizationResultAuthority(value['finalizationResult']);
-    if (!finalizationResult) {
-      return undefined;
-    }
-    return {
-      ...common,
-      status,
-      startedAtMs,
-      completedAtMs,
-      finalizationResult,
-      ...(Object.keys(runtimeMetadata).length > 0 ? { runtimeMetadata } : {}),
-    };
-  }
-
-  if (status === 'FAILED') {
-    const error = parseFinalizationError(value['error']);
-    if (
-      !error ||
-      !isNonNegativeInteger(failedAtMs) ||
-      failedAtMs < queuedAtMs ||
-      (startedAtMs !== undefined &&
-        (!isNonNegativeInteger(startedAtMs) || startedAtMs < queuedAtMs || failedAtMs < startedAtMs))
-    ) {
-      return undefined;
-    }
-    return {
-      ...common,
-      status,
-      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
-      failedAtMs,
-      error,
-      ...(Object.keys(runtimeMetadata).length > 0 ? { runtimeMetadata } : {}),
-    };
-  }
-
+function parseTimedOutUpdate(
+  value: Record<string, unknown>,
+  common: UpdateIdentity,
+): AwsFinalizationStateUpdatePayload | undefined {
+  const { queuedAtMs } = common;
+  const startedAtMs = value['startedAtMs'];
+  const timeoutAtMs = value['timeoutAtMs'];
   if (
     !isNonNegativeInteger(timeoutAtMs) ||
     timeoutAtMs < queuedAtMs ||
@@ -285,9 +302,8 @@ export function parseFinalizationStateUpdatePayload(value: unknown): AwsFinaliza
   }
   return {
     ...common,
-    status,
+    status: 'TIMED_OUT',
     ...(startedAtMs !== undefined ? { startedAtMs } : {}),
     timeoutAtMs,
-    ...(Object.keys(runtimeMetadata).length > 0 ? { runtimeMetadata } : {}),
   };
 }

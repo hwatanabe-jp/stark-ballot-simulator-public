@@ -16,7 +16,7 @@ interface MutableTargetFixture {
       stateIdentity: string;
     }
   >;
-  productionPolicy?: { bootstrapApprovalAction: string; foundationPublicSubnetException: string };
+  productionPolicy?: { foundationPublicSubnetException: string };
   projectId: string;
   region: string;
   repository: string;
@@ -57,13 +57,8 @@ export function productionConfigurationFixture(): {
   ) as MutableTargetFixture;
   production.environmentTier = 'production';
   production.productionPolicy = {
-    bootstrapApprovalAction: 'ApproveBootstrapApply',
     foundationPublicSubnetException: 'accepted-for-production-prover-egress',
   };
-  delete production.lanes['static-fast'];
-  for (const key of Object.keys(production.sharedNames)) {
-    if (key.startsWith('appStaticFast')) delete production.sharedNames[key];
-  }
   configuration.allowedTargets['stark-prod/main'] = production;
   return { configuration, development, production };
 }

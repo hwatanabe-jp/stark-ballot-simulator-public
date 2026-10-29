@@ -47,20 +47,7 @@ function resolveScopedVerifierBundlePath(
   return path.join(/* turbopackIgnore: true */ process.cwd(), '.verifier-bundles', sessionId, finalizationId);
 }
 
-function resolveTrustedBundleIdentity(
-  bundlePath: string | undefined,
-  authority: {
-    finalizationId?: string;
-    bundleKey?: string;
-  },
-  options: TrustedLocalBundleOptions,
-): LocalBundleIdentity | undefined {
-  if (!bundlePath || bundlePath.trim().length === 0) {
-    return undefined;
-  }
-
-  const resolvedBaseDir = resolveVerifierWorkDirForBundleAuthority(options.verifierWorkDir);
-
+function resolveRealBundlePath(bundlePath: string): string | undefined {
   let resolvedBundlePath: string;
   try {
     resolvedBundlePath = realpathSync(bundlePath);
@@ -71,6 +58,10 @@ function resolveTrustedBundleIdentity(
     return undefined;
   }
 
+  return resolvedBundlePath;
+}
+
+function admitLocalBundleScope(bundlePath: string, resolvedBaseDir: string, resolvedBundlePath: string) {
   const relative = path.relative(resolvedBaseDir, resolvedBundlePath);
 
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -106,6 +97,16 @@ function resolveTrustedBundleIdentity(
     return undefined;
   }
 
+  return { sessionId, finalizationId };
+}
+
+function admitBundleAuthority(
+  scope: { sessionId: string; finalizationId: string },
+  authority: { finalizationId?: string; bundleKey?: string },
+  bundlePath: string,
+  resolvedBundlePath: string,
+): Pick<LocalBundleIdentity, 'bundleKey'> | undefined {
+  const { sessionId, finalizationId } = scope;
   if (authority.finalizationId && authority.finalizationId !== finalizationId) {
     logger.debug('[FinalizationResult] Ignoring local bundle path with mismatched finalization identity', {
       requested_path_hash: hashKeyPrefixForLogging(bundlePath),
@@ -132,6 +133,22 @@ function resolveTrustedBundleIdentity(
     return undefined;
   }
 
+  return expectedBundleIdentity && authority.bundleKey !== undefined ? { bundleKey: authority.bundleKey } : {};
+}
+
+function resolveTrustedBundleIdentity(
+  bundlePath: string | undefined,
+  authority: { finalizationId?: string; bundleKey?: string },
+  options: TrustedLocalBundleOptions,
+): LocalBundleIdentity | undefined {
+  if (!bundlePath || bundlePath.trim().length === 0) return undefined;
+  const resolvedBaseDir = resolveVerifierWorkDirForBundleAuthority(options.verifierWorkDir);
+  const resolvedBundlePath = resolveRealBundlePath(bundlePath);
+  if (!resolvedBundlePath) return undefined;
+  const scope = admitLocalBundleScope(bundlePath, resolvedBaseDir, resolvedBundlePath);
+  if (!scope) return undefined;
+  const admittedAuthority = admitBundleAuthority(scope, authority, bundlePath, resolvedBundlePath);
+  if (!admittedAuthority) return undefined;
   if (!existsSync(path.join(resolvedBundlePath, 'public-input.json'))) {
     logger.debug('[FinalizationResult] Ignoring local bundle path without public-input.json', {
       path_hash: hashKeyPrefixForLogging(resolvedBundlePath),
@@ -139,12 +156,7 @@ function resolveTrustedBundleIdentity(
     return undefined;
   }
 
-  return {
-    bundlePath: resolvedBundlePath,
-    sessionId,
-    finalizationId,
-    ...(expectedBundleIdentity ? { bundleKey: authority.bundleKey } : {}),
-  };
+  return { bundlePath: resolvedBundlePath, ...scope, ...admittedAuthority };
 }
 
 export function resolveTrustedLocalBundleReference(

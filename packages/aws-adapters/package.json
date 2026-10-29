@@ -22,6 +22,7 @@
     "@aws-sdk/client-dynamodb": "catalog:aws-sdk",
     "@aws-sdk/client-s3": "catalog:aws-sdk",
     "@aws-sdk/client-secrets-manager": "catalog:aws-sdk",
+    "@aws-sdk/client-sfn": "catalog:aws-sdk",
     "@aws-sdk/client-sqs": "catalog:aws-sdk",
     "@aws-sdk/client-ssm": "catalog:aws-sdk",
     "@aws-sdk/lib-dynamodb": "catalog:aws-sdk",
@@ -38,8 +39,8 @@
   "devDependencies": {
     "@stark-ballot/test-support": "workspace:*",
     "@types/fs-extra": "11.0.4",
-    "fs-extra": "11.4.0",
-    "testcontainers": "12.1.0",
+    "fs-extra": "11.4.1",
+    "testcontainers": "12.2.1",
     "vitest": "catalog:testing",
     "yazl": "3.3.1"
   }

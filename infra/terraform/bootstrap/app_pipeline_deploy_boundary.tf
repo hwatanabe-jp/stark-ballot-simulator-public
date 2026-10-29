@@ -1,18 +1,7 @@
 data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  source_policy_documents = local.deployment_target.environmentId == "main" ? [
-    # Retained-bucket s3:* below already covers its versioning and acceptance
-    # inventory. Keep only the distinct state inventory ceiling here; the
-    # identities still carry both exact bounded observations.
-    jsonencode({
-      Version = "2012-10-17"
-      Statement = [
-        for statement in jsondecode(data.aws_iam_policy_document.app_initialization_absence_read[0].json).Statement : statement
-        if statement.Action == "s3:ListBucketVersions" && statement.Resource == aws_s3_bucket.state.arn
-      ]
-    }),
-  ] : []
+  source_policy_documents = [data.aws_iam_policy_document.terraform_authority_decrypt[0].json]
 
   statement {
     effect = "Allow"
@@ -23,8 +12,6 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
       "${local.app_retained_artifact_bucket_arn}/*",
       local.app_pipeline_execution_artifact_bucket_arn,
       "${local.app_pipeline_execution_artifact_bucket_arn}/*",
-      local.app_static_fast_enabled ? local.app_static_fast_execution_artifact_bucket_arn : null,
-      local.app_static_fast_enabled ? "${local.app_static_fast_execution_artifact_bucket_arn}/*" : null,
       local.app_target_proof_bucket_arn,
       "${local.app_target_proof_bucket_arn}/*",
       local.app_target_frontend_bucket_arn,
@@ -41,40 +28,16 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
       "s3:GetObjectVersion",
     ]
     resources = [
-      local.app_toolchain_accepted_pointer_object_arn,
-      local.app_prover_accepted_pointer_object_arn,
-      local.app_foundation_acceptance_pointer_object_arn,
-      local.app_foundation_acceptance_records_objects_arn,
+      local.app_toolchain_promotion_object_arn,
+      local.app_prover_promotion_object_arn,
+      local.foundation_checkpoint_object_arn,
       local.app_toolchain_candidate_records_objects_arn,
-      local.app_toolchain_release_records_objects_arn,
+
       local.app_prover_candidate_records_objects_arn,
-      local.app_prover_release_records_objects_arn,
+
     ]
   }
 
-  statement {
-    effect    = "Allow"
-    actions   = ["kms:Decrypt"]
-    resources = [aws_kms_alias.terraform_authority[0].target_key_arn]
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:CallerAccount"
-      values   = [var.aws_account_id]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["s3.${var.aws_region}.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:EncryptionContext:aws:s3:arn"
-      values   = [local.terraform_authority_bucket_arn]
-    }
-  }
 
   statement {
     sid    = "AppStateRead"
@@ -98,7 +61,7 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
 
   statement {
     effect    = "Allow"
-    actions   = concat(["s3:ListBucket"], local.deployment_target.environmentId == "main" ? ["s3:GetBucketVersioning"] : [])
+    actions   = ["s3:ListBucket"]
     resources = ["arn:aws:s3:::${var.state_bucket_name}"]
   }
 
@@ -107,11 +70,14 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
 
     actions = [
       "apigateway:*",
+      "batch:*",
+      "cloudformation:*",
       "cloudfront:*",
       "cloudwatch:*",
       "codebuild:*",
       "codepipeline:*",
       "dynamodb:*",
+      "ecr:GetAuthorizationToken",
       "ecs:*",
       "kms:*",
       "lambda:*",
@@ -166,9 +132,11 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
     effect = "Allow"
     actions = [
       "ecr:BatchGetImage",
+      "ecr:DescribeImages",
+      "ecr:DescribeImageScanFindings",
       "ecr:GetDownloadUrlForLayer",
     ]
-    resources = local.app_release_image_repository_arns
+    resources = [local.foundation_risc0_toolchain_ecr_repository_arn]
   }
 
   statement {
@@ -188,6 +156,7 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
     resources = [
       local.app_expected_origin_verify_header_secret_arn,
       local.app_log_ip_hash_salt_secret_arn,
+      aws_secretsmanager_secret.app_ci_validation_github[0].arn,
     ]
   }
 
@@ -198,6 +167,7 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
     actions = ["iam:*"]
     resources = [
       local.app_pipeline_role_arn_pattern,
+      local.app_batch_service_role_arn,
       "arn:aws:iam::${var.aws_account_id}:role/${local.app_runtime_name_prefix}-*",
       "arn:aws:iam::${var.aws_account_id}:role/${local.app_signature_verifier_role_name}",
     ]
@@ -211,19 +181,47 @@ data "aws_iam_policy_document" "app_deploy_permissions_boundary" {
     ]
     resources = [local.app_signature_verifier_execution_boundary_policy_arn]
   }
+
+  # Each API admits only its own service's resource types; combining the
+  # ECR and Signer grants preserves the exact Prover repository/trust scope.
+  statement {
+    sid    = "VerifyProverSignature"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:DescribeImageSigningStatus",
+      "ecr:DescribeImages",
+      "ecr:DescribeImageScanFindings",
+      "ecr:GetDownloadUrlForLayer",
+      "signer:GetRevocationStatus",
+    ]
+    resources = [
+      local.foundation_prover_ecr_repository_arn,
+      local.foundation_ecr_signing_profile_arn,
+      local.foundation_signing_job_arn_pattern,
+    ]
+  }
+
+}
+
+# Statement IDs are review metadata, not authorization semantics. Omit them in
+# the installed boundary to keep the exact grants within IAM's size quota.
+locals {
+  app_deploy_boundary_policy = local.app_pipeline_enabled ? jsonencode({
+    Version = "2012-10-17"
+    Statement = [for statement in jsondecode(data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json).Statement : {
+      for key, value in statement : key => value if key != "Sid"
+    }]
+  }) : null
 }
 
 resource "aws_iam_policy" "app_deploy_permissions_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_pipeline_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_role_attachment_management,
-  ]
 
   name   = local.app_deploy_permissions_boundary_policy_name
-  policy = data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json
+  policy = local.app_deploy_boundary_policy
   tags = merge(local.common_tags, {
     StateScope = "app"
   })
@@ -233,7 +231,7 @@ check "app_deploy_permissions_boundary_size" {
   assert {
     condition = (
       !local.app_pipeline_enabled
-      || try(length(jsonencode(jsondecode(data.aws_iam_policy_document.app_deploy_permissions_boundary[0].json))) <= 6144, false)
+      || try(length(local.app_deploy_boundary_policy) <= 6144, false)
     )
     error_message = "The app deploy permissions boundary must remain within the IAM 6,144-character quota."
   }
@@ -287,9 +285,6 @@ data "aws_iam_policy_document" "app_signature_verifier_execution_boundary" {
 resource "aws_iam_policy" "app_signature_verifier_execution_boundary" {
   count = local.app_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_app_lane_iam_management,
-  ]
 
   name   = local.app_signature_verifier_execution_boundary_policy_name
   policy = data.aws_iam_policy_document.app_signature_verifier_execution_boundary[0].json

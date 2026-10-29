@@ -284,6 +284,29 @@ function buildTamperDetectionResult(
     indexAnomaly: false,
   };
 
+  appendDetectedScenarios(scenarios, receipt, detectedScenarios, details);
+  projectTamperCounts(metadata, details);
+
+  if (detectedScenarios.length === 0 && metadata.indexAnomaly) {
+    detectedScenarios.push('indexAnomaly');
+  }
+
+  return {
+    isTampered: detectedScenarios.length > 0,
+    detectedScenarios,
+    details,
+  };
+}
+
+type DetectedScenarioInputs = Parameters<typeof buildTamperDetectionResult>[0];
+type TamperCountMetadata = Parameters<typeof buildTamperDetectionResult>[2];
+
+function appendDetectedScenarios(
+  scenarios: DetectedScenarioInputs,
+  receipt: Receipt,
+  detectedScenarios: string[],
+  details: TamperDetectionResult['details'],
+): void {
   if (scenarios.ignoreUserVote) {
     detectedScenarios.push('ignoreUserVote');
     details.ignoreUserVote = true;
@@ -317,7 +340,9 @@ function buildTamperDetectionResult(
     detectedScenarios.push('randomErrors');
     details.randomErrors = true;
   }
+}
 
+function projectTamperCounts(metadata: TamperCountMetadata, details: TamperDetectionResult['details']): void {
   if (metadata.invalidPresentedSlots > 0) {
     details.invalidPresentedSlotsCount = metadata.invalidPresentedSlots;
   }
@@ -333,16 +358,6 @@ function buildTamperDetectionResult(
   if (metadata.indexAnomaly) {
     details.indexAnomaly = true;
   }
-
-  if (detectedScenarios.length === 0 && metadata.indexAnomaly) {
-    detectedScenarios.push('indexAnomaly');
-  }
-
-  return {
-    isTampered: detectedScenarios.length > 0,
-    detectedScenarios,
-    details,
-  };
 }
 
 /**

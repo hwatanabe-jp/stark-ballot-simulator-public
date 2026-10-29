@@ -127,6 +127,11 @@ terraform.*.tfvars
 /infra/terraform/app/pipeline.auto.tfvars
 /infra/terraform/app/dynamodb-recovery.auto.tfvars.json
 /infra/terraform/app/evidence/
+# App Prepare dependency records (private build artifacts, not source files)
+/foundation-consumer-authority.json
+/toolchain-ledger-selection.json
+/prover-ledger-selection.json
+/app-release-selection.json
 /app-smoke-*
 /accepted-current-existing.*
 /accepted-deployments/

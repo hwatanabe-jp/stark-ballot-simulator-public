@@ -12,7 +12,7 @@
 import { createHash } from 'crypto';
 import { isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { RFC6962MerkleTree } from '@stark-ballot/merkle/rfc6962-merkle-tree';
-import { isValidVoteId } from '../vote/voteId';
+import { isValidVoteId } from '@stark-ballot/validation/vote-id';
 import type { ConsistencyProof } from '@stark-ballot/merkle/consistency-proof';
 import {
   asBulletinIndex,

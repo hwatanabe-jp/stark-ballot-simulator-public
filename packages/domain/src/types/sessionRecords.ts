@@ -1,3 +1,9 @@
+import {
+  isNonArrayObject as isRecord,
+  hasExactOwnKeys as hasExactKeys,
+  isNonNegativeSafeInteger,
+  isPositiveSafeInteger,
+} from '@stark-ballot/validation/unknown-value-guards';
 import { isValidHexString } from '@stark-ballot/crypto-primitives';
 import type { SimpleBulletinBoard } from '@stark-ballot/domain/bulletin/simple-bulletin-board';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
@@ -101,19 +107,6 @@ const ELECTION_CONFIG_KEYS = new Set<keyof ElectionConfig>([
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.size && keys.every((key) => expected.has(key));
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
 function isNonEmptyStringArray(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
@@ -132,14 +125,12 @@ function parseElectionConfig(value: unknown): ElectionConfig | undefined {
   const botCount = value['botCount'];
   const merkleTreeDepth = value['merkleTreeDepth'];
   if (
-    !isNonNegativeSafeInteger(totalExpected) ||
-    totalExpected === 0 ||
+    !isPositiveSafeInteger(totalExpected) ||
     !isNonEmptyStringArray(choices) ||
     typeof version !== 'string' ||
     version.length === 0 ||
     !isNonNegativeSafeInteger(botCount) ||
-    !isNonNegativeSafeInteger(merkleTreeDepth) ||
-    merkleTreeDepth === 0
+    !isPositiveSafeInteger(merkleTreeDepth)
   ) {
     return undefined;
   }

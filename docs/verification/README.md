@@ -5,24 +5,26 @@
 
 ## 実装の参照先
 
-| 対象                                 | 実装                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 検証ステップ/チェック生成            | `packages/verification/src/verification/build-verification-steps.ts`, `packages/verification/src/verification/build-verification-checks.ts`                                                                                                                                                                                                               |
-| チェック定義                         | `packages/verification/src/verification/verification-checks.ts`                                                                                                                                                                                                                                                                                           |
-| evidence acquisition / check context | `packages/verification/src/verification/engine/{types,admit-evidence,evaluate-checks}.ts`                                                                                                                                                                                                                                                                 |
-| verification resource GET            | `apps/api/src/server/api/handlers/verify.ts`                                                                                                                                                                                                                                                                                                              |
-| verification resource POST           | `apps/api/src/server/api/handlers/verificationRun.ts`                                                                                                                                                                                                                                                                                                     |
-| verification observation POST        | `apps/api/src/server/api/handlers/verificationObservation.ts`                                                                                                                                                                                                                                                                                             |
-| shared presentation policy           | `packages/verification/src/verification/verification-presentation-policy.ts`                                                                                                                                                                                                                                                                              |
-| verifier report / process protocol   | `packages/verification/src/verification/verifier-service-report.ts`, `packages/node-adapters/src/verifier-service-client.ts`                                                                                                                                                                                                                              |
-| browser-local cast checks            | `packages/verification/src/verification/local-cast-checks.ts`                                                                                                                                                                                                                                                                                             |
-| bundle/report 配布                   | application artifact-reader port、Node/AWS adapters、`apps/api/src/server/api/handlers/verificationBundles.ts`                                                                                                                                                                                                                                            |
-| public bundle manifest/admission     | `packages/verification/src/verification/public-bundle-manifest.{json,ts}`、`verification-bundle.ts`                                                                                                                                                                                                                                                       |
-| sync bundle 生成                     | `packages/verification/src/verification/verification-bundle.ts`                                                                                                                                                                                                                                                                                           |
-| async bundle 生成                    | `infra/docker/entrypoint.sh`                                                                                                                                                                                                                                                                                                                              |
-| bitmap proof / sidecar admission     | `packages/zkvm-contract/src/zkvm/bitmap-core.ts`、`packages/verification/src/merkle/bitmap-merkle-tree.ts`、`packages/application/src/finalize/{finalization-bitmap-admission,finalization-store}.ts`、`packages/aws-adapters/src/store/{dynamoSessionStore,fileMockSessionStore,mockSessionStore}.ts`、`apps/api/src/server/api/handlers/bitmapProof.ts` |
-| finalization state / persisted codec | `packages/application/src/finalize/{finalization-types,finalization-storage,finalization-record}.ts`                                                                                                                                                                                                                                                      |
-| STH                                  | `apps/api/src/server/api/handlers/sth.ts`                                                                                                                                                                                                                                                                                                                 |
+| 対象                                        | 実装                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 検証ステップ/チェック生成                   | `packages/verification/src/verification/build-verification-steps.ts`, `packages/verification/src/verification/build-verification-checks.ts`                                                                                                                                                                                                               |
+| チェック定義                                | `packages/verification/src/verification/verification-checks.ts`                                                                                                                                                                                                                                                                                           |
+| evidence acquisition / check context        | `packages/verification/src/verification/engine/{types,admit-evidence,evaluate-checks}.ts`                                                                                                                                                                                                                                                                 |
+| verification resource GET                   | `apps/api/src/server/api/handlers/verify.ts`                                                                                                                                                                                                                                                                                                              |
+| verification resource POST                  | `apps/api/src/server/api/handlers/verificationRun.ts`                                                                                                                                                                                                                                                                                                     |
+| verification observation POST               | `apps/api/src/server/api/handlers/verificationObservation.ts`                                                                                                                                                                                                                                                                                             |
+| shared presentation policy                  | `packages/verification/src/verification/verification-presentation-policy.ts`                                                                                                                                                                                                                                                                              |
+| verifier report / process protocol          | `packages/verification/src/verification/verifier-service-report.ts`, `packages/node-adapters/src/verifier-service-client.ts`                                                                                                                                                                                                                              |
+| browser-local cast checks                   | `packages/verification/src/verification/local-cast-checks.ts`、`apps/web/src/routes/verify/lib/local-cast-evidence.ts`                                                                                                                                                                                                                                    |
+| bundle/report 配布                          | `packages/application/src/verification/artifact-reader.ts`、`packages/node-adapters/src/local-artifact-reader.ts`、`packages/aws-adapters/src/aws/s3-artifact-reader.ts`、`apps/api/src/server/api/handlers/verificationBundles.ts`                                                                                                                       |
+| public bundle manifest                      | `packages/verification/src/verification/public-bundle-manifest.{json,ts}`                                                                                                                                                                                                                                                                                 |
+| sync artifact payload / ZIP 生成・admission | `packages/verification/src/verification/verification-bundle.ts`（pure payload）、`packages/node-adapters/src/verification-bundle.ts`（永続化・ZIP 生成・completed-archive admission）                                                                                                                                                                     |
+| S3 artifact publication                     | `packages/aws-adapters/src/finalize/publish-verification-artifacts.ts`、`apps/api/src/server/composition/finalizationDependencies.ts`（sync policy の注入）                                                                                                                                                                                               |
+| browser / CLI artifact response admission   | `packages/api-contract/src/http/artifact-response.ts`                                                                                                                                                                                                                                                                                                     |
+| async bundle 生成                           | `infra/docker/entrypoint.sh`                                                                                                                                                                                                                                                                                                                              |
+| bitmap proof / sidecar admission            | `packages/zkvm-contract/src/zkvm/bitmap-core.ts`、`packages/verification/src/merkle/bitmap-merkle-tree.ts`、`packages/application/src/finalize/{finalization-bitmap-admission,finalization-store}.ts`、`packages/aws-adapters/src/store/{dynamoSessionStore,fileMockSessionStore,mockSessionStore}.ts`、`apps/api/src/server/api/handlers/bitmapProof.ts` |
+| finalization state / persisted codec        | `packages/application/src/finalize/{finalization-types,finalization-storage,finalization-record}.ts`                                                                                                                                                                                                                                                      |
+| STH                                         | `apps/api/src/server/api/handlers/sth.ts`                                                                                                                                                                                                                                                                                                                 |
 
 ## 用語
 
@@ -81,8 +83,8 @@ Finalization create の sync `200` / async `202` と current `GET` は同じ str
 `presentation`、`available | verification-gated` の discriminated
 `voterEvidence`、`artifactAvailability` に partition されます。
 bitmap の `available` は terminal success と同じ durable commit に admit された sidecar だけを表します。
-Step Functions の状態と queue/progress estimate は `runtimeDiagnostics` にだけ置き、
-finalization/proof authority にしません。
+queue/progress estimate は `runtimeDiagnostics` にだけ置き、finalization/proof authority にしません。
+集計 GET は保存済み状態だけを返し、実行基盤の状態照合は定期 writer が担います。
 
 application 内では public-audit 3点、receipt、receipt publication、bitmap evidence をそれぞれ
 `available | unavailable` の閉じた状態として扱います。file/DynamoDB の既存 flat record は変更せず、
@@ -200,7 +202,8 @@ incomplete_session_authority | session_identity_mismatch | voter_evidence_mismat
 
 この strict-empty-body POST は path の current `finalizationId` に対して expected ImageID を
 解決し、`Receipt::verify(expectedImageId)` を実行するか、同じ finalization の既存状態を
-idempotent に返します。
+idempotent に返します。running は再送も `202`、terminal は `200` です。
+古い finalization ID の検証 POST は `409 FINALIZATION_NOT_CURRENT` で拒否します。
 
 - AWS target runtime の authoritative `s3BundleKey` は
   `recordType: "verification-work"` と current `finalizationId` を持つ exact work item として
@@ -239,9 +242,9 @@ success/dev-mode に infrastructure failure category を付けることや、fai
 
 ## `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`
 
-この endpoint は verdict authority ではありません。画面で確定した
-browser-local cast check と server authority を結合し、最終 verification summary を
-CloudWatch 用に観測する endpoint です。
+この endpoint は、画面で確定した browser-local cast check と server authority を結合し、
+最終 verification summary を CloudWatch 用に観測します。verdict の決定は共有の
+検証表示ポリシーが担い、観測の送信結果によって変わりません。
 
 `finalizationId` は path だけから取得します。request body は `castChecks` object 内の
 次の4 check status だけを受け付けます。
@@ -293,15 +296,27 @@ STARK:   stark_image_id_match, stark_receipt_verify
 
 `recorded_as_cast` / `counted_as_recorded` / `stark_verification` の step status は、その stage で
 required となる check 群から server-side に導出します。`cast_as_intended` は GET verification resource では
-`castSource='client'` のため server-side で `not_run` とし、verify page が browser 保存済みの
-receipt/opening から local check を再計算します。`verification.steps[].inputs` は stage 内の全
-check 定義から集約した UI highlight key です。
+`castSource='client'` のため server-side で `not_run` とします。verify page は admitted
+verification resource の `voterEvidence` から receipt を取得し、browser session の
+`electionId` / `myVote` / `myRand` と組み合わせて local check を再計算します。
 
 summary、stage status、fully-verified label eligibility、display precedence の単一 authority は
 `packages/verification/src/verification/verification-presentation-policy.ts` です。browser-local
 cast calculation は `local-cast-checks.ts` が所有し、web は local result を server checks に
 overlay して同じ policy を再評価します。policy は checks と
 `missingSlots/invalidPresentedSlots/rejectedRecords/excludedSlots` context を受け取ります。
+
+browser の `useVerificationSequence.ts` は、必要な STARK 検証の開始・polling を終えた後、
+取得済みの最新 payload から4 stage を一括表示します。表示用 timer による段階的な演出は
+ありません。待機後に開始時の session identity を再確認し、現在の session に対して
+`user.voteReceipt` / `user.merklePath` を保存します。unmount、session replacement、または
+verification continuation authority の失効で中断した場合は、遅れて返った結果から evidence や
+完了状態を公開しません。これらの evidence は検証開始前には表示しません。
+
+`verification.steps[].inputs` は stage 内の全 check 定義から集約した canonical metadata です。
+現在の検証カードは各 check の `inputs` を使って、その check に対応する inline evidence を
+選択します。画面での表示と操作の詳細は
+[検証画面仕様](../ui/verify-page/verify-page.md) を参照してください。
 
 engine は identity/config、artifact acquisition、proof outcome、user receipt を independently
 admitted な discriminated state として合成し、各 check には必要な context だけを渡します。
@@ -397,17 +412,16 @@ input.json, verification.json, included-bitmap.json, seen-bitmap.json
 allowlist だけを収録し、required member を要求した上で completed ZIP を検査します。async
 builder も同じ manifest を直接読み、未登録 member、required member の欠落、private member、
 duplicate/case conflict、非 canonical path を含む completed ZIP を upload 前に拒否します。
-local artifact reader も sync policy で complete archive を再検査し、local delivery より前に
-同じ条件を強制します。
+配布時の reader admission は [Bundle/report delivery](#bundlereport-delivery) に従います。
 
 `included-bitmap.json` と `seen-bitmap.json` は canonical bitmap-proof route の private
 trusted source です。sync / async とも exact counted/presented bitmap を検証し、terminal success と
 同じ commit で sidecar として保存します。AWS callback の retry 境界は
 `public-book/src/aws/async-prover.md` を参照してください。
 
-`bundle.zip` は bundle-only audit 用で、`/verify` UI の verdict を単体では完全再現しません。
-UI verdict には session-scoped bulletin proof、bitmap proof、設定時の third-party STH evidence
-も関わります。これは private artifact を漏らさないための意図的な PoC 境界です。公開向けの
+`bundle.zip` は、公開可能なファイルを使う bundle-only audit 用です。`/verify` UI の verdict を
+再現するには、session-scoped bulletin proof、bitmap proof、設定時の third-party STH evidence
+も必要です。private artifact は ZIP の外に保ちます。公開向けの
 audit 手順は `public-book/src/reproducibility/index.md` を参照してください。
 
 ## Bundle/report delivery

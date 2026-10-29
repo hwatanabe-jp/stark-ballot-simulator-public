@@ -17,7 +17,7 @@ import {
   type IncludedBitmapArtifact,
   type SeenBitmapArtifact,
 } from '@stark-ballot/zkvm-contract/zkvm/bitmap-artifacts';
-import { getStringProperty, isRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getStringProperty, isNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import {
   buildSupportedPublicInputArtifactFromZkvmInput,
   buildPublicInputArtifactFromZkvmInput,
@@ -154,10 +154,16 @@ export function buildVerificationBundleArtifacts(
   return { artifacts };
 }
 
+function resolveBundleReceiptImageId({
+  zkvmResult,
+  normalizedReceipt,
+}: VerificationBundleArtifactContext): string | undefined {
+  return normalizedReceipt?.receipt?.imageId ?? zkvmResult.imageId ?? getStringProperty(zkvmResult, 'imageID');
+}
+
 function resolveReceiptPayload(context: VerificationBundleArtifactContext): unknown {
   const { zkvmResult, normalizedReceipt } = context;
-  const derivedImageId =
-    normalizedReceipt?.receipt?.imageId ?? zkvmResult.imageId ?? getStringProperty(zkvmResult, 'imageID');
+  const derivedImageId = resolveBundleReceiptImageId(context);
 
   if (zkvmResult.receipt?.raw && typeof zkvmResult.receipt.raw === 'object') {
     return injectImageIdentifiers(zkvmResult.receipt.raw as Record<string, unknown>, derivedImageId);
@@ -189,7 +195,7 @@ function injectImageIdentifiers(
   imageId: string | undefined,
 ): Record<string, unknown> {
   const cloned: unknown = JSON.parse(JSON.stringify(payload));
-  if (!isRecord(cloned)) {
+  if (!isNonNullObject(cloned)) {
     throw new Error('Receipt payload JSON clone is not an object');
   }
 
@@ -202,7 +208,7 @@ function injectImageIdentifiers(
     }
 
     const receipt = cloned['receipt'];
-    if (isRecord(receipt)) {
+    if (isNonNullObject(receipt)) {
       if (typeof receipt['image_id'] !== 'string') {
         receipt['image_id'] = imageId;
       }

@@ -56,10 +56,7 @@ function freezeOpenApiEffectMetadata(metadata: OpenApiEffectMetadata): OpenApiEf
   }
 }
 
-export function documentOpenApiEffect<TSchema extends AnySchema>(
-  schema: TSchema,
-  metadata: OpenApiEffectMetadata,
-): TSchema {
+function documentOpenApiEffect<TSchema extends AnySchema>(schema: TSchema, metadata: OpenApiEffectMetadata): TSchema {
   const descriptor = schema.getStructuralDescriptor();
   if (descriptor.kind !== 'EffectsSchema' || descriptor.effect !== metadata.kind) {
     throw new Error(`OpenAPI metadata kind ${metadata.kind} does not match ${descriptor.kind}`);

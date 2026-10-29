@@ -72,7 +72,7 @@ The source checkout and generated snapshot have different inventories. Export
 retains the public-boundary scanner/tests, shell safety scanner/tests,
 `deployment-authority-boundary.ts`, and `scripts/source-analysis/` helpers. It
 omits the deployment-authority boundary test, operational-versioning
-implementation/test, repository-policy implementation/test, and framework
+implementation/test, repository-policy implementation/test, and shared infrastructure
 scanner/Gitleaks sources and tests. Therefore `test:public` in the source
 checkout includes private security tests that do not exist in the exported
 tree. A public test result cannot establish the omitted private guards.
@@ -121,10 +121,14 @@ deployment authority in
 `packages/deployment-authority/src/`. It scans tracked and untracked active
 source files in package `src/` trees, root buildspecs, `.github/workflows/`,
 the App, Bootstrap, and Foundation Terraform roots, `scripts/aws/`,
-`scripts/terraform/`, and the Bootstrap-managed App, signature-preflight,
-Foundation, and Terraform-drift script families. Declaration files, tests,
-legacy Terraform, documentation, and unsupported file types are
-outside this guard's scope.
+`scripts/terraform/`, and Bootstrap's `app-pipeline-scripts/` and
+`foundation-pipeline-scripts/`. Signature preparation lives in
+`app-pipeline-scripts/`; local drift lives in `scripts/aws/terraform-drift/`.
+The guard also admits files under
+`infra/terraform/bootstrap/terraform-drift-scripts/`, although that directory
+is absent from the current source tree. Declaration files, tests, legacy
+Terraform, documentation, and unsupported file types are outside this guard's
+scope.
 
 The guard fails closed on a second deployment-context renderer; duplicate
 canonical JSON, immutable-reference, publication, pointer-CAS, Terraform

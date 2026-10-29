@@ -8,9 +8,9 @@ import type { TestResult } from './cli-test-helpers';
 import {
   getArrayProperty,
   getNumberProperty,
-  getRecordProperty,
+  getObjectProperty,
   getStringProperty,
-  isRecord,
+  isNonNullObject,
 } from '@stark-ballot/validation/unknown-value-guards';
 
 const cleanupPaths: string[] = [];
@@ -75,9 +75,9 @@ describe('persistCliReport', () => {
 
     const raw = await fs.readFile(jsonPath, 'utf-8');
     const parsed: unknown = JSON.parse(raw);
-    const record = isRecord(parsed) ? parsed : null;
+    const record = isNonNullObject(parsed) ? parsed : null;
     expect(record).not.toBeNull();
-    const summary = getRecordProperty(record, 'summary');
+    const summary = getObjectProperty(record, 'summary');
     expect(getNumberProperty(summary, 'total')).toBe(2);
     expect(getNumberProperty(summary, 'failed')).toBe(1);
     const resultEntries = getArrayProperty(record, 'results') ?? [];

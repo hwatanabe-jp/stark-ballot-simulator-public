@@ -1,4 +1,5 @@
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendWorkMessage } from './send-work-message';
+import { SQSClient } from '@aws-sdk/client-sqs';
 import {
   VERIFICATION_WORK_RECORD_TYPE,
   parseVerificationWorkMessage,
@@ -9,7 +10,6 @@ import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
 let sqsClient: SQSClient | null = null;
-const SQS_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 function getSqsClient(region: string): SQSClient {
   if (!sqsClient) {
@@ -42,20 +42,12 @@ export async function publishVerificationWorkMessage(
         ...message,
       }),
     );
-    const response = await getSqsClient(profile.external.region).send(
-      new SendMessageCommand({
-        QueueUrl: queueUrl,
-        MessageBody: payload,
-      }),
-    );
-    if (!response.MessageId || !SQS_MESSAGE_ID_PATTERN.test(response.MessageId)) {
-      throw new Error('SQS publish response did not include a valid message ID');
-    }
+    const messageId = await sendWorkMessage(getSqsClient(profile.external.region), queueUrl, payload);
     emitCanonicalEvent({
       event: 'queue_publish',
       queue: 'verification',
       result: 'succeeded',
-      sqs_message_id: response.MessageId,
+      sqs_message_id: messageId,
       ...correlation,
     });
   } catch (error) {

@@ -1,4 +1,12 @@
 locals {
+  target_lambda_timeout_seconds = {
+    public_api          = 30
+    finalization_writer = 120
+    proof_dispatcher    = 30
+    verification_worker = 60
+    semaphore_janitor   = 30
+  }
+
   target_lambda_common_environment = {
     AWS_ACCOUNT_ID                      = var.aws_account_id
     AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
@@ -14,10 +22,6 @@ locals {
     LOG_IP_HASH_SALT_REF                = local.runtime_reference_names.LOG_IP_HASH_SALT_REF
     NODE_ENV                            = "production"
     PROVER_STATE_MACHINE_ARN            = local.target_state_machine_arn
-    PROVER_SEMAPHORE_LOCK_NAME          = local.prover_semaphore_lock_name
-    PROVER_SEMAPHORE_STALE_SECONDS      = tostring(local.prover_semaphore_stale_seconds)
-    PROVER_SEMAPHORE_TABLE_NAME         = aws_dynamodb_table.prover_semaphore.name
-    PROVER_MAX_CONCURRENT_PROVERS       = tostring(var.prover_max_concurrent_provers)
     PROVER_WORK_QUEUE_URL               = aws_sqs_queue.prover_work.url
     RATE_LIMIT_COUNTERS_TABLE           = aws_dynamodb_table.rate_limit_counters.arn
     RATE_LIMIT_EVENTS_TABLE             = aws_dynamodb_table.rate_limit_events.arn
@@ -54,7 +58,7 @@ resource "aws_lambda_function" "target" {
   s3_key            = var.lambda_artifacts[each.key].s3_key
   s3_object_version = var.lambda_artifacts[each.key].s3_object_version
   source_code_hash  = var.lambda_artifacts[each.key].source_code_hash
-  timeout           = each.key == "verification_worker" ? 60 : 30
+  timeout           = local.target_lambda_timeout_seconds[each.key]
   memory_size       = each.key == "verification_worker" ? 1024 : 512
 
   logging_config {
@@ -67,7 +71,7 @@ resource "aws_lambda_function" "target" {
     variables = merge(
       local.target_lambda_common_environment,
       each.key == "public_api" ? {
-        RUNTIME_PROFILE = local.dynamodb_recovery_quiesced ? "target-aws-async-quiesced" : "target-aws-async"
+        RUNTIME_PROFILE = local.application_quiesced ? "target-aws-async-quiesced" : "target-aws-async"
         TRUSTED_PROXY   = local.cloudflare_origin_required ? "cloudflare" : "api-gateway"
       } : {},
       each.key == "semaphore_janitor" ? {
@@ -98,7 +102,7 @@ resource "aws_lambda_event_source_mapping" "prover_work" {
   event_source_arn        = aws_sqs_queue.prover_work.arn
   function_name           = aws_lambda_function.target["proof_dispatcher"].arn
   batch_size              = 1
-  enabled                 = !local.dynamodb_recovery_quiesced
+  enabled                 = !local.application_quiesced
   function_response_types = ["ReportBatchItemFailures"]
 
   depends_on = [
@@ -111,7 +115,7 @@ resource "aws_lambda_event_source_mapping" "verification_work" {
   event_source_arn        = aws_sqs_queue.verification_work.arn
   function_name           = aws_lambda_function.target["verification_worker"].arn
   batch_size              = 1
-  enabled                 = !local.dynamodb_recovery_quiesced
+  enabled                 = !local.application_quiesced
   function_response_types = ["ReportBatchItemFailures"]
 
   depends_on = [aws_iam_role_policy.target_lambda_verification_worker]

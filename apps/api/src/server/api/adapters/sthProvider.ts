@@ -53,40 +53,38 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isHex32(value: unknown): value is string {
+  return typeof value === 'string' && isValidHexString(value, 32);
+}
+
+const OPTIONAL_STH_FIELDS = {
+  bulletinRoot: isHex32,
+  treeSize: isNonNegativeInteger,
+  timestamp: isNonNegativeInteger,
+  logId: isNonEmptyString,
+};
+
+function admitOptionalSthFields(
+  data: Record<string, unknown>,
+  fields: Record<string, unknown>,
+  requireAllFields: boolean,
+): boolean {
+  return Object.entries(OPTIONAL_STH_FIELDS).every(([key, admit]) =>
+    requireAllFields || hasOwn(data, key) ? admit(fields[key]) : true,
+  );
+}
+
 function admitCanonicalSthRecord(
   source: string,
   data: unknown,
   options: { requireAllFields: boolean },
 ): AdmittedSthRecord | null {
-  if (!isRecord(data) || Object.keys(data).some((key) => !EXTERNAL_STH_KEYS.has(key))) {
-    return null;
-  }
-
+  if (!isRecord(data) || Object.keys(data).some((key) => !EXTERNAL_STH_KEYS.has(key))) return null;
   const sthDigest = data['sthDigest'];
-  if (typeof sthDigest !== 'string' || !isValidHexString(sthDigest, 32)) {
+  if (!isHex32(sthDigest)) return null;
+  const { bulletinRoot, treeSize, timestamp, logId } = data;
+  if (!admitOptionalSthFields(data, { bulletinRoot, treeSize, timestamp, logId }, options.requireAllFields))
     return null;
-  }
-
-  const bulletinRoot = data['bulletinRoot'];
-  const treeSize = data['treeSize'];
-  const timestamp = data['timestamp'];
-  const logId = data['logId'];
-  if (
-    (options.requireAllFields || hasOwn(data, 'bulletinRoot')) &&
-    (typeof bulletinRoot !== 'string' || !isValidHexString(bulletinRoot, 32))
-  ) {
-    return null;
-  }
-  if ((options.requireAllFields || hasOwn(data, 'treeSize')) && !isNonNegativeInteger(treeSize)) {
-    return null;
-  }
-  if ((options.requireAllFields || hasOwn(data, 'timestamp')) && !isNonNegativeInteger(timestamp)) {
-    return null;
-  }
-  if ((options.requireAllFields || hasOwn(data, 'logId')) && !isNonEmptyString(logId)) {
-    return null;
-  }
-
   return {
     source,
     sthDigest,
@@ -121,6 +119,19 @@ type SameOriginSource = {
   resolvedPath: string;
 };
 
+function admitAuditorQuery(searchParams: URLSearchParams): { auditorId?: string } | null {
+  const queryKeys = [...searchParams.keys()];
+  if (queryKeys.some((key) => key !== 'auditorId') || queryKeys.length > 1) {
+    return null;
+  }
+  const auditorId = searchParams.get('auditorId') ?? undefined;
+  if (auditorId !== undefined && !AUDITOR_ID_PATTERN.test(auditorId)) {
+    return null;
+  }
+
+  return omitUndefinedProperties({ auditorId });
+}
+
 function resolveSameOriginSourceTemplate(source: string, sessionId: string): SameOriginSource | null {
   if (!source.startsWith('/') || source.startsWith('//')) {
     return null;
@@ -136,15 +147,9 @@ function resolveSameOriginSourceTemplate(source: string, sessionId: string): Sam
     return null;
   }
 
-  const queryKeys = [...parsed.searchParams.keys()];
-  if (queryKeys.some((key) => key !== 'auditorId') || queryKeys.length > 1) {
-    return null;
-  }
-  const auditorId = parsed.searchParams.get('auditorId') ?? undefined;
-  if (auditorId !== undefined && !AUDITOR_ID_PATTERN.test(auditorId)) {
-    return null;
-  }
-
+  const admittedQuery = admitAuditorQuery(parsed.searchParams);
+  if (!admittedQuery) return null;
+  const { auditorId } = admittedQuery;
   const query = auditorId === undefined ? {} : { auditorId };
   return {
     ...omitUndefinedProperties({ auditorId }),

@@ -73,6 +73,7 @@ describe('public contract mounted-behavior probe policy', () => {
 
     expect(probes.map(({ probeId }) => probeId)).toEqual([
       'lambda.bundle.cors-preflight.range-header',
+      'lambda.current-finalization.head.not-supported',
       'lambda.bundle.missing-capability.error-envelope',
       'lambda.bundle.local-binary.no-store',
       'lambda.bundle.range-unsatisfiable.416',

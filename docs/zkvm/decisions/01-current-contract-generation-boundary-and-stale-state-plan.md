@@ -1,5 +1,11 @@
 # Current Contract Generation Boundary Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: WS0 implemented** (commit `a0e0a79`). The shared boot-time
 > `contractGeneration` resolver, wrapper-level ownership for live
 > sessions and finalized records, async-carrier validation, the three-

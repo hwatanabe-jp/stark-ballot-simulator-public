@@ -1,3 +1,7 @@
+import {
+  isNonArrayObject as isRecord,
+  hasExactOwnKeys as hasExactKeys,
+} from '@stark-ballot/validation/unknown-value-guards';
 import { asSessionId, type SessionId } from '@stark-ballot/domain/types/identifiers';
 import { parseFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import {
@@ -44,41 +48,36 @@ const SUCCEEDED_FINALIZATION_RECORD_KEYS = new Set([
   'finalizationResult',
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.size && keys.every((key) => expected.has(key));
+function parseResultRecordWith(
+  value: unknown,
+  parseAuthority: (value: unknown) => FinalizationResultAuthority | undefined,
+): FinalizationResultRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  const finalizationId = parseFinalizationId(value['finalizationId']);
+  if (!finalizationId) return undefined;
+  const authorityValue = { ...value };
+  delete authorityValue['finalizationId'];
+  const authority = parseAuthority(authorityValue);
+  return authority ? { finalizationId, ...authority } : undefined;
 }
 
 function parseFinalizationResultRecord(value: unknown): FinalizationResultRecord | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const finalizationId = parseFinalizationId(value['finalizationId']);
-  if (!finalizationId) {
-    return undefined;
-  }
-  const authorityValue = { ...value };
-  delete authorityValue['finalizationId'];
-  const authority = parseFinalizationResultAuthority(authorityValue);
-  return authority ? { finalizationId, ...authority } : undefined;
+  return parseResultRecordWith(value, parseFinalizationResultAuthority);
 }
 
 function admitFinalizationResultRecord(value: unknown): FinalizationResultRecord | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
+  return parseResultRecordWith(value, admitFinalizationResultAuthority);
+}
+
+function parseFinalizationRecordIdentity(value: Record<string, unknown>) {
+  const rawSessionId = value['sessionId'];
+  const sessionId = typeof rawSessionId === 'string' ? asSessionIdOrUndefined(rawSessionId) : undefined;
   const finalizationId = parseFinalizationId(value['finalizationId']);
-  if (!finalizationId) {
+  const state = parseFinalizationState(value['state']);
+  const scenarioContext = parseFinalizationScenarioContext(value['scenarioContext']);
+  if (!sessionId || !finalizationId || !state || state.finalizationId !== finalizationId || !scenarioContext)
     return undefined;
-  }
-  const authorityValue = { ...value };
-  delete authorityValue['finalizationId'];
-  const authority = admitFinalizationResultAuthority(authorityValue);
-  return authority ? { finalizationId, ...authority } : undefined;
+  return { sessionId, finalizationId, state, scenarioContext };
 }
 
 /**
@@ -92,14 +91,9 @@ function parseRecordWith(
   if (!isRecord(value)) {
     return undefined;
   }
-  const rawSessionId = value['sessionId'];
-  const sessionId = typeof rawSessionId === 'string' ? asSessionIdOrUndefined(rawSessionId) : undefined;
-  const finalizationId = parseFinalizationId(value['finalizationId']);
-  const state = parseFinalizationState(value['state']);
-  const scenarioContext = parseFinalizationScenarioContext(value['scenarioContext']);
-  if (!sessionId || !finalizationId || !state || state.finalizationId !== finalizationId || !scenarioContext) {
-    return undefined;
-  }
+  const identity = parseFinalizationRecordIdentity(value);
+  if (!identity) return undefined;
+  const { sessionId, finalizationId, state, scenarioContext } = identity;
 
   if (state.status === 'succeeded') {
     if (!hasExactKeys(value, SUCCEEDED_FINALIZATION_RECORD_KEYS)) {

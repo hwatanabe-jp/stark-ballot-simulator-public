@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { describe, expect, it } from 'vitest';
 import type { AvailableVerificationResource } from '@stark-ballot/api-contract/schemas/verification';
 import type { SessionData } from '@stark-ballot/web/session/types';
@@ -125,8 +126,7 @@ function availableResource(): AvailableVerificationResource {
 function session(overrides: { myVote?: SessionData['myVote'] } = {}): SessionData {
   const myVote = overrides.myVote ?? 'A';
   return {
-    sessionId: 'session-1',
-    capabilityToken: 'capability',
+    ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'capability' }),
     lastActivity: 1,
     expiresAt: 60_001,
     phase: 'voting',

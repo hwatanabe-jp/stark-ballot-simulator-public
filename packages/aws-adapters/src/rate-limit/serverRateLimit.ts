@@ -45,17 +45,10 @@ export class ServerRateLimiter {
 
   checkZkVmRateLimit(ipAddress: string): Promise<RateLimitResult> {
     const now = Date.now();
-    const cutoff = now - this.timeWindowMs;
-    const executions = this.ipExecutions.get(ipAddress) ?? [];
-    const validExecutions = executions.filter((timestamp) => timestamp > cutoff);
+    const validExecutions = this.recentExecutions(ipAddress, now);
 
     if (validExecutions.length >= this.maxExecutions) {
-      const oldestExecution = Math.min(...validExecutions);
-      return Promise.resolve({
-        allowed: false,
-        remainingExecutions: 0,
-        nextAvailableAt: new Date(oldestExecution + this.timeWindowMs).toISOString(),
-      });
+      return Promise.resolve(this.deniedExecution(validExecutions));
     }
 
     return Promise.resolve({
@@ -66,9 +59,7 @@ export class ServerRateLimiter {
 
   recordZkVmExecution(ipAddress: string): Promise<void> {
     const now = Date.now();
-    const cutoff = now - this.timeWindowMs;
-    const executions = this.ipExecutions.get(ipAddress) ?? [];
-    const validExecutions = executions.filter((timestamp) => timestamp > cutoff);
+    const validExecutions = this.recentExecutions(ipAddress, now);
     validExecutions.push(now);
     this.ipExecutions.set(ipAddress, validExecutions);
     return Promise.resolve();
@@ -76,19 +67,12 @@ export class ServerRateLimiter {
 
   consumeZkVmExecution(ipAddress: string): Promise<RateLimitResult> {
     const now = Date.now();
-    const cutoff = now - this.timeWindowMs;
-    const executions = this.ipExecutions.get(ipAddress) ?? [];
-    const validExecutions = executions.filter((timestamp) => timestamp > cutoff);
+    const validExecutions = this.recentExecutions(ipAddress, now);
     validExecutions.push(now);
     this.ipExecutions.set(ipAddress, validExecutions);
 
     if (validExecutions.length > this.maxExecutions) {
-      const oldestExecution = Math.min(...validExecutions);
-      return Promise.resolve({
-        allowed: false,
-        remainingExecutions: 0,
-        nextAvailableAt: new Date(oldestExecution + this.timeWindowMs).toISOString(),
-      });
+      return Promise.resolve(this.deniedExecution(validExecutions));
     }
 
     return Promise.resolve({
@@ -98,30 +82,21 @@ export class ServerRateLimiter {
   }
 
   checkGlobalLimit(timeWindow: TimeWindow): Promise<GlobalLimitResult> {
-    const limit = this.getLimit(timeWindow);
-    const duration = this.getDuration(timeWindow);
-    const now = Date.now();
-    const windowStart = this.getWindowStart(timeWindow, new Date(now));
-    const counter = this.globalCounters.get(timeWindow);
+    const { limit, duration, now, windowStart, counter } = this.currentWindow(timeWindow);
 
     if (!counter || counter.windowStart !== windowStart) {
       return Promise.resolve({ allowed: true, currentCount: 0, limit });
     }
 
     if (counter.count >= limit) {
-      const windowEnd = counter.windowStart + duration;
-      const retryAfter = Math.ceil((windowEnd - now) / 1000);
-      return Promise.resolve({ allowed: false, currentCount: counter.count, limit, retryAfter });
+      return Promise.resolve(this.deniedGlobalCount(counter, limit, duration, now));
     }
 
     return Promise.resolve({ allowed: true, currentCount: counter.count, limit });
   }
 
   incrementGlobalCount(timeWindow: TimeWindow): Promise<number> {
-    const limit = this.getLimit(timeWindow);
-    const now = Date.now();
-    const windowStart = this.getWindowStart(timeWindow, new Date(now));
-    const counter = this.globalCounters.get(timeWindow);
+    const { limit, windowStart, counter } = this.currentWindow(timeWindow);
 
     if (!counter || counter.windowStart !== windowStart) {
       this.globalCounters.set(timeWindow, { windowStart, count: 1 });
@@ -137,11 +112,7 @@ export class ServerRateLimiter {
   }
 
   consumeGlobalLimit(timeWindow: TimeWindow): Promise<GlobalLimitResult> {
-    const limit = this.getLimit(timeWindow);
-    const duration = this.getDuration(timeWindow);
-    const now = Date.now();
-    const windowStart = this.getWindowStart(timeWindow, new Date(now));
-    const counter = this.globalCounters.get(timeWindow);
+    const { limit, duration, now, windowStart, counter } = this.currentWindow(timeWindow);
 
     if (!counter || counter.windowStart !== windowStart) {
       this.globalCounters.set(timeWindow, { windowStart, count: 1 });
@@ -151,12 +122,43 @@ export class ServerRateLimiter {
     counter.count += 1;
 
     if (counter.count > limit) {
-      const windowEnd = counter.windowStart + duration;
-      const retryAfter = Math.ceil((windowEnd - now) / 1000);
-      return Promise.resolve({ allowed: false, currentCount: counter.count, limit, retryAfter });
+      return Promise.resolve(this.deniedGlobalCount(counter, limit, duration, now));
     }
 
     return Promise.resolve({ allowed: true, currentCount: counter.count, limit });
+  }
+
+  private recentExecutions(ipAddress: string, now: number): number[] {
+    const cutoff = now - this.timeWindowMs;
+    return (this.ipExecutions.get(ipAddress) ?? []).filter((timestamp) => timestamp > cutoff);
+  }
+
+  private deniedExecution(executions: number[]): RateLimitResult {
+    return {
+      allowed: false,
+      remainingExecutions: 0,
+      nextAvailableAt: new Date(Math.min(...executions) + this.timeWindowMs).toISOString(),
+    };
+  }
+
+  private currentWindow(timeWindow: TimeWindow) {
+    const now = Date.now();
+    return {
+      limit: this.getLimit(timeWindow),
+      duration: this.getDuration(timeWindow),
+      now,
+      windowStart: this.getWindowStart(timeWindow, new Date(now)),
+      counter: this.globalCounters.get(timeWindow),
+    };
+  }
+
+  private deniedGlobalCount(counter: GlobalCounter, limit: number, duration: number, now: number): GlobalLimitResult {
+    return {
+      allowed: false,
+      currentCount: counter.count,
+      limit,
+      retryAfter: Math.ceil((counter.windowStart + duration - now) / 1000),
+    };
   }
 
   private getLimit(timeWindow: TimeWindow): number {

@@ -1,6 +1,16 @@
+import {
+  hasUniqueOrderedAssetPaths,
+  sha256,
+  isRecord,
+  isSafeRelativePath,
+  isSha256,
+  isInstalledAssetFile,
+  listAssetFiles,
+  assertAssetFileInventory,
+  validateInstalledAssetFiles,
+} from './asset-files.mjs';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const invocationKeys = ['imageDigest', 'imageRegion', 'imageUri', 'registryId', 'repositoryName', 'signingProfileArn'];
@@ -84,14 +94,6 @@ function assetDiagnosticReason(error) {
  *   signingProfileArn: string;
  * }} ImageSignatureInvocation
  */
-
-/**
- * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
-function isRecord(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * @param {unknown} value
@@ -378,39 +380,6 @@ export function buildVerifierEnvironment(paths, invocation, sourceEnvironment) {
 }
 
 /**
- * @param {Uint8Array} value
- * @returns {string}
- */
-function sha256(value) {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-/**
- * @param {unknown} value
- * @returns {value is string}
- */
-function isSha256(value) {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {value is string}
- */
-function isSafeRelativePath(value) {
-  return (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    value.length <= 512 &&
-    !value.includes('\\') &&
-    !value.includes('\0') &&
-    !path.posix.isAbsolute(value) &&
-    path.posix.normalize(value) === value &&
-    !value.split('/').includes('..')
-  );
-}
-
-/**
  * @typedef {{
  *   path: string;
  *   sha256: string;
@@ -454,32 +423,6 @@ export function isLambdaRuntimeAssetModeCompatible(recordedMode, actualMode) {
 }
 
 /**
- * @param {string} root
- * @param {string} [relativeDirectory]
- * @returns {Promise<string[]>}
- */
-async function listAssetFiles(root, relativeDirectory = '') {
-  const currentDirectory = path.join(root, relativeDirectory);
-  const entries = await readdir(currentDirectory, { withFileTypes: true });
-  /** @type {string[]} */
-  const files = [];
-  for (const entry of entries) {
-    const relativePath = relativeDirectory ? path.posix.join(relativeDirectory, entry.name) : entry.name;
-    if (entry.isSymbolicLink()) {
-      throw new AssetDiagnosticError('ASSET_DIRECTORY_INVALID');
-    }
-    if (entry.isDirectory()) {
-      files.push(...(await listAssetFiles(root, relativePath)));
-    } else if (entry.isFile()) {
-      files.push(relativePath);
-    } else {
-      throw new AssetDiagnosticError('ASSET_DIRECTORY_INVALID');
-    }
-  }
-  return files.sort();
-}
-
-/**
  * @param {string} assetRoot
  * @param {'amd64' | 'arm64'} expectedArchitecture
  * @returns {Promise<ValidatedVerifierAssets>}
@@ -488,47 +431,11 @@ async function validateVerifierAssets(assetRoot, expectedArchitecture) {
   const manifestPath = path.join(assetRoot, 'asset-manifest.json');
   const installationPath = path.join(assetRoot, 'installation.json');
   const [manifestRaw, installationRaw] = await Promise.all([readFile(manifestPath), readFile(installationPath)]);
-  let manifest;
-  let installation;
-  try {
-    manifest = JSON.parse(manifestRaw.toString('utf8'));
-    installation = JSON.parse(installationRaw.toString('utf8'));
-  } catch {
-    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
-  }
-  if (
-    !isRecord(manifest) ||
-    manifest['kind'] !== 'image-signature-verifier-assets' ||
-    manifest['verifierVersion'] !== verifierVersion ||
-    !isRecord(manifest['platforms']) ||
-    !isRecord(installation) ||
-    installation['kind'] !== 'image-signature-verifier-installation' ||
-    installation['architecture'] !== expectedArchitecture ||
-    installation['verifierVersion'] !== verifierVersion ||
-    installation['assetManifestSha256'] !== sha256(manifestRaw) ||
-    !isSha256(installation['trustRootSha256']) ||
-    !Array.isArray(installation['files'])
-  ) {
-    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
-  }
-
-  const platform = manifest['platforms'][`linux-${expectedArchitecture}`];
-  const trustRoot = manifest['trustRoot'];
-  if (
-    !isRecord(platform) ||
-    platform['os'] !== 'linux' ||
-    platform['architecture'] !== expectedArchitecture ||
-    !isRecord(platform['notation']) ||
-    platform['notation']['version'] !== '1.3.2' ||
-    !isRecord(platform['awsSignerPlugin']) ||
-    platform['awsSignerPlugin']['version'] !== '1.0.2292' ||
-    !isRecord(platform['ecrCredentialHelper']) ||
-    platform['ecrCredentialHelper']['version'] !== '0.12.0' ||
-    !isRecord(trustRoot) ||
-    trustRoot['name'] !== 'aws-signer-ts'
-  ) {
-    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
-  }
+  const parsed = parseVerifierMetadataBytes(manifestRaw, installationRaw);
+  const manifest = admitVerifierManifest(parsed.manifest);
+  const installation = admitVerifierInstallation(parsed.installation, expectedArchitecture, sha256(manifestRaw));
+  const platform = admitVerifierPlatform(manifest.platforms[`linux-${expectedArchitecture}`], expectedArchitecture);
+  const trustRoot = admitVerifierTrustRoot(manifest.trustRoot);
 
   const notationPath = platform['notation']['installedPath'];
   const pluginPath = platform['awsSignerPlugin']['installedPath'];
@@ -550,75 +457,18 @@ async function validateVerifierAssets(assetRoot, expectedArchitecture) {
     throw new AssetDiagnosticError('ASSET_AUTHORITY_INVALID');
   }
 
-  /** @type {InstalledAssetFile[]} */
-  const files = [];
-  for (const candidate of installation['files']) {
-    if (
-      !isRecord(candidate) ||
-      Object.keys(candidate).sort().join('\0') !== 'mode\0path\0sha256\0size' ||
-      !isSafeRelativePath(candidate['path']) ||
-      !isSha256(candidate['sha256']) ||
-      (candidate['mode'] !== '0755' && candidate['mode'] !== '0644') ||
-      !Number.isSafeInteger(candidate['size']) ||
-      /** @type {number} */ (candidate['size']) < 0 ||
-      /** @type {number} */ (candidate['size']) > maximumAssetBytes
-    ) {
-      throw new AssetDiagnosticError('ASSET_INSTALLATION_RECORD_INVALID');
-    }
-    files.push(
-      /** @type {InstalledAssetFile} */ ({
-        path: candidate['path'],
-        sha256: candidate['sha256'],
-        mode: candidate['mode'],
-        size: candidate['size'],
-      }),
-    );
-  }
-  if (
-    files.length === 0 ||
-    new Set(files.map((file) => file.path)).size !== files.length ||
-    files.some((file, index) => index > 0 && (files[index - 1]?.path.localeCompare(file.path) ?? -1) >= 0) ||
-    files.reduce((total, file) => total + file.size, 0) > maximumAssetBytes
-  ) {
-    throw new AssetDiagnosticError('ASSET_INSTALLATION_RECORD_INVALID');
-  }
+  const files = admitVerifierInstalledFiles(installation.files);
 
-  const actualFiles = await listAssetFiles(assetRoot);
-  const expectedFiles = [...files.map((file) => file.path), 'installation.json'].sort();
-  if (actualFiles.length !== expectedFiles.length || actualFiles.some((file, index) => file !== expectedFiles[index])) {
-    throw new AssetDiagnosticError('ASSET_DIRECTORY_INVALID');
-  }
-
-  for (const file of files) {
-    const absolutePath = path.join(assetRoot, file.path);
-    const details = await lstat(absolutePath);
-    if (!details.isFile() || details.isSymbolicLink()) {
-      throw new AssetDiagnosticError('ASSET_FILE_TYPE_INVALID');
-    }
-    if (details.size !== file.size) {
-      throw new AssetDiagnosticError('ASSET_FILE_SIZE_INVALID');
-    }
-    if (!isLambdaRuntimeAssetModeCompatible(file.mode, details.mode & 0o7777)) {
-      throw new AssetDiagnosticError('ASSET_FILE_MODE_INVALID');
-    }
-    if (sha256(await readFile(absolutePath)) !== file.sha256) {
-      throw new AssetDiagnosticError('ASSET_FILE_HASH_INVALID');
-    }
-  }
-  const installationDetails = await lstat(installationPath);
-  if (
-    !installationDetails.isFile() ||
-    installationDetails.isSymbolicLink() ||
-    !isLambdaRuntimeAssetModeCompatible('0644', installationDetails.mode & 0o7777)
-  ) {
-    throw new AssetDiagnosticError('ASSET_INSTALLATION_MODE_INVALID');
-  }
-  for (const [relativePath, expectedSha256, expectedMode] of requiredAssets) {
-    const installed = files.find((file) => file.path === relativePath);
-    if (!installed || installed.sha256 !== expectedSha256 || installed.mode !== expectedMode) {
-      throw new AssetDiagnosticError('ASSET_AUTHORITY_INVALID');
-    }
-  }
+  const actualFiles = await listAssetFiles(assetRoot, () => new AssetDiagnosticError('ASSET_DIRECTORY_INVALID'));
+  assertAssetFileInventory(actualFiles, files, () => new AssetDiagnosticError('ASSET_DIRECTORY_INVALID'));
+  await validateInstalledAssetFiles(
+    assetRoot,
+    files,
+    (recorded, actual) => isLambdaRuntimeAssetModeCompatible(recorded, actual & 0o7777),
+    (reason) => new AssetDiagnosticError(`ASSET_FILE_${reason}_INVALID`),
+  );
+  await assertVerifierInstallationFile(installationPath);
+  assertInstalledAssetAuthorities(files, requiredAssets);
 
   return {
     notationPath: path.join(assetRoot, /** @type {string} */ (notationPath)),
@@ -854,18 +704,7 @@ export async function verifyImageSignature(event, dependencies) {
   if (!invocation) {
     return boundedFailure('VERIFICATION_FAILED', 'INVALID_INVOCATION');
   }
-  if (
-    !path.isAbsolute(dependencies.assetRoot) ||
-    !path.isAbsolute(dependencies.temporaryRoot) ||
-    (dependencies.expectedArchitecture !== 'amd64' && dependencies.expectedArchitecture !== 'arm64') ||
-    !Number.isSafeInteger(dependencies.verifierTimeoutMs) ||
-    dependencies.verifierTimeoutMs < 1 ||
-    dependencies.verifierTimeoutMs > 60_000 ||
-    (dependencies.expectedAssetManifestSha256 !== undefined && !isSha256(dependencies.expectedAssetManifestSha256)) ||
-    (dependencies.expectedTrustRootSha256 !== undefined && !isSha256(dependencies.expectedTrustRootSha256))
-  ) {
-    return boundedFailure('VERIFIER_ERROR', 'VERIFIER_CONTRACT_ERROR');
-  }
+  if (!hasValidVerifierDependencies(dependencies)) return boundedFailure('VERIFIER_ERROR', 'VERIFIER_CONTRACT_ERROR');
   const credentialEnvironment = selectAwsCredentialEnvironment(dependencies.sourceEnvironment);
   if (!credentialEnvironment) {
     return boundedFailure('VERIFIER_ERROR', 'CREDENTIAL_SOURCE_INVALID');
@@ -885,21 +724,148 @@ export async function verifyImageSignature(event, dependencies) {
     return boundedFailure('VERIFIER_ERROR', readiness.reasonCode);
   }
 
-  let assets;
+  const assetAdmission = await admitRuntimeVerifierAssets(dependencies);
+  if (assetAdmission.kind === 'error') return boundedFailure('VERIFIER_ERROR', assetAdmission.reasonCode);
+  return verifyInInvocationWorkspace(invocation, dependencies, assetAdmission.assets);
+}
+
+/** @param {Buffer} manifestRaw @param {Buffer} installationRaw @returns {{manifest:unknown,installation:unknown}} */
+function parseVerifierMetadataBytes(manifestRaw, installationRaw) {
   try {
-    assets = await validateVerifierAssets(dependencies.assetRoot, dependencies.expectedArchitecture);
-  } catch (error) {
-    return boundedFailure('VERIFIER_ERROR', assetDiagnosticReason(error));
+    return {
+      manifest: JSON.parse(manifestRaw.toString('utf8')),
+      installation: JSON.parse(installationRaw.toString('utf8')),
+    };
+  } catch {
+    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
+  }
+}
+
+/** @param {unknown} value */
+function admitVerifierManifest(value) {
+  if (
+    !isRecord(value) ||
+    value['kind'] !== 'image-signature-verifier-assets' ||
+    value['verifierVersion'] !== verifierVersion ||
+    !isRecord(value['platforms'])
+  ) {
+    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
+  }
+  return { platforms: value['platforms'], trustRoot: value['trustRoot'] };
+}
+
+/** @param {unknown} value @param {'amd64'|'arm64'} architecture @param {string} manifestSha256 */
+function admitVerifierInstallation(value, architecture, manifestSha256) {
+  if (
+    !isRecord(value) ||
+    value['kind'] !== 'image-signature-verifier-installation' ||
+    value['architecture'] !== architecture ||
+    value['verifierVersion'] !== verifierVersion ||
+    value['assetManifestSha256'] !== manifestSha256 ||
+    !isSha256(value['trustRootSha256']) ||
+    !Array.isArray(value['files'])
+  ) {
+    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
+  }
+  return { files: value['files'], assetManifestSha256: manifestSha256, trustRootSha256: value['trustRootSha256'] };
+}
+
+/** @param {unknown} value @param {string} version */
+function admitVerifierExecutable(value, version) {
+  if (!isRecord(value) || value['version'] !== version) throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
+  return value;
+}
+
+/** @param {unknown} value @param {'amd64'|'arm64'} architecture */
+function admitVerifierPlatform(value, architecture) {
+  if (!isRecord(value) || value['os'] !== 'linux' || value['architecture'] !== architecture) {
+    throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
+  }
+  return {
+    notation: admitVerifierExecutable(value['notation'], '1.3.2'),
+    awsSignerPlugin: admitVerifierExecutable(value['awsSignerPlugin'], '1.0.2292'),
+    ecrCredentialHelper: admitVerifierExecutable(value['ecrCredentialHelper'], '0.12.0'),
+  };
+}
+
+/** @param {unknown} value */
+function admitVerifierTrustRoot(value) {
+  if (!isRecord(value) || value['name'] !== 'aws-signer-ts') throw new AssetDiagnosticError('ASSET_METADATA_INVALID');
+  return value;
+}
+
+/** @param {unknown[]} entries */
+function admitVerifierInstalledFiles(entries) {
+  /** @type {InstalledAssetFile[]} */
+  const files = [];
+  for (const candidate of entries) {
+    if (!isInstalledAssetFile(candidate, maximumAssetBytes))
+      throw new AssetDiagnosticError('ASSET_INSTALLATION_RECORD_INVALID');
+    files.push(
+      /** @type {InstalledAssetFile} */ ({
+        path: candidate['path'],
+        sha256: candidate['sha256'],
+        mode: candidate['mode'],
+        size: candidate['size'],
+      }),
+    );
   }
   if (
-    (dependencies.expectedAssetManifestSha256 !== undefined &&
-      assets.assetManifestSha256 !== dependencies.expectedAssetManifestSha256) ||
-    (dependencies.expectedTrustRootSha256 !== undefined &&
-      assets.trustRootSha256 !== dependencies.expectedTrustRootSha256)
+    files.length === 0 ||
+    !hasUniqueOrderedAssetPaths(files) ||
+    files.reduce((total, file) => total + file.size, 0) > maximumAssetBytes
   ) {
-    return boundedFailure('VERIFIER_ERROR', 'ASSET_DEPLOYMENT_AUTHORITY_MISMATCH');
+    throw new AssetDiagnosticError('ASSET_INSTALLATION_RECORD_INVALID');
   }
 
+  return files;
+}
+
+/** @param {string} installationPath */
+async function assertVerifierInstallationFile(installationPath) {
+  const installationDetails = await lstat(installationPath);
+  if (
+    !installationDetails.isFile() ||
+    installationDetails.isSymbolicLink() ||
+    !isLambdaRuntimeAssetModeCompatible('0644', installationDetails.mode & 0o7777)
+  ) {
+    throw new AssetDiagnosticError('ASSET_INSTALLATION_MODE_INVALID');
+  }
+}
+
+/** @param {InstalledAssetFile[]} files @param {unknown[][]} requiredAssets */
+function assertInstalledAssetAuthorities(files, requiredAssets) {
+  for (const [relativePath, expectedSha256, expectedMode] of requiredAssets) {
+    const installed = files.find((file) => file.path === relativePath);
+    if (!installed || installed.sha256 !== expectedSha256 || installed.mode !== expectedMode) {
+      throw new AssetDiagnosticError('ASSET_AUTHORITY_INVALID');
+    }
+  }
+}
+
+/** @param {ImageVerifierDependencies} dependencies */
+function hasValidVerifierDependencies(dependencies) {
+  return (
+    !(
+      !path.isAbsolute(dependencies.assetRoot) ||
+      !path.isAbsolute(dependencies.temporaryRoot) ||
+      (dependencies.expectedArchitecture !== 'amd64' && dependencies.expectedArchitecture !== 'arm64') ||
+      !Number.isSafeInteger(dependencies.verifierTimeoutMs) ||
+      dependencies.verifierTimeoutMs < 1 ||
+      dependencies.verifierTimeoutMs > 60_000
+    ) && hasValidExpectedAssetDigests(dependencies)
+  );
+}
+/** @param {ImageVerifierDependencies} dependencies */
+function hasValidExpectedAssetDigests(dependencies) {
+  return !(
+    (dependencies.expectedAssetManifestSha256 !== undefined && !isSha256(dependencies.expectedAssetManifestSha256)) ||
+    (dependencies.expectedTrustRootSha256 !== undefined && !isSha256(dependencies.expectedTrustRootSha256))
+  );
+}
+
+/** @param {ImageSignatureInvocation} invocation @param {ImageVerifierDependencies} dependencies @param {ValidatedVerifierAssets} assets @returns {Promise<ImageVerificationResult>} */
+async function verifyInInvocationWorkspace(invocation, dependencies, assets) {
   /** @type {InvocationWorkspace | undefined} */
   let workspace;
   try {
@@ -908,47 +874,7 @@ export async function verifyImageSignature(event, dependencies) {
     if (!environment) {
       return boundedFailure('VERIFIER_ERROR', 'CREDENTIAL_SOURCE_INVALID');
     }
-    const runNotation = dependencies.runNotation ?? runNotationProcess;
-    let processResult;
-    try {
-      processResult = await runNotation({
-        executable: assets.notationPath,
-        args: ['verify', invocation.imageUri],
-        environment,
-        timeoutMs: dependencies.verifierTimeoutMs,
-        maxBuffer: 65_536,
-      });
-    } catch {
-      return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_WRAPPER_ERROR');
-    }
-    switch (processResult.kind) {
-      case 'success':
-        return {
-          result: 'VERIFIED',
-          mode: 'cryptographic',
-          verifierVersion: assets.verifierVersion,
-          verifierAssets: {
-            notationVersion: '1.3.2',
-            awsSignerPluginVersion: '1.0.2292',
-            ecrCredentialHelperVersion: '0.12.0',
-            trustRootSha256: assets.trustRootSha256,
-          },
-          trustPolicySha256: workspace.trustPolicySha256,
-          assetManifestSha256: assets.assetManifestSha256,
-        };
-      case 'exit':
-        return boundedFailure('VERIFICATION_FAILED', 'CRYPTOGRAPHIC_VERIFICATION_FAILED');
-      case 'timeout':
-        return boundedFailure('VERIFIER_TIMEOUT', 'CRYPTOGRAPHIC_VERIFIER_TIMEOUT');
-      case 'spawn_error':
-        return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_SPAWN_ERROR');
-      case 'signal':
-        return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_SIGNAL');
-      case 'wrapper_error':
-        return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_WRAPPER_ERROR');
-      default:
-        return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_RESULT_INVALID');
-    }
+    return await verifyWithNotation(invocation, dependencies, assets, environment, workspace.trustPolicySha256);
   } catch {
     return boundedFailure('VERIFIER_ERROR', 'RUNTIME_SETUP_ERROR');
   } finally {
@@ -956,4 +882,119 @@ export async function verifyImageSignature(event, dependencies) {
       await rm(workspace.root, { recursive: true, force: true });
     }
   }
+}
+
+/** @param {ImageSignatureInvocation} invocation @param {ImageVerifierDependencies} dependencies @param {ValidatedVerifierAssets} assets @param {Record<string,string>} environment @param {string} trustPolicySha256 @returns {Promise<ImageVerificationResult>} */
+async function verifyWithNotation(invocation, dependencies, assets, environment, trustPolicySha256) {
+  const runNotation = dependencies.runNotation ?? runNotationProcess;
+  let processResult;
+  try {
+    processResult = await runNotation({
+      executable: assets.notationPath,
+      args: ['verify', invocation.imageUri],
+      environment,
+      timeoutMs: dependencies.verifierTimeoutMs,
+      maxBuffer: 65_536,
+    });
+  } catch {
+    return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_WRAPPER_ERROR');
+  }
+  return notationVerificationResult(processResult.kind, assets, trustPolicySha256);
+}
+
+/** @param {unknown} kind @param {ValidatedVerifierAssets} assets @param {string} trustPolicySha256 @returns {ImageVerificationResult} */
+function notationVerificationResult(kind, assets, trustPolicySha256) {
+  switch (kind) {
+    case 'success':
+      return {
+        result: 'VERIFIED',
+        mode: 'cryptographic',
+        verifierVersion: assets.verifierVersion,
+        verifierAssets: {
+          notationVersion: '1.3.2',
+          awsSignerPluginVersion: '1.0.2292',
+          ecrCredentialHelperVersion: '0.12.0',
+          trustRootSha256: assets.trustRootSha256,
+        },
+        trustPolicySha256: trustPolicySha256,
+        assetManifestSha256: assets.assetManifestSha256,
+      };
+    case 'exit':
+      return boundedFailure('VERIFICATION_FAILED', 'CRYPTOGRAPHIC_VERIFICATION_FAILED');
+    case 'timeout':
+      return boundedFailure('VERIFIER_TIMEOUT', 'CRYPTOGRAPHIC_VERIFIER_TIMEOUT');
+    case 'spawn_error':
+      return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_SPAWN_ERROR');
+    case 'signal':
+      return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_SIGNAL');
+    case 'wrapper_error':
+      return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_WRAPPER_ERROR');
+    default:
+      return boundedFailure('VERIFIER_ERROR', 'CRYPTOGRAPHIC_VERIFIER_RESULT_INVALID');
+  }
+}
+
+/** @param {ImageVerifierDependencies} dependencies @returns {Promise<{kind:'ready',assets:ValidatedVerifierAssets}|{kind:'error',reasonCode:string}>} */
+async function admitRuntimeVerifierAssets(dependencies) {
+  let assets;
+  try {
+    assets = await validateVerifierAssets(dependencies.assetRoot, dependencies.expectedArchitecture);
+  } catch (error) {
+    return { kind: 'error', reasonCode: assetDiagnosticReason(error) };
+  }
+  if (
+    (dependencies.expectedAssetManifestSha256 !== undefined &&
+      assets.assetManifestSha256 !== dependencies.expectedAssetManifestSha256) ||
+    (dependencies.expectedTrustRootSha256 !== undefined &&
+      assets.trustRootSha256 !== dependencies.expectedTrustRootSha256)
+  ) {
+    return { kind: 'error', reasonCode: 'ASSET_DEPLOYMENT_AUTHORITY_MISMATCH' };
+  }
+
+  return { kind: 'ready', assets };
+}
+
+/** Validate the complete bounded result before it crosses a CLI or Lambda boundary.
+ * @param {unknown} value @returns {value is ImageVerificationResult}
+ */
+export function isImageVerificationResult(value) {
+  if (!isRecord(value) || value['mode'] !== 'cryptographic') return false;
+  return value['result'] === 'VERIFIED' ? isVerifiedImageResult(value) : isRejectedImageResult(value);
+}
+
+/** @param {Record<string,unknown>} value */
+function isVerifiedImageResult(value) {
+  return (
+    Object.keys(value).sort().join('\0') ===
+      'assetManifestSha256\0mode\0result\0trustPolicySha256\0verifierAssets\0verifierVersion' &&
+    value['verifierVersion'] === verifierVersion &&
+    /^[0-9a-f]{64}$/.test(String(value['assetManifestSha256'])) &&
+    /^[0-9a-f]{64}$/.test(String(value['trustPolicySha256'])) &&
+    isVerifiedAssetEvidence(value['verifierAssets'])
+  );
+}
+
+/** @param {unknown} value */
+function isVerifiedAssetEvidence(value) {
+  return (
+    isRecord(value) &&
+    Object.keys(value).sort().join('\0') ===
+      'awsSignerPluginVersion\0ecrCredentialHelperVersion\0notationVersion\0trustRootSha256' &&
+    value['notationVersion'] === '1.3.2' &&
+    value['awsSignerPluginVersion'] === '1.0.2292' &&
+    value['ecrCredentialHelperVersion'] === '0.12.0' &&
+    /^[0-9a-f]{64}$/.test(String(value['trustRootSha256']))
+  );
+}
+
+/** @param {Record<string,unknown>} value */
+function isRejectedImageResult(value) {
+  return (
+    (value['result'] === 'VERIFICATION_FAILED' ||
+      value['result'] === 'VERIFIER_TIMEOUT' ||
+      value['result'] === 'VERIFIER_ERROR') &&
+    Object.keys(value).sort().join('\0') === 'mode\0reasonCode\0result' &&
+    typeof value['reasonCode'] === 'string' &&
+    /^[A-Z][A-Z0-9_]{0,63}$/.test(value['reasonCode'])
+  );
 }

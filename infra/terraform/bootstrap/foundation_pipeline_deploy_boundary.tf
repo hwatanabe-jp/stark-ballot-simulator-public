@@ -1,5 +1,15 @@
 data "aws_iam_policy_document" "foundation_deploy_permissions_boundary" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  count                   = local.foundation_pipeline_enabled ? 1 : 0
+  source_policy_documents = concat([data.aws_iam_policy_document.foundation_gateway_logging_read.json], data.aws_iam_policy_document.foundation_image_retirement_ceiling[*].json)
+
+  statement {
+    actions   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+    resources = ["${local.deployment_record_prefixes.foundation}/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.deployment_record_roots.foundation.bucket]
+  }
 
   statement {
     sid     = "FoundationArtifactAndStateGuardrail"
@@ -88,8 +98,7 @@ data "aws_iam_policy_document" "foundation_deploy_permissions_boundary" {
       "s3:GetObjectVersion",
     ]
     resources = [
-      local.terraform_foundation_acceptance_pointer_object_arn,
-      local.terraform_foundation_acceptance_object_arn_pattern,
+      local.foundation_checkpoint_object_arn,
     ]
   }
 
@@ -144,65 +153,11 @@ data "aws_iam_policy_document" "foundation_deploy_permissions_boundary" {
     resources = [local.foundation_pipeline_role_arn_pattern]
   }
 
-  statement {
-    sid    = "FoundationEcrRetentionRoleReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-  }
-
-  statement {
-    sid    = "FoundationEcrRetentionBoundaryReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "iam:GetPolicy*",
-      "iam:ListPolicyVersions",
-    ]
-    resources = [local.foundation_ecr_retention_boundary_policy_arn]
-  }
-
-  statement {
-    sid    = "FoundationEcrRetentionLambdaReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "lambda:GetFunction",
-      "lambda:GetFunctionCodeSigningConfig",
-      "lambda:GetFunctionConcurrency",
-      "lambda:GetPolicy",
-      "lambda:GetRuntimeManagementConfig",
-      "lambda:ListTags",
-      "lambda:ListVersionsByFunction",
-    ]
-    resources = [local.foundation_ecr_retention_function_arn]
-  }
-
-  statement {
-    sid    = "FoundationEcrRetentionScheduleReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "events:DescribeRule",
-      "events:ListTagsForResource",
-      "events:ListTargetsByRule",
-    ]
-    resources = [local.foundation_ecr_retention_schedule_arn]
-  }
 }
 
 resource "aws_iam_policy" "foundation_deploy_permissions_boundary" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_pipeline_management,
-  ]
 
   name   = local.foundation_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.foundation_deploy_permissions_boundary[0].json

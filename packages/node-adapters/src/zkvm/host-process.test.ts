@@ -1,12 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as childProcess from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runHostProcess } from './host-process';
 
-const options = { env: process.env, timeoutMs: 2_000, terminationGraceMs: 100, killWaitMs: 150 };
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcess>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
-describe.skipIf(process.platform === 'win32')('owned host process lifecycle', () => {
+const options = { env: process.env, timeoutMs: 10_000, terminationGraceMs: 100, killWaitMs: 1_000 };
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe.skipIf(process.platform === 'win32')('owned host process lifecycle', { timeout: 15_000 }, () => {
   it('drains private output and admits only exact progress lines', async () => {
     const stages: string[] = [];
     const result = await runHostProcess(
@@ -43,21 +55,41 @@ describe.skipIf(process.platform === 'win32')('owned host process lifecycle', ()
     expect(result).toMatchObject({ outcome: 'nonzero_exit', exitCode: 7, signal: null });
   });
 
-  it('escalates an ignored deadline signal and returns within a finite bound', async () => {
-    const result = await runHostProcess(
-      process.execPath,
-      [
-        '-e',
-        `
-      process.on('SIGTERM', () => {});
-      process.stdout.write('Executing guest program and generating proof...\\n');
-      setInterval(() => {}, 1000);
-    `,
-      ],
-      { ...options, timeoutMs: 500 },
-    );
+  it('escalates an ignored deadline signal after the configured grace period', async () => {
+    // Test deadline policy without assuming an OS process can start within 500ms.
+    // The descendant integration below still verifies actual process-group killing.
+    vi.useFakeTimers();
+    const child = new childProcess.ChildProcess();
+    const stdout = new PassThrough();
+    Object.defineProperties(child, {
+      pid: { value: 4242 },
+      stdout: { value: stdout },
+      stderr: { value: new PassThrough() },
+    });
+    vi.mocked(childProcess.spawn).mockReturnValueOnce(child);
+    let alive = true;
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      expect(pid).toBe(-4242);
+      if (!alive) throw Object.assign(new Error('No process group'), { code: 'ESRCH' });
+      if (signal === 'SIGKILL') {
+        alive = false;
+        child.emit('exit', null, 'SIGKILL');
+        child.emit('close', null, 'SIGKILL');
+      }
+      return true;
+    });
+    const execution = runHostProcess(process.execPath, [], { ...options, timeoutMs: 500 });
+    stdout.write('Executing guest program and generating proof...\n');
+    await vi.advanceTimersByTimeAsync(499);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(kill).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    await vi.advanceTimersByTimeAsync(options.terminationGraceMs - 1);
+    expect(kill).not.toHaveBeenCalledWith(-4242, 'SIGKILL');
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await execution;
     expect(result).toMatchObject({ outcome: 'timeout', stage: 'proving', signal: 'SIGKILL' });
-    expect(result.durationMs).toBeLessThan(3_000);
+    expect(result.cleanup).toBe('complete');
   });
 
   it('stops descendants holding stdio open after the host exits', async () => {
@@ -82,7 +114,6 @@ describe.skipIf(process.platform === 'win32')('owned host process lifecycle', ()
       );
       expect(result.outcome).toBe('nonzero_exit');
       expect(result.exitCode).toBe(9);
-      expect(result.durationMs).toBeLessThan(3_000);
       const pid = Number(await readFile(pidFile, 'utf8'));
       let running = false;
       try {

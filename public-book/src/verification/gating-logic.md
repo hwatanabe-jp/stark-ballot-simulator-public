@@ -1,8 +1,8 @@
 # Verified の表示条件
 
-全 64 票について正しい計算の証明があり、表示された得票数も同じだったとしても、投票時の手元データを失っていれば「自分が選んだ B と一致するか」は確認できません。反対に、自票が正しく数えられていても、別の一票が除外されていれば、集計全体の検証は失敗です。
+Verified は、必要な確認がすべて完了し、結果が矛盾なく揃った場合だけ表示します。STARK レシートの検証成功は、その条件の一つです。
 
-**Verified は、必要な確認がすべて終わり、その結果が矛盾なく揃ったときだけ表示します。** STARK レシートの検証成功は、その条件の一つです。
+全 64 票の計算が証明され、表示された得票数が一致していても、投票時にブラウザへ保存したデータがなければ、投票意図との照合はできません。また、自票が正しく計上されても、別の一票が除外されていれば集計全体の検証は失敗します。
 
 ## 最終判定の種類
 
@@ -13,7 +13,7 @@
 | **Warning**（黄）             | まだ検証中、必要な証拠が不足、または補助確認に制限がある                                  |
 | **Demo Only**（黄）           | 必須条件は満たすが、開発モードのフェイクレシートを使っている                              |
 
-「不明」と「不正を検出した」は分けます。どちらも緑にはなりませんが、Warning を改ざんの証明として説明することもありません。
+Warning は未確認や制限、Verification Failed はチェック失敗を伝える表示です。証拠不足による未確認と、改ざんの検出を区別します。
 
 ### 必須確認と補助確認
 
@@ -25,7 +25,7 @@
 
 ### ステータスの判定順序
 
-まず、チェック結果を集約して「どの理由を伝えるか」を決めます。次に、その集約結果だけでなく証拠と表示準備も調べ、「そのラベルを表示してよいか」を決めます。集約値の `summary` が `fully_verified` でも、後者の条件を満たさなければ Verified は表示しません。
+チェック結果を集約して判定理由を選び、証拠と表示準備の状態を含めてラベルの表示可否を決めます。集約値の `summary` が `fully_verified` でも、表示条件を満たさなければ Verified は表示しません。
 
 複数の状態が同時に現れたとき、集約は次の順で理由を選びます。
 
@@ -52,11 +52,9 @@ API とブラウザは共通の `deriveVerificationPresentationPolicy` を使い
 
 したがって `summary = fully_verified` という値だけを書き換えても、Verified を許可しません。四段階がすべて成功し、開発用の証拠がなく、失敗信号もなく、表示準備が完了している必要があります。
 
-<a id="公開-resource-の整合性"></a>
-
 ### 公開 API 応答の整合性
 
-API 応答の成功フラグも検査対象です。チェック定義と状態、段階の状態、投票者の証拠、レポート、付属ジャーナル、改ざん情報が互いに矛盾しないことを確認し、同じ規則で表示資格を再計算します。
+API 応答の成功フラグも検査対象です。チェック定義と状態、段階の状態、投票者の証拠、レポート、付属ジャーナル、改ざん情報が互いに矛盾しないことを確認し、同じ規則で表示条件を再評価します。
 
 Verified を主張するリソースには、特に次の事実を要求します。
 
@@ -65,11 +63,11 @@ Verified を主張するリソースには、特に次の事実を要求しま�
 - `missingSlots = invalidPresentedSlots = rejectedRecords = excludedSlots = 0`。
 - `seenIndicesCount = treeSize = totalExpected` で、seen / included のビットマップルートが一致する。
 - 表示集計と検証済み集計が候補ごとに一致し、その合計も `totalExpected` と一致する。
-- 必須チェック、四段階、表示資格と準備状態が整合する。
+- 必須チェック、四段階、表示条件と準備状態が整合する。
 
 レポートがある場合は、その状態と期待 Image ID・レシートの Image ID も照合します。STARK の `success` という状態だけでは、Image ID の確認成功は満たせません。
 
-`rejectedRecords` は「何スロットが除外されたか」を数える値とは異なりますが、上記の成功条件ではゼロを要求します。[ゲストのスロットとレコード](../zkvm/guest-program.md#スロット--レコード分離モデル)の区別を、成功条件からこの値を外してよい理由にはしません。
+`rejectedRecords` は除外スロット数とは異なる値ですが、上記の成功条件ではゼロを要求します。[ゲストのスロットとレコード](../zkvm/guest-program.md#スロット--レコード分離モデル)を区別したうえで、両方の条件を検査します。
 
 ## STARK 検証のゲーティング
 
@@ -90,7 +88,7 @@ STARK の検証状態に応じて、ジャーナルを使うチェックを待�
 
 四つのステップは、それぞれに属する必須チェックから状態を導きます。Cast は 4 件、Counted は 10 件、STARK は 2 件です。Recorded は包含・位置・整合性の 3 件が基本で、STH ソースの設定時は STH も加わります。包含と整合性から派生する二つの補助チェックは、単独でステップの状態を決めません。
 
-集約の優先順は `failed`、`running`、`pending`、全件成功の `success`、それ以外の `not_run` です。表示上の入力ハイライトは、必須に限らず、その段階の全チェック定義から導きます。
+集約の優先順は `failed`、`running`、`pending`、全件成功の `success`、それ以外の `not_run` です。検証完了後に個別のチェックを選択すると、そのチェックの `inputs` に対応する証拠のうち、表示可能なものを強調します。
 
 サーバーのステップ構築には追加条件があります。Counted はジャーナルがない場合、必須失敗がなければ `not_run` にします。Recorded は投票時の証明の `treeSize` がなければ `not_run` にします。Cast はサーバー応答では `not_run` とし、ブラウザがローカル結果を反映します。
 
@@ -100,4 +98,4 @@ Verified に必要なのは、完全な必須チェック集合、その成功�
 
 この表示規則は [テスト](../quality/unit-integration-e2e.md)と [Lean のモデル・実装対応確認](../quality/lean-formalization.md)で継続して検査しています。[改ざんシナリオ](../tamper/scenarios.md)では、何を変えるとこの条件を満たさなくなるかを実際の証拠で示します。
 
-<!-- source: apps/api/src/server/api/handlers/verify.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, packages/api-contract/src/schemas/verification.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/fail-closed-status.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/engine/derive-stages.ts, packages/zkvm-contract/src/zkvm/journal-guards.ts, packages/zkvm-contract/src/zkvm/public-journal.ts -->
+<!-- source: apps/api/src/server/api/handlers/verify.ts, apps/web/src/routes/verify/page.tsx, apps/web/src/routes/verify/hooks/useVerificationData.ts, apps/web/src/routes/verify/lib/verification-presentation.ts, packages/api-contract/src/schemas/verification.ts, packages/verification/src/verification/verification-presentation-policy.ts, packages/verification/src/verification/verification-summary.ts, packages/verification/src/verification/verification-checks.ts, packages/verification/src/verification/fail-closed-status.ts, packages/verification/src/verification/engine/evaluate-checks.ts, packages/verification/src/verification/engine/derive-stages.ts, packages/zkvm-contract/src/zkvm/journal-guards.ts, packages/zkvm-contract/src/zkvm/public-journal.ts, apps/web/src/components/verification/UnifiedVerificationCard.tsx -->

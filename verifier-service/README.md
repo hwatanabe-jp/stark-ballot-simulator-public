@@ -178,9 +178,9 @@ For deployed or bundle-based flows, you can resolve the mapped ImageID from
 
 Only `state: "confirmed"` variants resolve. An unconfirmed variant fails
 closed; it does not fall back to the other architecture. For methodVersion
-`14`, the current guest source's `default` is confirmed by the accepted
-managed ARM64 Prover release. `x86_64` is independently confirmed from a fresh
-local production build and must be selected explicitly for its receipts.
+`14`, `default` is confirmed by the accepted managed ARM64 Prover release.
+`x86_64` is independently confirmed from
+a fresh local production build and must be selected explicitly for its receipts.
 
 ```bash
 # Current local x86_64 verification

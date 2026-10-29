@@ -49,43 +49,12 @@ output "dynamodb_runtime_config" {
     verification_artifact_ttl_seconds    = var.verification_artifact_ttl_seconds
     vote_secret_encryption_key_ref       = local.runtime_reference_names.VOTE_SECRET_ENCRYPTION_KEY_REF
     vote_duplicate_detector_ttl_seconds  = var.vote_duplicate_detector_ttl_seconds
-    recovery_phase                       = var.dynamodb_recovery_phase
-    recovery_quiesced                    = local.dynamodb_recovery_quiesced
-    serves_replacement                   = local.dynamodb_recovery_serves_replacement
     target_public_session_create_enabled = local.target_public_session_create_enabled
-    event_source_mappings_enabled        = !local.dynamodb_recovery_quiesced
-    recovery_activation                  = var.dynamodb_recovery_activation
+    application_quiesced                 = local.application_quiesced
+    event_source_mappings_enabled        = !local.application_quiesced
   }
 }
 
-output "dynamodb_recovery_transition" {
-  description = "Non-secret desired and served state for the four-phase DynamoDB recovery transition."
-  value = {
-    phase                                = var.dynamodb_recovery_phase
-    quiesced                             = local.dynamodb_recovery_quiesced
-    serves_replacement                   = local.dynamodb_recovery_serves_replacement
-    recovery_manifest_present            = var.dynamodb_recovery_activation != null
-    target_public_session_create_enabled = local.target_public_session_create_enabled
-    event_source_mappings_enabled        = !local.dynamodb_recovery_quiesced
-    served = {
-      sessions_table_arn = local.active_sessions_table_arn
-      votes_table_arn    = local.active_votes_table_arn
-    }
-    primary = {
-      sessions_table_arn = aws_dynamodb_table.sessions.arn
-      votes_table_arn    = aws_dynamodb_table.votes.arn
-    }
-    replacement = var.dynamodb_recovery_activation == null ? null : {
-      sessions_table_arn = local.recovery_sessions_table_arn
-      votes_table_arn    = local.recovery_votes_table_arn
-    }
-    recovery_manifest = var.dynamodb_recovery_activation == null ? null : {
-      recovery_id     = var.dynamodb_recovery_activation.recovery_id
-      recovery_point  = var.dynamodb_recovery_activation.recovery_point
-      manifest_sha256 = var.dynamodb_recovery_activation.manifest_sha256
-    }
-  }
-}
 
 output "runtime_secret_config_reference_names" {
   description = "Non-secret target runtime reference identifiers for target secret/config sources; values are not secret material."
@@ -160,25 +129,7 @@ output "dynamodb_table_inventory" {
       write_throttle_alarm_arn        = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["rate_limit_counters"].arn
       least_privilege_access_decision = "Rate-limit counter access is limited by aws_iam_policy_document.target_lambda_store_runtime statement UseRateLimitCountersTable for the Hono API role; KMS use is constrained by UseAppDataKey to this table name."
     }
-    prover_semaphore = {
-      table_name          = aws_dynamodb_table.prover_semaphore.name
-      table_arn           = aws_dynamodb_table.prover_semaphore.arn
-      purpose             = "Target prover concurrency semaphore with one seeded lock row and per-execution owner markers."
-      primary_access_path = "GetItem/UpdateItem by LockName"
-      ttl_attribute       = null
-      pitr_enabled        = true
-      sse_kms_key_arn     = aws_kms_key.app_data.arn
-      deletion_protection = var.enable_dynamodb_deletion_protection
-      owner_role_arns = {
-        semaphore_janitor = aws_iam_role.target_lambda["semaphore_janitor"].arn
-        target_sfn        = aws_iam_role.target_sfn.arn
-      }
-      read_throttle_alarm_name        = aws_cloudwatch_metric_alarm.dynamodb_read_throttle_events["prover_semaphore"].alarm_name
-      read_throttle_alarm_arn         = aws_cloudwatch_metric_alarm.dynamodb_read_throttle_events["prover_semaphore"].arn
-      write_throttle_alarm_name       = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["prover_semaphore"].alarm_name
-      write_throttle_alarm_arn        = aws_cloudwatch_metric_alarm.dynamodb_write_throttle_events["prover_semaphore"].arn
-      least_privilege_access_decision = "Semaphore access is limited to the target state machine and semaphore-janitor Lambda; KMS use is constrained to this table name."
-    }
+
   }
 }
 
@@ -253,36 +204,14 @@ output "image_signature_verifier" {
   value       = local.image_signature_verifier_deployment_authority
 }
 
-output "image_signature_preflight" {
-  description = "Non-secret verifier coordinates available immediately after the isolated preflight apply."
-  value = {
-    function_arn       = aws_lambda_function.image_signature_verifier.arn
-    function_version   = local.image_signature_verifier_alias_function_version
-    architecture       = one(aws_lambda_function.image_signature_verifier.architectures)
-    runtime            = aws_lambda_function.image_signature_verifier.runtime
-    timeout_seconds    = aws_lambda_function.image_signature_verifier.timeout
-    environment_sha256 = sha256(jsonencode(local.image_signature_verifier_environment))
-    function_configuration_sha256 = sha256(
-      jsonencode(local.image_signature_verifier_configuration_authority)
-    )
-    execution_role_arn                                = aws_iam_role.image_signature_verifier.arn
-    execution_role_assume_policy_sha256               = local.image_signature_verifier_execution_role_assume_policy_sha256
-    execution_role_policy_sha256                      = local.image_signature_verifier_execution_role_policy_sha256
-    execution_role_permissions_boundary_arn           = data.aws_iam_policy.image_signature_verifier_permissions_boundary.arn
-    execution_role_permissions_boundary_policy_sha256 = local.image_signature_verifier_permissions_boundary_policy_sha256
-    preflight_alias_arn                               = aws_lambda_alias.image_signature_verifier_preflight.arn
-    package                                           = var.lambda_artifacts["image_signature_verifier"]
-  }
-}
-
 output "target_runtime" {
   description = "Non-secret target API and async runtime inventory."
   value = {
     api = {
-      api_id         = aws_apigatewayv2_api.target.id
-      api_endpoint   = aws_apigatewayv2_api.target.api_endpoint
-      default_stage  = aws_apigatewayv2_stage.default.name
-      route_key      = aws_apigatewayv2_route.api_proxy.route_key
+      api_id         = aws_api_gateway_rest_api.target.id
+      api_endpoint   = aws_api_gateway_stage.live.invoke_url
+      stage          = aws_api_gateway_stage.live.stage_name
+      proxy_path     = "/api/{proxy+}"
       direct_use     = "rejected-by-origin-verify-header-after-cloudfront-authority"
       lambda_arn     = aws_lambda_function.target["public_api"].arn
       role_arn       = aws_iam_role.target_lambda["public_api"].arn
@@ -303,22 +232,24 @@ output "target_runtime" {
       lambda_package = var.lambda_artifacts["finalization_writer"]
     }
     async = {
+      batch_job_queue_arn                        = aws_batch_job_queue.prover.arn
+      batch_compute_environment_arn              = aws_batch_compute_environment.prover.arn
+      batch_job_definition_arn                   = aws_cloudformation_stack.prover_job.outputs["JobDefinitionArn"]
+      batch_prover_slots_arn                     = aws_cloudformation_stack.prover_job.outputs["ProverSlotsArn"]
       prover_work_queue_arn                      = aws_sqs_queue.prover_work.arn
       prover_work_queue_url                      = aws_sqs_queue.prover_work.url
       prover_work_event_source_mapping_uuid      = aws_lambda_event_source_mapping.prover_work.uuid
-      prover_work_event_source_mapping_enabled   = !local.dynamodb_recovery_quiesced
+      prover_work_event_source_mapping_enabled   = !local.application_quiesced
       dispatch_lambda_arn                        = aws_lambda_function.target["proof_dispatcher"].arn
       dispatch_role_arn                          = aws_iam_role.target_lambda["proof_dispatcher"].arn
       image_signature_lambda_arn                 = aws_lambda_function.image_signature_verifier.arn
       image_signature_role_arn                   = aws_iam_role.image_signature_verifier.arn
       image_signature_verifier_package           = local.image_signature_verifier_deployment_authority.package
       image_signature_version                    = local.image_signature_verifier_deployment_authority.function_version
-      image_signature_runtime_alias_arn          = aws_lambda_alias.image_signature_verifier_runtime.arn
+      image_signature_qualified_arn              = aws_lambda_function.image_signature_verifier.qualified_arn
       semaphore_janitor_arn                      = aws_lambda_function.target["semaphore_janitor"].arn
       semaphore_janitor_role_arn                 = aws_iam_role.target_lambda["semaphore_janitor"].arn
       semaphore_janitor_package                  = var.lambda_artifacts["semaphore_janitor"]
-      semaphore_table_name                       = aws_dynamodb_table.prover_semaphore.name
-      semaphore_lock_name                        = local.prover_semaphore_lock_name
       state_machine_arn                          = aws_sfn_state_machine.target_finalization.arn
       state_machine_log_group                    = aws_cloudwatch_log_group.target_sfn.arn
       target_sfn_executions_failed_alarm_name    = aws_cloudwatch_metric_alarm.target_sfn_executions_failed.alarm_name
@@ -349,7 +280,7 @@ output "target_runtime" {
       verification_work_queue_arn                    = aws_sqs_queue.verification_work.arn
       verification_work_queue_url                    = aws_sqs_queue.verification_work.url
       verification_work_event_source_mapping_uuid    = aws_lambda_event_source_mapping.verification_work.uuid
-      verification_work_event_source_mapping_enabled = !local.dynamodb_recovery_quiesced
+      verification_work_event_source_mapping_enabled = !local.application_quiesced
       verification_work_dlq_arn                      = aws_sqs_queue.verification_work_dlq.arn
       verification_work_dlq_url                      = aws_sqs_queue.verification_work_dlq.url
       verification_work_dlq_depth_alarm_name         = aws_cloudwatch_metric_alarm.verification_work_dlq_depth.alarm_name

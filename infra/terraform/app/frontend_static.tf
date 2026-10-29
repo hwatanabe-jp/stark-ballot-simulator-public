@@ -160,7 +160,7 @@ resource "aws_cloudfront_origin_request_policy" "api" {
     header_behavior = "whitelist"
     headers {
       items = concat(
-        ["Content-Type", "If-None-Match", "Origin", "Range", "X-Session-Capability"],
+        ["Accept", "Content-Type", "If-None-Match", "Origin", "Range", "X-Session-Capability"],
         local.cloudflare_origin_required ? ["CF-Connecting-IP"] : [],
       )
     }
@@ -298,6 +298,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   origin {
     domain_name = local.api_origin_domain_name
     origin_id   = "public-api"
+    origin_path = "/${local.gateway_stage_name}"
 
     dynamic "custom_header" {
       for_each = local.api_origin_verify_header_configured ? [1] : []
@@ -490,163 +491,6 @@ data "aws_iam_policy_document" "frontend_static_bucket" {
     }
   }
 
-  statement {
-    sid    = "DenyCloudFrontStaticFrontendPublicationLeaseRead"
-    effect = "Deny"
-
-    principals {
-      type        = "Service"
-      identifiers = ["cloudfront.amazonaws.com"]
-    }
-
-    actions = ["s3:GetObject"]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-  }
-
-  statement {
-    sid    = "DenyStaticFrontendPublicationLeaseMutationOutsidePublishers"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = [
-      "s3:DeleteObject",
-      "s3:PutObject",
-    ]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-
-    condition {
-      test     = "StringNotEquals"
-      variable = "aws:PrincipalArn"
-      values = concat(
-        ["arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.appStaticDeployRole}"],
-        local.static_fast_lane_authority == null ? [] : [
-          "arn:aws:iam::${var.aws_account_id}:role/${local.deployment_shared_names.appStaticFastDeployRole}",
-        ],
-      )
-    }
-  }
-
-  statement {
-    sid    = "DenyStaticFrontendPublicationLeaseVersionDeletion"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = ["s3:DeleteObjectVersion"]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-  }
-
-  statement {
-    sid    = "DenyUnconditionalStaticFrontendPublicationLeaseWrites"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = ["s3:PutObject"]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-
-    condition {
-      test     = "StringNotEquals"
-      variable = "s3:if-none-match"
-      values   = ["*"]
-    }
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-match"
-      values   = ["true"]
-    }
-  }
-
-  statement {
-    sid    = "DenyAmbiguousStaticFrontendPublicationLeaseWrites"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = ["s3:PutObject"]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-none-match"
-      values   = ["false"]
-    }
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-match"
-      values   = ["false"]
-    }
-  }
-
-  statement {
-    sid    = "DenyUnconditionalStaticFrontendPublicationLeaseDeletes"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = ["s3:DeleteObject"]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-
-    condition {
-      test     = "Null"
-      variable = "s3:if-match"
-      values   = ["true"]
-    }
-  }
-
-  statement {
-    sid    = "DenyWildcardStaticFrontendPublicationLeaseMutations"
-    effect = "Deny"
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    actions = [
-      "s3:DeleteObject",
-      "s3:PutObject",
-    ]
-    resources = [
-      "${aws_s3_bucket.frontend_static.arn}/${local.deployment_shared_names.staticFrontendArtifactPrefix}",
-    ]
-
-    condition {
-      test     = "StringEquals"
-      variable = "s3:if-match"
-      values   = ["*"]
-    }
-  }
 }
 
 resource "aws_s3_bucket_policy" "frontend_static" {

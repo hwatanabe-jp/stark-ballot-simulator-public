@@ -22,7 +22,8 @@
 
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS build
 
-ARG RUST_VERSION=1.97.1
+ARG RUST_VERSION=1.99.0
+ARG RISC0_BUILD_RUST_VERSION=1.97.1
 ARG RISC0_RUST_VERSION=1.97.0
 ARG RISC0_VERSION=3.0.6
 ARG RISC0_GIT_TAG=v3.0.6
@@ -95,11 +96,16 @@ RUN git -c advice.detachedHead=false clone \
     && git log -1 --oneline \
     && rm -rf .git
 
+# Build upstream tools with the release's own Rust minor, independently of app Rust.
+# Refuse a changed upstream channel before installing or compiling anything.
+RUN test "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" = "${RISC0_BUILD_RUST_VERSION%.*}" \
+    && rustup toolchain install "${RISC0_BUILD_RUST_VERSION}" --profile minimal
+
 # Manual ARM64 Linux installation
 # Step 1: Install rzup (RISC Zero toolchain manager)
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    cargo "+${RUST_VERSION}" install --path rzup --locked \
+    cargo "+${RISC0_BUILD_RUST_VERSION}" install --path rzup --locked \
     && rzup --version
 
 # Step 2: Build Rust toolchain for RISC Zero
@@ -117,19 +123,20 @@ RUN --mount=type=cache,target=/tmp/risc0 \
 # Note: cargo registry/git are mounted as cache, not persisted in layer
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    cargo "+${RUST_VERSION}" install --path risc0/cargo-risczero --locked \
-    && cargo risczero --version \
+    cargo "+${RISC0_BUILD_RUST_VERSION}" install --path risc0/cargo-risczero --locked \
+    && cargo "+${RISC0_BUILD_RUST_VERSION}" risczero --version \
     && r0vm --version
 
 # Cleanup: Remove RISC Zero source tree (no longer needed after installation)
-RUN rm -rf /tmp/risc0-build
+RUN rustup toolchain uninstall "${RISC0_BUILD_RUST_VERSION}" \
+    && rm -rf /tmp/risc0-build
 
 # ============================================================
 # Stage 2: Final runtime image (minimal footprint)
 # ============================================================
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS final
 
-ARG RUST_VERSION=1.97.1
+ARG RUST_VERSION=1.99.0
 ARG RISC0_RUST_VERSION=1.97.0
 ARG RISC0_VERSION=3.0.6
 ARG SOURCE_REPOSITORY="https://github.com/hwatanabe-jp/<REPO_NAME>"

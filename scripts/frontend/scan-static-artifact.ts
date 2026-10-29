@@ -1,3 +1,4 @@
+import { assertNoFrontendFindings, runFrontendCheck } from './findings';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
@@ -282,6 +283,25 @@ function readDeniedEnvironmentValues(): string[] {
   return [...values];
 }
 
+function scanArtifactContent(relative: string, content: string, options: StaticArtifactScanOptions): Finding[] {
+  const findings: Finding[] = [];
+  findings.push(...validateImageIdMapping(relative, content));
+  for (const { label, pattern, allowInLocalMockBypass } of DENIED_CONTENT_PATTERNS) {
+    if (options.allowLocalMockBypass && allowInLocalMockBypass) {
+      continue;
+    }
+    if (pattern.test(content)) {
+      findings.push({ file: relative, reason: label });
+    }
+  }
+  for (const deniedValue of readDeniedEnvironmentValues()) {
+    if (content.includes(deniedValue)) {
+      findings.push({ file: relative, reason: 'server-only environment value' });
+    }
+  }
+  return findings;
+}
+
 async function scanFile(filePath: string, root: string, options: StaticArtifactScanOptions): Promise<Finding[]> {
   const relative = toArtifactPath(root, filePath);
   const findings: Finding[] = [];
@@ -302,20 +322,7 @@ async function scanFile(filePath: string, root: string, options: StaticArtifactS
   }
 
   const content = await fs.readFile(filePath, 'utf-8');
-  findings.push(...validateImageIdMapping(relative, content));
-  for (const { label, pattern, allowInLocalMockBypass } of DENIED_CONTENT_PATTERNS) {
-    if (options.allowLocalMockBypass && allowInLocalMockBypass) {
-      continue;
-    }
-    if (pattern.test(content)) {
-      findings.push({ file: relative, reason: label });
-    }
-  }
-  for (const deniedValue of readDeniedEnvironmentValues()) {
-    if (content.includes(deniedValue)) {
-      findings.push({ file: relative, reason: 'server-only environment value' });
-    }
-  }
+  findings.push(...scanArtifactContent(relative, content, options));
   return findings;
 }
 
@@ -362,18 +369,8 @@ async function main(): Promise<void> {
   const root = path.resolve(process.cwd(), distArg ?? DEFAULT_DIST_DIR);
   const result = await scanStaticArtifact(root, { allowLocalMockBypass });
   const { findings } = result;
-  if (findings.length > 0) {
-    for (const finding of findings) {
-      console.error(`[frontend-artifact-scan] ${finding.file}: ${finding.reason}`);
-    }
-    throw new Error(`Generated frontend artifact scan failed with ${findings.length} finding(s).`);
-  }
+  assertNoFrontendFindings(findings, 'frontend-artifact-scan', 'Generated frontend artifact scan');
   console.log(`[frontend-artifact-scan] scanned ${result.files.length} files under ${root}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  void main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
-    process.exit(1);
-  });
-}
+runFrontendCheck(import.meta.url, main);

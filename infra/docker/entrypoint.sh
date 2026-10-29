@@ -813,7 +813,9 @@ run_host_with_timeout() {
   # never reach the external host process.
   unset RISC0_DEV_MODE FORCE_DEV_MODE
   local started_at_seconds="$SECONDS"
-  timeout --kill-after="${termination_grace_seconds}s" "$timeout_seconds" "$HOST_BIN" "$WORK_INPUT" >/dev/null 2>&1 &
+  # Bash backgrounds commands with INT/QUIT ignored. Reset those dispositions so
+  # timeout can receive and forward the entrypoint's interruption signals.
+  env --default-signal=INT,QUIT timeout --kill-after="${termination_grace_seconds}s" "$timeout_seconds" "$HOST_BIN" "$WORK_INPUT" >/dev/null 2>&1 &
   PROVER_HOST_WRAPPER_PID="$!"
 
   local exit_code
@@ -912,7 +914,48 @@ finish_prover_execution() {
   exit "$exit_code"
 }
 
+# Batch can wait after signature verification. Re-check the current finalization
+# only when this ephemeral container starts, before reading input or running host.
+admit_batch_prover_start() {
+  if [[ -z "$INPUT_S3_BUCKET" ]]; then
+    return 0
+  fi
+  [[ -n "${AWS_REGION:-}" && -n "${AWS_BATCH_JOB_ID:-}" && -n "${PROVER_START_ADMISSION_FUNCTION:-}" &&
+     -n "${PROVER_START_PAYLOAD:-}" && -n "${PROVER_EXECUTION_ARN:-}" ]] ||
+    fatal "Batch prover start admission configuration is missing"
+
+  local request_file response_file metadata_file
+  request_file="$(mktemp /tmp/prover-start-request-XXXX.json)"
+  response_file="$(mktemp /tmp/prover-start-response-XXXX.json)"
+  metadata_file="$(mktemp /tmp/prover-start-metadata-XXXX.json)"
+  if ! printf '%s' "$PROVER_START_PAYLOAD" | jq -ce \
+    --arg finalization_id "$FINALIZATION_ID" \
+    --arg execution_arn "$PROVER_EXECUTION_ARN" \
+    --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+    'select(type == "object" and .finalizationId == $finalization_id and
+      (.sessionId | type == "string") and (.queuedAtMs | type == "number")) |
+     {status:"RUNNING",payload:{sessionId,finalizationId,queuedAtMs},
+      executionArn:$execution_arn,startedAtIso:$started_at}' >"$request_file" 2>/dev/null; then
+    rm -f "$request_file" "$response_file" "$metadata_file"
+    fatal "Batch prover start payload is invalid"
+  fi
+  # Do not log the invocation response, which contains private session identity.
+  if ! aws lambda invoke --region "$AWS_REGION" --function-name "$PROVER_START_ADMISSION_FUNCTION" \
+    --invocation-type RequestResponse --payload "fileb://$request_file" \
+    "$response_file" >"$metadata_file" 2>/dev/null ||
+     ! jq -e '.StatusCode == 200 and (has("FunctionError") | not)' "$metadata_file" >/dev/null 2>&1 ||
+     ! jq -e --slurpfile request "$request_file" \
+       '.status == "success" and .sessionId == $request[0].payload.sessionId and
+        .state.finalizationId == $request[0].payload.finalizationId and
+        .state.status == "running"' "$response_file" >/dev/null 2>&1; then
+    rm -f "$request_file" "$response_file" "$metadata_file"
+    fatal "Batch prover start was not admitted"
+  fi
+  rm -f "$request_file" "$response_file" "$metadata_file"
+}
+
 main() {
+  admit_batch_prover_start
   PROVER_SUMMARY_ACTIVE=1
   PROVER_RESULT="error"
   PROVER_CATEGORY="configuration"

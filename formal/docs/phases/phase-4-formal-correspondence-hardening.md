@@ -1,5 +1,9 @@
 # Phase 4: Formal Correspondence Hardening
 
+This retained plan records the Phase 4 proposal and its review baseline. Current
+models, completed evidence, and commands are documented in the
+[formal contract](../../../docs/formal/README.md).
+
 > Status: planned. This phase responds to Phase 3 external review feedback: the
 > formal layer is already connected to CI, generated reports, and
 > TypeScript/Rust vector tests, but the abstract guest model, integer-bound

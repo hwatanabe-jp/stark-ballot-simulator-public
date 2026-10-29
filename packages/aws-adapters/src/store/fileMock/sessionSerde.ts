@@ -1,3 +1,9 @@
+import { parseRootSnapshotFields } from '../root-snapshot-admission';
+import {
+  isNonArrayObject as isRecord,
+  hasExactOwnKeys as hasExactKeys,
+  isNonNegativeSafeInteger,
+} from '@stark-ballot/validation/unknown-value-guards';
 import type { FinalizationBitmapRecord } from '@stark-ballot/application/finalize/finalization-store';
 import { finalizationBitmapDataCodec } from '@stark-ballot/application/finalize/finalization-storage';
 import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
@@ -78,8 +84,6 @@ const SERIALIZED_VOTING_KEYS = new Set([
 const STORED_VOTE_KEYS = new Set(['voteId', 'vote', 'rand', 'commit', 'timestamp', 'rootAtCast']);
 const NOT_CAST_KEYS = new Set(['status']);
 const CAST_KEYS = new Set(['status', 'voteIndex']);
-const ROOT_SNAPSHOT_KEYS = new Set(['timestamp', 'root', 'treeSize']);
-const SIGNED_ROOT_SNAPSHOT_KEYS = new Set(['timestamp', 'root', 'treeSize', 'signature']);
 const RUNTIME_METADATA_KEYS = new Set(['sessionId', 'finalizationId', 'stepFunctionsArn', 'bundleMetadata']);
 const BUNDLE_METADATA_KEYS = new Set(['s3BundleKey', 's3UploadedAtMs']);
 const DELIVERY_METADATA_KEYS = new Set([
@@ -101,25 +105,40 @@ function scopedKey(sessionId: string, finalizationId: string): string {
   return `${sessionId}\u0000${finalizationId}`;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: object, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.size && keys.every((key) => expected.has(key));
-}
-
 function hasOnlyAllowedKeys(value: object, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+function isExactRecord(value: unknown, keys: ReadonlySet<string>): value is Record<string, unknown> {
+  return isRecord(value) && hasExactKeys(value, keys);
+}
+
+function isScopedMetadata(
+  value: unknown,
+  keys: ReadonlySet<string>,
+): value is Record<string, unknown> & { sessionId: string; finalizationId: string } {
+  return (
+    isRecord(value) &&
+    hasOnlyAllowedKeys(value, keys) &&
+    typeof value['sessionId'] === 'string' &&
+    typeof value['finalizationId'] === 'string'
+  );
+}
+
+function isPrefixedSha256(value: unknown): value is string {
+  return typeof value === 'string' && PREFIXED_SHA256_PATTERN.test(value);
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isOptionalTimestamp(value: unknown): value is number | undefined {
+  return value === undefined || isNonNegativeSafeInteger(value);
 }
 
 function parseStoredVote(value: unknown): StoredVoteRecord | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, STORED_VOTE_KEYS)) {
+  if (!isExactRecord(value, STORED_VOTE_KEYS)) {
     return undefined;
   }
   const voteId = value['voteId'];
@@ -133,11 +152,9 @@ function parseStoredVote(value: unknown): StoredVoteRecord | undefined {
     typeof vote !== 'string' ||
     !VOTE_CHOICES.has(vote) ||
     typeof rand !== 'string' ||
-    typeof commit !== 'string' ||
-    !PREFIXED_SHA256_PATTERN.test(commit) ||
+    !isPrefixedSha256(commit) ||
     !isNonNegativeSafeInteger(timestamp) ||
-    typeof rootAtCast !== 'string' ||
-    !PREFIXED_SHA256_PATTERN.test(rootAtCast)
+    !isPrefixedSha256(rootAtCast)
   ) {
     return undefined;
   }
@@ -168,23 +185,15 @@ function parseUserParticipation(
 }
 
 function parseRootSnapshot(value: unknown, expectedRoot: string, expectedTreeSize: number): RootSnapshot | undefined {
-  if (
-    !isRecord(value) ||
-    (!hasExactKeys(value, ROOT_SNAPSHOT_KEYS) && !hasExactKeys(value, SIGNED_ROOT_SNAPSHOT_KEYS))
-  ) {
+  const fields = parseRootSnapshotFields(value);
+  if (!fields) {
     return undefined;
   }
-  const timestamp = value['timestamp'];
-  const root = value['root'];
-  const treeSize = value['treeSize'];
-  const signature = value['signature'];
+  const { timestamp, root, treeSize, signature } = fields;
   if (
-    !isNonNegativeSafeInteger(timestamp) ||
-    typeof root !== 'string' ||
     !SHA256_PATTERN.test(root) ||
     treeSize !== expectedTreeSize ||
-    normalizeHex(root, { allowEmpty: true }) !== expectedRoot ||
-    (signature !== undefined && typeof signature !== 'string')
+    normalizeHex(root, { allowEmpty: true }) !== expectedRoot
   ) {
     return undefined;
   }
@@ -196,25 +205,9 @@ function parseRootSnapshot(value: unknown, expectedRoot: string, expectedTreeSiz
   };
 }
 
-function parseVotingRecord(value: unknown, identity: SessionIdentityRecord): SessionVotingRecord | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, SERIALIZED_VOTING_KEYS) || value['sessionId'] !== identity.sessionId) {
-    return undefined;
-  }
-  const serializedVotes = value['votes'];
-  const serializedHistory = value['bulletinRootHistory'];
-  const botCount = value['botCount'];
-  const lastActivityMs = value['lastActivityMs'];
-  if (
-    !Array.isArray(serializedVotes) ||
-    !Array.isArray(serializedHistory) ||
-    !isNonNegativeSafeInteger(botCount) ||
-    !isNonNegativeSafeInteger(lastActivityMs)
-  ) {
-    return undefined;
-  }
-
+function restoreBulletinVotes(serializedVotes: readonly unknown[], logId: string) {
   const votes = new Map<number, StoredVoteRecord>();
-  const bulletin = new SimpleBulletinBoard(identity.logId);
+  const bulletin = new SimpleBulletinBoard(logId);
   const expectedRoots: string[] = [];
   for (const [expectedIndex, entry] of serializedVotes.entries()) {
     if (!Array.isArray(entry) || entry.length !== 2 || entry[0] !== expectedIndex) {
@@ -237,6 +230,14 @@ function parseVotingRecord(value: unknown, identity: SessionIdentityRecord): Ses
     votes.set(expectedIndex, vote);
   }
 
+  return { votes, bulletin, expectedRoots };
+}
+
+function restoreRootHistory(
+  serializedHistory: readonly unknown[],
+  votes: ReadonlyMap<number, StoredVoteRecord>,
+  expectedRoots: readonly string[],
+): RootSnapshot[] | undefined {
   if (serializedHistory.length !== votes.size) {
     return undefined;
   }
@@ -251,6 +252,44 @@ function parseVotingRecord(value: unknown, identity: SessionIdentityRecord): Ses
       return undefined;
     }
     bulletinRootHistory.push(snapshot);
+  }
+
+  return bulletinRootHistory;
+}
+
+type VotingEnvelope = Pick<SerializableSessionVotingRecord, 'sessionId' | 'botCount' | 'lastActivityMs'> & {
+  votes: unknown[];
+  bulletinRootHistory: unknown[];
+  userParticipation: unknown;
+};
+
+function isVotingEnvelope(value: unknown): value is VotingEnvelope {
+  return (
+    isExactRecord(value, SERIALIZED_VOTING_KEYS) &&
+    typeof value['sessionId'] === 'string' &&
+    Array.isArray(value['votes']) &&
+    Array.isArray(value['bulletinRootHistory']) &&
+    isNonNegativeSafeInteger(value['botCount']) &&
+    isNonNegativeSafeInteger(value['lastActivityMs'])
+  );
+}
+
+function parseVotingRecord(value: unknown, identity: SessionIdentityRecord): SessionVotingRecord | undefined {
+  if (!isVotingEnvelope(value) || value['sessionId'] !== identity.sessionId) {
+    return undefined;
+  }
+  const serializedVotes = value['votes'];
+  const serializedHistory = value['bulletinRootHistory'];
+  const botCount = value['botCount'];
+  const lastActivityMs = value['lastActivityMs'];
+  const restored = restoreBulletinVotes(serializedVotes, identity.logId);
+  if (!restored) {
+    return undefined;
+  }
+  const { votes, bulletin, expectedRoots } = restored;
+  const bulletinRootHistory = restoreRootHistory(serializedHistory, votes, expectedRoots);
+  if (!bulletinRootHistory) {
+    return undefined;
   }
 
   const userParticipation = parseUserParticipation(value['userParticipation'], votes);
@@ -289,66 +328,56 @@ function parseBitmap(value: unknown): FinalizationBitmapRecord | undefined {
   };
 }
 
+function isBundleMetadata(value: unknown): value is NonNullable<AwsFinalizationRuntimeMetadata['bundleMetadata']> {
+  return (
+    isRecord(value) &&
+    hasOnlyAllowedKeys(value, BUNDLE_METADATA_KEYS) &&
+    isOptionalString(value['s3BundleKey']) &&
+    isOptionalTimestamp(value['s3UploadedAtMs'])
+  );
+}
+
+function copyBundleMetadata(value: NonNullable<AwsFinalizationRuntimeMetadata['bundleMetadata']>) {
+  return {
+    ...(typeof value.s3BundleKey === 'string' ? { s3BundleKey: value.s3BundleKey } : {}),
+    ...(typeof value.s3UploadedAtMs === 'number' ? { s3UploadedAtMs: value.s3UploadedAtMs } : {}),
+  };
+}
+
 function parseRuntimeMetadata(value: unknown): AwsRuntimeMetadataRecord | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, RUNTIME_METADATA_KEYS)) {
+  if (!isScopedMetadata(value, RUNTIME_METADATA_KEYS)) {
     return undefined;
   }
   const sessionId = value['sessionId'];
   const finalizationId = value['finalizationId'];
   const stepFunctionsArn = value['stepFunctionsArn'];
   const bundleMetadata = value['bundleMetadata'];
-  if (
-    typeof sessionId !== 'string' ||
-    typeof finalizationId !== 'string' ||
-    (stepFunctionsArn !== undefined && typeof stepFunctionsArn !== 'string') ||
-    (bundleMetadata !== undefined &&
-      (!isRecord(bundleMetadata) ||
-        !hasOnlyAllowedKeys(bundleMetadata, BUNDLE_METADATA_KEYS) ||
-        (bundleMetadata['s3BundleKey'] !== undefined && typeof bundleMetadata['s3BundleKey'] !== 'string') ||
-        (bundleMetadata['s3UploadedAtMs'] !== undefined &&
-          !isNonNegativeSafeInteger(bundleMetadata['s3UploadedAtMs']))))
-  ) {
+  if (!isOptionalString(stepFunctionsArn) || (bundleMetadata !== undefined && !isBundleMetadata(bundleMetadata))) {
     return undefined;
   }
   return {
     sessionId,
     finalizationId,
     ...(typeof stepFunctionsArn === 'string' ? { stepFunctionsArn } : {}),
-    ...(isRecord(bundleMetadata)
-      ? {
-          bundleMetadata: {
-            ...(typeof bundleMetadata['s3BundleKey'] === 'string'
-              ? { s3BundleKey: bundleMetadata['s3BundleKey'] }
-              : {}),
-            ...(typeof bundleMetadata['s3UploadedAtMs'] === 'number'
-              ? { s3UploadedAtMs: bundleMetadata['s3UploadedAtMs'] }
-              : {}),
-          },
-        }
-      : {}),
+    ...(bundleMetadata !== undefined ? { bundleMetadata: copyBundleMetadata(bundleMetadata) } : {}),
   };
 }
 
+function isDeliveryMetadata(value: unknown): value is AwsDeliveryMetadataRecord {
+  return (
+    isScopedMetadata(value, DELIVERY_METADATA_KEYS) &&
+    isOptionalString(value['s3BundleKey']) &&
+    isOptionalString(value['s3ReportKey']) &&
+    isOptionalTimestamp(value['s3UploadedAtMs']) &&
+    isOptionalTimestamp(value['verificationWorkQueuedAtMs'])
+  );
+}
+
 function parseDeliveryMetadata(value: unknown): AwsDeliveryMetadataRecord | undefined {
-  if (!isRecord(value) || !hasOnlyAllowedKeys(value, DELIVERY_METADATA_KEYS)) {
+  if (!isDeliveryMetadata(value)) {
     return undefined;
   }
-  const sessionId = value['sessionId'];
-  const finalizationId = value['finalizationId'];
-  const s3BundleKey = value['s3BundleKey'];
-  const s3ReportKey = value['s3ReportKey'];
-  const s3UploadedAtMs = value['s3UploadedAtMs'];
-  const verificationWorkQueuedAtMs = value['verificationWorkQueuedAtMs'];
-  if (
-    typeof sessionId !== 'string' ||
-    typeof finalizationId !== 'string' ||
-    (s3BundleKey !== undefined && typeof s3BundleKey !== 'string') ||
-    (s3ReportKey !== undefined && typeof s3ReportKey !== 'string') ||
-    (s3UploadedAtMs !== undefined && !isNonNegativeSafeInteger(s3UploadedAtMs)) ||
-    (verificationWorkQueuedAtMs !== undefined && !isNonNegativeSafeInteger(verificationWorkQueuedAtMs))
-  ) {
-    return undefined;
-  }
+  const { sessionId, finalizationId, s3BundleKey, s3ReportKey, s3UploadedAtMs, verificationWorkQueuedAtMs } = value;
   return {
     sessionId,
     finalizationId,
@@ -359,25 +388,27 @@ function parseDeliveryMetadata(value: unknown): AwsDeliveryMetadataRecord | unde
   };
 }
 
+function parseReceiptPayload(value: Record<string, unknown>) {
+  try {
+    return admitSuccessfulFinalizationReceipt(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function parseReceipt(value: unknown): ReceiptRecord | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, RECEIPT_KEYS) || !isRecord(value['receipt'])) {
+  if (!isExactRecord(value, RECEIPT_KEYS) || !isRecord(value['receipt'])) {
     return undefined;
   }
   const sessionId = value['sessionId'];
   const finalizationId = value['finalizationId'];
   const receiptHash = value['receiptHash'];
   const boardIndex = value['boardIndex'];
-  let receipt: ReturnType<typeof admitSuccessfulFinalizationReceipt>;
-  try {
-    receipt = admitSuccessfulFinalizationReceipt(value['receipt']);
-  } catch {
-    return undefined;
-  }
+  const receipt = parseReceiptPayload(value['receipt']);
   if (
     typeof sessionId !== 'string' ||
     typeof finalizationId !== 'string' ||
-    typeof receiptHash !== 'string' ||
-    !PREFIXED_SHA256_PATTERN.test(receiptHash) ||
+    !isPrefixedSha256(receiptHash) ||
     !isNonNegativeSafeInteger(boardIndex) ||
     !receipt ||
     receiptHash !== computeSuccessfulFinalizationReceiptHash(receipt)
@@ -394,7 +425,7 @@ function parseReceipt(value: unknown): ReceiptRecord | undefined {
 }
 
 function parseObservationRecord(value: unknown): VerificationObservationRecord | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, OBSERVATION_RECORD_KEYS)) {
+  if (!isExactRecord(value, OBSERVATION_RECORD_KEYS)) {
     return undefined;
   }
   const sessionId = value['sessionId'];
@@ -436,8 +467,284 @@ export function createEmptyFileStoreState(): FileStoreState {
   };
 }
 
+// Populate a temporary state in dependency order; the caller discards it on any admission failure.
+function loadSessionRecords(
+  state: FileStoreState,
+  identities: readonly unknown[],
+  voting: readonly unknown[],
+): boolean {
+  for (const rawIdentity of identities) {
+    const identity = parseSessionIdentityRecord(rawIdentity);
+    if (!identity || !addUnique(state.identityRecords, identity.sessionId, identity)) {
+      return false;
+    }
+  }
+  return loadVotingRecords(state, voting);
+}
+
+function loadVotingRecords(state: FileStoreState, voting: readonly unknown[]): boolean {
+  for (const rawVoting of voting) {
+    if (!isRecord(rawVoting) || typeof rawVoting['sessionId'] !== 'string') {
+      return false;
+    }
+    const identity = state.identityRecords.get(rawVoting['sessionId']);
+    const record = identity ? parseVotingRecord(rawVoting, identity) : undefined;
+    if (!record || !addUnique(state.votingRecords, record.sessionId, record)) {
+      return false;
+    }
+  }
+  if (
+    state.identityRecords.size !== state.votingRecords.size ||
+    Array.from(state.identityRecords.keys()).some((sessionId) => !state.votingRecords.has(sessionId))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function loadFinalizationRecords(
+  state: FileStoreState,
+  finalizations: readonly unknown[],
+  currentFinalizationIds: readonly unknown[],
+): boolean {
+  for (const rawFinalization of finalizations) {
+    const record = finalizationRecordCodec.decode(rawFinalization);
+    if (
+      !record ||
+      !state.identityRecords.has(record.sessionId) ||
+      !addUnique(state.finalizationRecords, scopedKey(record.sessionId, record.finalizationId), record)
+    ) {
+      return false;
+    }
+  }
+  return loadCurrentFinalizationIds(state, currentFinalizationIds);
+}
+
+function isStringPair(value: unknown): value is [string, string] {
+  return Array.isArray(value) && value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'string';
+}
+
+function loadCurrentFinalizationIds(state: FileStoreState, currentFinalizationIds: readonly unknown[]): boolean {
+  for (const entry of currentFinalizationIds) {
+    if (
+      !isStringPair(entry) ||
+      state.currentFinalizationIdBySession.has(entry[0]) ||
+      !state.finalizationRecords.has(scopedKey(entry[0], entry[1]))
+    ) {
+      return false;
+    }
+    const identity = state.identityRecords.get(entry[0]);
+    const finalizationId = parseFinalizationId(entry[1]);
+    if (!identity || !finalizationId) {
+      return false;
+    }
+    state.currentFinalizationIdBySession.set(identity.sessionId, finalizationId);
+  }
+
+  return true;
+}
+
+function loadVerificationResults(state: FileStoreState, verificationResults: readonly unknown[]): boolean {
+  for (const rawVerification of verificationResults) {
+    const record = parseVerificationResultRecord(rawVerification);
+    const finalization = record
+      ? state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId))
+      : undefined;
+    if (
+      !record ||
+      finalization?.state.status !== 'succeeded' ||
+      !addUnique(state.verificationResultRecords, scopedKey(record.sessionId, record.finalizationId), record)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function loadVerificationObservations(state: FileStoreState, verificationObservations: readonly unknown[]): boolean {
+  for (const rawObservation of verificationObservations) {
+    const record = parseObservationRecord(rawObservation);
+    if (
+      !record ||
+      state.currentFinalizationIdBySession.get(record.sessionId) !== record.finalizationId ||
+      !addUnique(state.verificationObservationRecords, scopedKey(record.sessionId, record.finalizationId), {
+        finalizationId: record.finalizationId,
+        fingerprint: record.fingerprint,
+        observedAt: record.observedAt,
+      })
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function loadBitmaps(state: FileStoreState, bitmaps: readonly unknown[]): boolean {
+  for (const rawBitmap of bitmaps) {
+    const record = parseBitmap(rawBitmap);
+    const finalization = record
+      ? state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId))
+      : undefined;
+    if (
+      !record ||
+      finalization?.state.status !== 'succeeded' ||
+      !addUnique(state.bitmapRecords, scopedKey(record.sessionId, record.finalizationId), record)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function deriveVoteIdIndex(state: FileStoreState) {
+  const derivedVoteIdIndex = new Map<string, { sessionId: SessionId; index: number }>();
+  for (const [sessionId, record] of state.votingRecords) {
+    for (const [index, vote] of record.votes) {
+      if (!addUnique(derivedVoteIdIndex, vote.voteId, { sessionId, index })) {
+        return undefined;
+      }
+    }
+  }
+  return derivedVoteIdIndex;
+}
+
+function isVoteIndexEntry(value: unknown): value is [string, { sessionId: string; index: number }] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === 'string' &&
+    isRecord(value[1]) &&
+    hasExactKeys(value[1], new Set(['sessionId', 'index'])) &&
+    typeof value[1]['sessionId'] === 'string' &&
+    isNonNegativeSafeInteger(value[1]['index'])
+  );
+}
+
+function loadVoteIndex(state: FileStoreState, voteIdIndex: readonly unknown[]): boolean {
+  const derivedVoteIdIndex = deriveVoteIdIndex(state);
+  if (!derivedVoteIdIndex) {
+    return false;
+  }
+  for (const entry of voteIdIndex) {
+    if (!isVoteIndexEntry(entry)) {
+      return false;
+    }
+    const expected = derivedVoteIdIndex.get(entry[0]);
+    if (
+      !expected ||
+      expected.sessionId !== entry[1]['sessionId'] ||
+      expected.index !== entry[1]['index'] ||
+      !addUnique(state.voteIdIndex, entry[0], {
+        sessionId: expected.sessionId,
+        index: entry[1]['index'],
+      })
+    ) {
+      return false;
+    }
+  }
+  if (state.voteIdIndex.size !== derivedVoteIdIndex.size) {
+    return false;
+  }
+
+  return true;
+}
+
+function loadRuntimeMetadata(state: FileStoreState, runtimeMetadata: readonly unknown[]): boolean {
+  for (const rawMetadata of runtimeMetadata) {
+    const record = parseRuntimeMetadata(rawMetadata);
+    if (
+      !record ||
+      !state.identityRecords.has(record.sessionId) ||
+      !addUnique(state.runtimeMetadataRecords, scopedKey(record.sessionId, record.finalizationId), {
+        ...(record.stepFunctionsArn ? { stepFunctionsArn: record.stepFunctionsArn } : {}),
+        ...(record.bundleMetadata ? { bundleMetadata: { ...record.bundleMetadata } } : {}),
+      })
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function deliveryMetadataValue(record: AwsDeliveryMetadataRecord): AwsVerificationDeliveryMetadataInput {
+  return {
+    ...(record.s3BundleKey ? { s3BundleKey: record.s3BundleKey } : {}),
+    ...(record.s3ReportKey ? { s3ReportKey: record.s3ReportKey } : {}),
+    ...(record.s3UploadedAtMs === undefined ? {} : { s3UploadedAtMs: record.s3UploadedAtMs }),
+    ...(record.verificationWorkQueuedAtMs === undefined
+      ? {}
+      : { verificationWorkQueuedAtMs: record.verificationWorkQueuedAtMs }),
+  };
+}
+
+function loadDeliveryMetadata(state: FileStoreState, deliveryMetadata: readonly unknown[]): boolean {
+  for (const rawMetadata of deliveryMetadata) {
+    const record = parseDeliveryMetadata(rawMetadata);
+    if (
+      !record ||
+      !state.identityRecords.has(record.sessionId) ||
+      !addUnique(
+        state.deliveryMetadataRecords,
+        scopedKey(record.sessionId, record.finalizationId),
+        deliveryMetadataValue(record),
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function receiptPublicationFor(state: FileStoreState, record: ReceiptRecord) {
+  const finalization = state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId));
+  if (finalization?.state.status !== 'succeeded' || !finalization.finalizationResult) {
+    return undefined;
+  }
+  const publication = finalization.finalizationResult.artifacts.receiptPublication;
+  return publication.availability === 'available' ? publication.publication : undefined;
+}
+
+function loadReceiptPublications(state: FileStoreState, receipts: readonly unknown[], receiptCounter: number): boolean {
+  let maximumBoardIndex = INITIAL_RECEIPT_COUNTER - 1;
+  for (const rawReceipt of receipts) {
+    const record = parseReceipt(rawReceipt);
+    const publication = record ? receiptPublicationFor(state, record) : undefined;
+    if (
+      !record ||
+      !publication ||
+      publication.receiptHash !== record.receiptHash ||
+      publication.boardIndex !== record.boardIndex ||
+      !addUnique(state.receiptRecords, scopedKey(record.sessionId, record.finalizationId), record)
+    ) {
+      return false;
+    }
+    maximumBoardIndex = Math.max(maximumBoardIndex, record.boardIndex);
+  }
+  if (receiptCounter <= maximumBoardIndex) {
+    return false;
+  }
+  return true;
+}
+
+type FileStoreEnvelope = {
+  [Key in Exclude<keyof FileStoreSnapshot, 'receiptCounter'>]: unknown[];
+} & { receiptCounter: number };
+
+function isFileStoreEnvelope(value: unknown): value is FileStoreEnvelope {
+  if (!isExactRecord(value, SNAPSHOT_KEYS)) {
+    return false;
+  }
+  return (
+    Array.from(SNAPSHOT_KEYS).every((key) => key === 'receiptCounter' || Array.isArray(value[key])) &&
+    isNonNegativeSafeInteger(value['receiptCounter']) &&
+    value['receiptCounter'] >= INITIAL_RECEIPT_COUNTER
+  );
+}
+
 export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, SNAPSHOT_KEYS)) {
+  if (!isFileStoreEnvelope(value)) {
     return undefined;
   }
   const {
@@ -454,208 +761,18 @@ export function parseFileStoreSnapshot(value: unknown): FileStoreState | undefin
     receipts,
     receiptCounter,
   } = value;
-  if (
-    !Array.isArray(identities) ||
-    !Array.isArray(voting) ||
-    !Array.isArray(finalizations) ||
-    !Array.isArray(currentFinalizationIds) ||
-    !Array.isArray(verificationResults) ||
-    !Array.isArray(verificationObservations) ||
-    !Array.isArray(bitmaps) ||
-    !Array.isArray(voteIdIndex) ||
-    !Array.isArray(runtimeMetadata) ||
-    !Array.isArray(deliveryMetadata) ||
-    !Array.isArray(receipts) ||
-    !isNonNegativeSafeInteger(receiptCounter) ||
-    receiptCounter < INITIAL_RECEIPT_COUNTER
-  ) {
-    return undefined;
-  }
-
   const state = createEmptyFileStoreState();
-  for (const rawIdentity of identities) {
-    const identity = parseSessionIdentityRecord(rawIdentity);
-    if (!identity || !addUnique(state.identityRecords, identity.sessionId, identity)) {
-      return undefined;
-    }
-  }
-  for (const rawVoting of voting) {
-    if (!isRecord(rawVoting) || typeof rawVoting['sessionId'] !== 'string') {
-      return undefined;
-    }
-    const identity = state.identityRecords.get(rawVoting['sessionId']);
-    const record = identity ? parseVotingRecord(rawVoting, identity) : undefined;
-    if (!record || !addUnique(state.votingRecords, record.sessionId, record)) {
-      return undefined;
-    }
-  }
   if (
-    state.identityRecords.size !== state.votingRecords.size ||
-    Array.from(state.identityRecords.keys()).some((sessionId) => !state.votingRecords.has(sessionId))
+    !loadSessionRecords(state, identities, voting) ||
+    !loadFinalizationRecords(state, finalizations, currentFinalizationIds) ||
+    !loadVerificationResults(state, verificationResults) ||
+    !loadVerificationObservations(state, verificationObservations) ||
+    !loadBitmaps(state, bitmaps) ||
+    !loadVoteIndex(state, voteIdIndex) ||
+    !loadRuntimeMetadata(state, runtimeMetadata) ||
+    !loadDeliveryMetadata(state, deliveryMetadata) ||
+    !loadReceiptPublications(state, receipts, receiptCounter)
   ) {
-    return undefined;
-  }
-
-  for (const rawFinalization of finalizations) {
-    const record = finalizationRecordCodec.decode(rawFinalization);
-    if (
-      !record ||
-      !state.identityRecords.has(record.sessionId) ||
-      !addUnique(state.finalizationRecords, scopedKey(record.sessionId, record.finalizationId), record)
-    ) {
-      return undefined;
-    }
-  }
-  for (const entry of currentFinalizationIds) {
-    if (
-      !Array.isArray(entry) ||
-      entry.length !== 2 ||
-      typeof entry[0] !== 'string' ||
-      typeof entry[1] !== 'string' ||
-      state.currentFinalizationIdBySession.has(entry[0]) ||
-      !state.finalizationRecords.has(scopedKey(entry[0], entry[1]))
-    ) {
-      return undefined;
-    }
-    const identity = state.identityRecords.get(entry[0]);
-    const finalizationId = parseFinalizationId(entry[1]);
-    if (!identity || !finalizationId) {
-      return undefined;
-    }
-    state.currentFinalizationIdBySession.set(identity.sessionId, finalizationId);
-  }
-
-  for (const rawVerification of verificationResults) {
-    const record = parseVerificationResultRecord(rawVerification);
-    const finalization = record
-      ? state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId))
-      : undefined;
-    if (
-      !record ||
-      finalization?.state.status !== 'succeeded' ||
-      !addUnique(state.verificationResultRecords, scopedKey(record.sessionId, record.finalizationId), record)
-    ) {
-      return undefined;
-    }
-  }
-  for (const rawObservation of verificationObservations) {
-    const record = parseObservationRecord(rawObservation);
-    if (
-      !record ||
-      state.currentFinalizationIdBySession.get(record.sessionId) !== record.finalizationId ||
-      !addUnique(state.verificationObservationRecords, scopedKey(record.sessionId, record.finalizationId), {
-        finalizationId: record.finalizationId,
-        fingerprint: record.fingerprint,
-        observedAt: record.observedAt,
-      })
-    ) {
-      return undefined;
-    }
-  }
-  for (const rawBitmap of bitmaps) {
-    const record = parseBitmap(rawBitmap);
-    const finalization = record
-      ? state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId))
-      : undefined;
-    if (
-      !record ||
-      finalization?.state.status !== 'succeeded' ||
-      !addUnique(state.bitmapRecords, scopedKey(record.sessionId, record.finalizationId), record)
-    ) {
-      return undefined;
-    }
-  }
-
-  const derivedVoteIdIndex = new Map<string, { sessionId: SessionId; index: number }>();
-  for (const [sessionId, record] of state.votingRecords) {
-    for (const [index, vote] of record.votes) {
-      if (!addUnique(derivedVoteIdIndex, vote.voteId, { sessionId, index })) {
-        return undefined;
-      }
-    }
-  }
-  for (const entry of voteIdIndex) {
-    if (
-      !Array.isArray(entry) ||
-      entry.length !== 2 ||
-      typeof entry[0] !== 'string' ||
-      !isRecord(entry[1]) ||
-      !hasExactKeys(entry[1], new Set(['sessionId', 'index'])) ||
-      typeof entry[1]['sessionId'] !== 'string' ||
-      !isNonNegativeSafeInteger(entry[1]['index'])
-    ) {
-      return undefined;
-    }
-    const expected = derivedVoteIdIndex.get(entry[0]);
-    if (
-      !expected ||
-      expected.sessionId !== entry[1]['sessionId'] ||
-      expected.index !== entry[1]['index'] ||
-      !addUnique(state.voteIdIndex, entry[0], {
-        sessionId: expected.sessionId,
-        index: entry[1]['index'],
-      })
-    ) {
-      return undefined;
-    }
-  }
-  if (state.voteIdIndex.size !== derivedVoteIdIndex.size) {
-    return undefined;
-  }
-
-  for (const rawMetadata of runtimeMetadata) {
-    const record = parseRuntimeMetadata(rawMetadata);
-    if (
-      !record ||
-      !state.identityRecords.has(record.sessionId) ||
-      !addUnique(state.runtimeMetadataRecords, scopedKey(record.sessionId, record.finalizationId), {
-        ...(record.stepFunctionsArn ? { stepFunctionsArn: record.stepFunctionsArn } : {}),
-        ...(record.bundleMetadata ? { bundleMetadata: { ...record.bundleMetadata } } : {}),
-      })
-    ) {
-      return undefined;
-    }
-  }
-  for (const rawMetadata of deliveryMetadata) {
-    const record = parseDeliveryMetadata(rawMetadata);
-    if (
-      !record ||
-      !state.identityRecords.has(record.sessionId) ||
-      !addUnique(state.deliveryMetadataRecords, scopedKey(record.sessionId, record.finalizationId), {
-        ...(record.s3BundleKey ? { s3BundleKey: record.s3BundleKey } : {}),
-        ...(record.s3ReportKey ? { s3ReportKey: record.s3ReportKey } : {}),
-        ...(record.s3UploadedAtMs === undefined ? {} : { s3UploadedAtMs: record.s3UploadedAtMs }),
-        ...(record.verificationWorkQueuedAtMs === undefined
-          ? {}
-          : { verificationWorkQueuedAtMs: record.verificationWorkQueuedAtMs }),
-      })
-    ) {
-      return undefined;
-    }
-  }
-  let maximumBoardIndex = INITIAL_RECEIPT_COUNTER - 1;
-  for (const rawReceipt of receipts) {
-    const record = parseReceipt(rawReceipt);
-    const finalization = record
-      ? state.finalizationRecords.get(scopedKey(record.sessionId, record.finalizationId))
-      : undefined;
-    const publicationState =
-      finalization && finalization.state.status === 'succeeded' && finalization.finalizationResult
-        ? finalization.finalizationResult.artifacts.receiptPublication
-        : undefined;
-    const publication = publicationState?.availability === 'available' ? publicationState.publication : undefined;
-    if (
-      !record ||
-      !publication ||
-      publication.receiptHash !== record.receiptHash ||
-      publication.boardIndex !== record.boardIndex ||
-      !addUnique(state.receiptRecords, scopedKey(record.sessionId, record.finalizationId), record)
-    ) {
-      return undefined;
-    }
-    maximumBoardIndex = Math.max(maximumBoardIndex, record.boardIndex);
-  }
-  if (receiptCounter <= maximumBoardIndex) {
     return undefined;
   }
   state.receiptCounter = receiptCounter;
@@ -679,6 +796,19 @@ function serializeVotingRecord(record: SessionVotingRecord): SerializableSession
     userParticipation: { ...record.userParticipation },
     lastActivityMs: record.lastActivityMs,
   };
+}
+
+function serializeScopedMetadata<T extends object>(records: ReadonlyMap<string, T>) {
+  return Array.from(records.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, metadata]) => {
+      const separator = key.indexOf('\u0000');
+      return {
+        sessionId: key.slice(0, separator),
+        finalizationId: key.slice(separator + 1),
+        ...metadata,
+      };
+    });
 }
 
 export function serializeFileStoreState(state: FileStoreState): FileStoreSnapshot {
@@ -711,27 +841,11 @@ export function serializeFileStoreState(state: FileStoreState): FileStoreSnapsho
       ...finalizationBitmapDataCodec.encode(bitmap),
     })),
     voteIdIndex: Array.from(state.voteIdIndex.entries()).sort(([left], [right]) => left.localeCompare(right)),
-    runtimeMetadata: Array.from(state.runtimeMetadataRecords.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, metadata]) => {
-        const separator = key.indexOf('\u0000');
-        return {
-          sessionId: key.slice(0, separator),
-          finalizationId: key.slice(separator + 1),
-          ...metadata,
-          ...(metadata.bundleMetadata ? { bundleMetadata: { ...metadata.bundleMetadata } } : {}),
-        };
-      }),
-    deliveryMetadata: Array.from(state.deliveryMetadataRecords.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, metadata]) => {
-        const separator = key.indexOf('\u0000');
-        return {
-          sessionId: key.slice(0, separator),
-          finalizationId: key.slice(separator + 1),
-          ...metadata,
-        };
-      }),
+    runtimeMetadata: serializeScopedMetadata(state.runtimeMetadataRecords).map((record) => ({
+      ...record,
+      ...(record.bundleMetadata ? { bundleMetadata: { ...record.bundleMetadata } } : {}),
+    })),
+    deliveryMetadata: serializeScopedMetadata(state.deliveryMetadataRecords),
     receipts: sortedValues(state.receiptRecords).map((record) => ({
       ...record,
       receipt: { ...record.receipt },

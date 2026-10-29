@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
-export const HOST_EXECUTION_TIMEOUT_MS = 600_000;
+const HOST_EXECUTION_TIMEOUT_MS = 600_000;
 const TERMINATION_GRACE_MS = 5_000;
 const KILL_WAIT_MS = 1_000;
 export const HOST_RESPONSE_TIMEOUT_MS = HOST_EXECUTION_TIMEOUT_MS + TERMINATION_GRACE_MS + KILL_WAIT_MS + 30_000;
@@ -175,21 +175,25 @@ export function runHostProcess(
       }, terminationGraceMs);
     }
 
+    function advanceProgress(line: string): void {
+      const nextStage =
+        line === 'Executing guest program and generating proof...'
+          ? 'proving'
+          : line === 'Output decoded successfully'
+            ? 'output_decoded'
+            : null;
+      if (nextStage && (stage === 'starting' || (stage === 'proving' && nextStage === 'output_decoded'))) {
+        stage = nextStage;
+        options.onStage?.(stage);
+      }
+    }
+
     child.stdout.on('data', (chunk: Buffer) => {
       // Arbitrary host output is private. Only two exact, bounded progress lines are admitted.
       for (const character of chunk.toString('utf8')) {
         if (character === '\n') {
           if (!oversizedLine) {
-            const nextStage =
-              pendingLine === 'Executing guest program and generating proof...'
-                ? 'proving'
-                : pendingLine === 'Output decoded successfully'
-                  ? 'output_decoded'
-                  : null;
-            if (nextStage && (stage === 'starting' || (stage === 'proving' && nextStage === 'output_decoded'))) {
-              stage = nextStage;
-              options.onStage?.(stage);
-            }
+            advanceProgress(pendingLine);
           }
           pendingLine = '';
           oversizedLine = false;

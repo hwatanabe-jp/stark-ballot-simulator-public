@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSession } from '@stark-ballot/web/api/sessions';
@@ -38,11 +39,14 @@ describe('HomePage session creation', () => {
     expect(createSession).toHaveBeenCalledOnce();
     expect(start).toBeDisabled();
 
-    await act(async () => pending.resolve(sessionFixture.data));
+    await act(async () => pending.resolve({ ...sessionFixture.data, ...admitSessionIdentity(sessionFixture.data) }));
 
     expect(clearKnowledge).toHaveBeenCalledOnce();
     expect(initializeSession).toHaveBeenCalledOnce();
-    expect(mergeKnowledgeFromApi).toHaveBeenCalledWith(sessionFixture.data);
+    expect(mergeKnowledgeFromApi).toHaveBeenCalledWith({
+      ...sessionFixture.data,
+      ...admitSessionIdentity(sessionFixture.data),
+    });
     expect(push).toHaveBeenCalledWith('/vote');
     expect(start).toBeDisabled();
   });
@@ -57,7 +61,7 @@ describe('HomePage session creation', () => {
     unmount();
     expect(signal?.aborted).toBe(true);
 
-    await act(async () => pending.resolve(sessionFixture.data));
+    await act(async () => pending.resolve({ ...sessionFixture.data, ...admitSessionIdentity(sessionFixture.data) }));
 
     expect(initializeSession).not.toHaveBeenCalled();
     expect(clearKnowledge).not.toHaveBeenCalled();
@@ -69,7 +73,9 @@ describe('HomePage session creation', () => {
     ['SESSION_LIMIT_EXCEEDED', 'sessionLimitExceeded'],
     ['CAPTCHA_FAILED', 'captchaFailed'],
   ])('allows retry after %s and translates the current error after a language change', async (code, key) => {
-    vi.mocked(createSession).mockRejectedValueOnce(new Error(code)).mockResolvedValueOnce(sessionFixture.data);
+    vi.mocked(createSession)
+      .mockRejectedValueOnce(new Error(code))
+      .mockResolvedValueOnce({ ...sessionFixture.data, ...admitSessionIdentity(sessionFixture.data) });
     vi.mocked(resolveApiClientErrorCode).mockReturnValue(code);
     const { rerender } = render(<HomePage />);
     fireEvent.click(screen.getByRole('button', { name: 'ja:common.start' }));

@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import { probeGatewayValidation } from './lib/gateway-validation-smoke';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ErrorCode } from '@stark-ballot/api-contract/errors/apiErrors';
@@ -13,11 +14,12 @@ import {
 import {
   CLITestHelpers,
   type FinalizeScenarioData,
+  type FinalizationStatusSample,
   type FinalizeWithScenariosResult,
   type VoteResult,
 } from '@stark-ballot/test-support/testing/cli-test-helpers';
 import { SESSION_CAPABILITY_HEADER } from '@stark-ballot/domain/session/capability';
-import { isRecord, getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { isNonNullObject, getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 import { listZipEntryNamesFromBuffer, readZipEntriesFromBuffer } from '@stark-ballot/node-adapters/zip';
 import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 import { resolveExpectedImageIdFromMapping } from '@stark-ballot/validation/image-id-policy';
@@ -35,7 +37,8 @@ import {
 import { deriveVerificationPresentationPolicy } from '@stark-ballot/verification/presentation-policy';
 import { parseVerifierServiceWireReport } from '@stark-ballot/verification/verifier-service-report';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
-import { CLIVotingTest, type CLITestConfig } from './cli-e2e-voting-flow';
+import type { FinalizationResource } from '@stark-ballot/api-contract/schemas/finalizations';
+import { resolveRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { pollUntil } from '@stark-ballot/test-support/testing/poll';
 
 const imageIdMapping = parseImageIdMapping(imageIdMappingJson);
@@ -142,6 +145,41 @@ function isVerificationCheckStatus(value: unknown): value is VerificationCheck['
   return value === 'not_run' || value === 'pending' || value === 'running' || value === 'success' || value === 'failed';
 }
 
+function requireFreshCheckDefinition(rawCheck: Record<string, unknown>): VerificationCheckDefinition {
+  const rawId = getStringProperty(rawCheck, 'id');
+  const definition = rawId ? VERIFICATION_CHECK_DEFINITION_BY_ID.get(rawId) : undefined;
+  if (!definition) {
+    throw new Error(`Fresh verificationChecks contains an unsupported check ${rawId ?? '<none>'}.`);
+  }
+  return definition;
+}
+
+function admitFreshVerificationCheck(rawCheck: unknown, seen: Set<VerificationCheckId>): VerificationCheck {
+  if (!isNonNullObject(rawCheck)) {
+    throw new Error('Fresh verificationChecks contains a non-object check.');
+  }
+  const definition = requireFreshCheckDefinition(rawCheck);
+  if (seen.has(definition.id)) {
+    throw new Error(`Fresh verificationChecks contains duplicate check ${definition.id}.`);
+  }
+  const status = getStringProperty(rawCheck, 'status');
+  if (!isVerificationCheckStatus(status)) {
+    throw new Error(`Fresh verificationChecks check ${definition.id} has an invalid status.`);
+  }
+  seen.add(definition.id);
+  const checkBase = {
+    id: definition.id,
+    evidence: definition.evidence,
+    inputs: [...definition.inputs],
+    ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
+  };
+  if (status === 'failed' || status === 'not_run') {
+    return { ...checkBase, status };
+  } else {
+    return { ...checkBase, status };
+  }
+}
+
 function requireFreshVerificationChecks(data: Record<string, unknown>): VerificationCheck[] {
   const rawChecks: unknown = data['verificationChecks'];
   if (!Array.isArray(rawChecks) || rawChecks.length === 0) {
@@ -151,33 +189,7 @@ function requireFreshVerificationChecks(data: Record<string, unknown>): Verifica
   const checks: VerificationCheck[] = [];
   const seen = new Set<VerificationCheckId>();
   for (const rawCheck of rawChecks) {
-    if (!isRecord(rawCheck)) {
-      throw new Error('Fresh verificationChecks contains a non-object check.');
-    }
-    const rawId = getStringProperty(rawCheck, 'id');
-    const definition = rawId ? VERIFICATION_CHECK_DEFINITION_BY_ID.get(rawId) : undefined;
-    if (!definition) {
-      throw new Error(`Fresh verificationChecks contains an unsupported check ${rawId ?? '<none>'}.`);
-    }
-    if (seen.has(definition.id)) {
-      throw new Error(`Fresh verificationChecks contains duplicate check ${definition.id}.`);
-    }
-    const status = getStringProperty(rawCheck, 'status');
-    if (!isVerificationCheckStatus(status)) {
-      throw new Error(`Fresh verificationChecks check ${definition.id} has an invalid status.`);
-    }
-    seen.add(definition.id);
-    const checkBase = {
-      id: definition.id,
-      evidence: definition.evidence,
-      inputs: [...definition.inputs],
-      ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
-    };
-    if (status === 'failed' || status === 'not_run') {
-      checks.push({ ...checkBase, status });
-    } else {
-      checks.push({ ...checkBase, status });
-    }
+    checks.push(admitFreshVerificationCheck(rawCheck, seen));
   }
 
   const missing = VERIFICATION_CHECK_DEFINITIONS.filter((definition) => !seen.has(definition.id)).map(
@@ -307,7 +319,7 @@ export function resolveGatedSmokeExpectedImageId(mapping: unknown = imageIdMappi
 export function assertIndependentFinalizationImageId(data: Record<string, unknown>, expectedImageId: string): void {
   requireIndependentImageId(data, expectedImageId, 'finalization top-level');
   for (const projection of ['proof', 'journal'] as const) {
-    const projectionData = getRecordProperty(data, projection);
+    const projectionData = getObjectProperty(data, projection);
     const projectedImageId = getStringProperty(projectionData, 'imageId');
     if (projectedImageId !== undefined && projectedImageId !== expectedImageId) {
       throw new Error(
@@ -366,31 +378,36 @@ export function assertExpectedOverallVerdict(
   }
 }
 
-export function assertGatedSmokeScenarioSemantics(data: FinalizeScenarioData, scenario: GatedSmokeScenario): void {
-  const checks = requireFreshVerificationChecks(data);
-  const statusById = new Map(checks.map((check) => [check.id, check.status]));
-  const expectedFailures = new Set(EXPECTED_FAILED_CHECKS_BY_SCENARIO[scenario]);
-  const variableChecks = scenario === 'S5' ? new Set<VerificationCheckId>(['counted_my_vote_included']) : undefined;
+function requireScenarioCheckStatus(
+  scenario: GatedSmokeScenario,
+  id: VerificationCheckId,
+  status: VerificationCheck['status'] | undefined,
+  expected: 'failed' | 'success',
+): void {
+  if (status !== expected) throw new Error(`${scenario} requires ${id}=${expected}, received ${status ?? '<none>'}.`);
+}
 
-  for (const definition of VERIFICATION_CHECK_DEFINITIONS) {
-    const status = statusById.get(definition.id);
-    if (expectedFailures.has(definition.id)) {
-      if (status !== 'failed') {
-        throw new Error(`${scenario} requires ${definition.id}=failed, received ${status ?? '<none>'}.`);
-      }
-      continue;
-    }
-    if (variableChecks?.has(definition.id)) {
-      if (status !== 'success' && status !== 'failed') {
-        throw new Error(`${scenario} requires ${definition.id} to reach a terminal result, received ${status}.`);
-      }
-      continue;
-    }
-    if (status !== 'success') {
-      throw new Error(`${scenario} requires ${definition.id}=success, received ${status ?? '<none>'}.`);
-    }
+function assertScenarioCheckStatus(
+  id: VerificationCheckId,
+  status: VerificationCheck['status'] | undefined,
+  scenario: GatedSmokeScenario,
+  expectedFailures: ReadonlySet<VerificationCheckId>,
+  variableChecks: ReadonlySet<VerificationCheckId> | undefined,
+): void {
+  if (expectedFailures.has(id)) {
+    requireScenarioCheckStatus(scenario, id, status, 'failed');
+    return;
   }
+  if (variableChecks?.has(id)) {
+    if (status !== 'success' && status !== 'failed') {
+      throw new Error(`${scenario} requires ${id} to reach a terminal result, received ${status}.`);
+    }
+    return;
+  }
+  requireScenarioCheckStatus(scenario, id, status, 'success');
+}
 
+function assertScenarioExclusionCounts(data: FinalizeScenarioData, scenario: GatedSmokeScenario): void {
   const missingSlots = requireScenarioCount(data, 'missingSlots');
   const invalidPresentedSlots = requireScenarioCount(data, 'invalidPresentedSlots');
   const excludedSlots = requireScenarioCount(data, 'excludedSlots');
@@ -405,6 +422,19 @@ export function assertGatedSmokeScenarioSemantics(data: FinalizeScenarioData, sc
       `${scenario} requires zero exclusion counts; received ${excludedSlots}, ${missingSlots}, ${invalidPresentedSlots}.`,
     );
   }
+}
+
+export function assertGatedSmokeScenarioSemantics(data: FinalizeScenarioData, scenario: GatedSmokeScenario): void {
+  const checks = requireFreshVerificationChecks(data);
+  const statusById = new Map(checks.map((check) => [check.id, check.status]));
+  const expectedFailures = new Set(EXPECTED_FAILED_CHECKS_BY_SCENARIO[scenario]);
+  const variableChecks = scenario === 'S5' ? new Set<VerificationCheckId>(['counted_my_vote_included']) : undefined;
+
+  for (const definition of VERIFICATION_CHECK_DEFINITIONS) {
+    assertScenarioCheckStatus(definition.id, statusById.get(definition.id), scenario, expectedFailures, variableChecks);
+  }
+
+  assertScenarioExclusionCounts(data, scenario);
 
   assertExpectedOverallVerdict(
     { ...data, verificationChecks: checks },
@@ -485,10 +515,10 @@ async function parseErrorCode(response: Response): Promise<string | null> {
     return null;
   }
 
-  if (!isRecord(payload)) {
+  if (!isNonNullObject(payload)) {
     return null;
   }
-  return getStringProperty(getRecordProperty(payload, 'error'), 'code') ?? null;
+  return getStringProperty(getObjectProperty(payload, 'error'), 'code') ?? null;
 }
 
 async function readJsonValue(response: Response, label: string): Promise<unknown> {
@@ -707,19 +737,10 @@ function parseContentLength(headers: Headers): number | undefined {
   return contentLength;
 }
 
-async function readBundleBodyWithLimit(response: Response, maxTotalBytes: number): Promise<Buffer> {
-  const declaredLength = parseContentLength(response.headers);
-  if (declaredLength !== undefined && declaredLength > maxTotalBytes) {
-    throw new Error(`verification bundle exceeds the ${maxTotalBytes}-byte download limit.`);
-  }
-  if (!response.body) {
-    if (declaredLength !== undefined && declaredLength !== 0) {
-      throw new Error('verification bundle body length does not match Content-Length.');
-    }
-    return Buffer.alloc(0);
-  }
-
-  const reader: ReadableStreamDefaultReader<unknown> = response.body.getReader();
+async function readBundleByteChunks(
+  reader: ReadableStreamDefaultReader<unknown>,
+  maxTotalBytes: number,
+): Promise<{ chunks: Buffer[]; totalBytes: number }> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   let reading = true;
@@ -744,6 +765,24 @@ async function readBundleBodyWithLimit(response: Response, maxTotalBytes: number
   } finally {
     reader.releaseLock();
   }
+
+  return { chunks, totalBytes };
+}
+
+async function readBundleBodyWithLimit(response: Response, maxTotalBytes: number): Promise<Buffer> {
+  const declaredLength = parseContentLength(response.headers);
+  if (declaredLength !== undefined && declaredLength > maxTotalBytes) {
+    throw new Error(`verification bundle exceeds the ${maxTotalBytes}-byte download limit.`);
+  }
+  if (!response.body) {
+    if (declaredLength !== undefined && declaredLength !== 0) {
+      throw new Error('verification bundle body length does not match Content-Length.');
+    }
+    return Buffer.alloc(0);
+  }
+
+  const reader: ReadableStreamDefaultReader<unknown> = response.body.getReader();
+  const { chunks, totalBytes } = await readBundleByteChunks(reader, maxTotalBytes);
 
   if (declaredLength !== undefined && totalBytes !== declaredLength) {
     throw new Error('verification bundle body length does not match Content-Length.');
@@ -826,9 +865,7 @@ async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-export async function runVerificationAcceptance(
-  options: VerificationAcceptanceOptions,
-): Promise<VerificationAcceptanceResult> {
+async function startVerificationAcceptance(options: VerificationAcceptanceOptions): Promise<void> {
   const verificationPath = buildApiRouteUrl(API_ROUTES.runVerification, {
     params: {
       sessionId: options.sessionId,
@@ -858,6 +895,38 @@ export async function runVerificationAcceptance(
   if (runData.verificationStatus !== 'running' || runData.idempotent !== false) {
     throw new Error(`POST ${verificationPath} did not start new durable verification queue work.`);
   }
+}
+
+async function readPublicBundleReceipt(bundle: Buffer): Promise<unknown> {
+  const privateBundleFilenames = new Set<string>(PRIVATE_BUNDLE_FILENAMES);
+  const privateEntries = (await listZipEntryNamesFromBuffer(bundle)).filter((entryName) =>
+    privateBundleFilenames.has(path.posix.basename(entryName)),
+  );
+  if (privateEntries.length > 0) {
+    throw new Error(`Public verification bundle contains private artifacts: ${privateEntries.join(', ')}.`);
+  }
+  const receiptEntry = (
+    await readZipEntriesFromBuffer(bundle, ['receipt.json'], { maxEntryBytes: MAX_PUBLIC_RECEIPT_BYTES })
+  ).get('receipt.json');
+  let publicReceipt: unknown;
+  if (receiptEntry) {
+    try {
+      publicReceipt = JSON.parse(receiptEntry.toString('utf8')) as unknown;
+    } catch {
+      throw new Error('Public verification bundle receipt.json is not valid JSON.');
+    }
+    if (publicReceipt === null) {
+      throw new Error('Public verification bundle receipt.json must not be null.');
+    }
+  }
+
+  return publicReceipt;
+}
+
+export async function runVerificationAcceptance(
+  options: VerificationAcceptanceOptions,
+): Promise<VerificationAcceptanceResult> {
+  await startVerificationAcceptance(options);
 
   const pollPath = buildApiRouteUrl(API_ROUTES.verification, {
     params: {
@@ -935,27 +1004,7 @@ export async function runVerificationAcceptance(
   );
 
   const bundle = await downloadAuthenticatedBundle(bundleUrl, artifactAuthHeaders);
-  const privateBundleFilenames = new Set<string>(PRIVATE_BUNDLE_FILENAMES);
-  const privateEntries = (await listZipEntryNamesFromBuffer(bundle)).filter((entryName) =>
-    privateBundleFilenames.has(path.posix.basename(entryName)),
-  );
-  if (privateEntries.length > 0) {
-    throw new Error(`Public verification bundle contains private artifacts: ${privateEntries.join(', ')}.`);
-  }
-  const receiptEntry = (
-    await readZipEntriesFromBuffer(bundle, ['receipt.json'], { maxEntryBytes: MAX_PUBLIC_RECEIPT_BYTES })
-  ).get('receipt.json');
-  let publicReceipt: unknown;
-  if (receiptEntry) {
-    try {
-      publicReceipt = JSON.parse(receiptEntry.toString('utf8')) as unknown;
-    } catch {
-      throw new Error('Public verification bundle receipt.json is not valid JSON.');
-    }
-    if (publicReceipt === null) {
-      throw new Error('Public verification bundle receipt.json must not be null.');
-    }
-  }
+  const publicReceipt = await readPublicBundleReceipt(bundle);
 
   const reportResponse = await fetchAuthenticatedArtifact('verification report', reportUrl, artifactAuthHeaders);
   const report = await readJsonValue(reportResponse, 'verification report');
@@ -1010,15 +1059,19 @@ export async function completeFinalizedVerificationAcceptance(
   return completedResult;
 }
 
+function lowercaseResponseHeader(headers: Headers, name: string): string {
+  return headers.get(name)?.toLowerCase() ?? '';
+}
+
 function isCloudFrontGateDenial(response: Response): boolean {
   if (response.status !== 401 && response.status !== 403) {
     return false;
   }
 
-  const server = response.headers.get('server')?.toLowerCase() ?? '';
-  const via = response.headers.get('via')?.toLowerCase() ?? '';
-  const xCache = response.headers.get('x-cache')?.toLowerCase() ?? '';
-  const poweredBy = response.headers.get('x-amz-cf-pop')?.toLowerCase() ?? '';
+  const server = lowercaseResponseHeader(response.headers, 'server');
+  const via = lowercaseResponseHeader(response.headers, 'via');
+  const xCache = lowercaseResponseHeader(response.headers, 'x-cache');
+  const poweredBy = lowercaseResponseHeader(response.headers, 'x-amz-cf-pop');
   return (
     server.includes('cloudfront') || via.includes('cloudfront') || xCache.includes('cloudfront') || poweredBy.length > 0
   );
@@ -1100,7 +1153,11 @@ export async function runDirectOriginCheck(headers: Record<string, string>, base
       'STARK_BALLOT_DIRECT_API_ORIGIN must be set for develop gated smoke acceptance. Set STARK_BALLOT_ALLOW_LOCAL_GATED_SMOKE=1 only for local non-acceptance runs.',
     );
   }
-  const origin = new URL(directOrigin).origin;
+  const directUrl = new URL(directOrigin);
+  if (directUrl.protocol !== 'https:' || directUrl.pathname !== '/live' || directUrl.search || directUrl.hash) {
+    throw new Error('STARK_BALLOT_DIRECT_API_ORIGIN must identify the HTTPS REST /live stage');
+  }
+  const origin = `${directUrl.origin}/live`;
   await expectJsonErrorCodeRejected(
     'direct-origin POST /api/sessions',
     `${origin}/api/sessions`,
@@ -1113,107 +1170,133 @@ export async function runDirectOriginCheck(headers: Record<string, string>, base
   );
 }
 
-export function createPositiveOwnerFlowConfig(scenario: GatedSmokeScenario = 'S0'): CLITestConfig {
+export interface FinalizationObservation {
+  readonly status: FinalizationResource['status'];
+  readonly finalizationId: string;
+  readonly receivedAt: number;
+  readonly queuedAtMs: number;
+  readonly startedAtMs?: number;
+  readonly completedAtMs?: number;
+  readonly failedAtMs?: number;
+  readonly timeoutAtMs?: number;
+  readonly concurrencyLimit?: number;
+}
+
+export interface ParallelOwnerFlowRow {
+  readonly scenario: GatedSmokeScenario;
+  readonly sessionId: string;
+  readonly finalizationId: string;
+  readonly result: FinalizeWithScenariosResult;
+  readonly observations: readonly FinalizationObservation[];
+}
+
+function projectFinalizationTimes(state: NonNullable<FinalizationStatusSample['state']>) {
   return {
-    scenarios: [],
-    useRealZkVM: true,
-    realMode: 'prod',
-    verbose: false,
-    outputFormat: 'table',
-    allScenarios: false,
-    scenario,
-    userChoice: 'A',
-    skipBuild: true,
+    ...('startedAtMs' in state && state.startedAtMs !== undefined ? { startedAtMs: state.startedAtMs } : {}),
+    ...('completedAtMs' in state ? { completedAtMs: state.completedAtMs } : {}),
+    ...('failedAtMs' in state ? { failedAtMs: state.failedAtMs } : {}),
+    ...('timeoutAtMs' in state ? { timeoutAtMs: state.timeoutAtMs } : {}),
   };
 }
 
-export function createPositiveOwnerFlowConfigs(configuredScenarios?: string): CLITestConfig[] {
-  return resolveGatedSmokeScenarios(configuredScenarios).map((scenario) => createPositiveOwnerFlowConfig(scenario));
-}
-
-class GatedSmokeCLITestHelpers extends CLITestHelpers {
-  private readonly localVotes = new Map<string, VoteResult>();
-  private readonly expectedImageId: string;
-
-  constructor(baseUrl: string, operatorAuthHeaders: Record<string, string>, expectedImageId: string) {
-    super(baseUrl, operatorAuthHeaders);
-    this.expectedImageId = expectedImageId;
-  }
-
-  override async submitVote(sessionId: string, choice: VoteResult['choice']): Promise<VoteResult> {
-    const vote = await super.submitVote(sessionId, choice);
-    this.localVotes.set(sessionId, vote);
-    return vote;
-  }
-
-  override async finalizeWithScenarios(sessionId: string, scenarioId: string): Promise<FinalizeWithScenariosResult> {
-    if (!isGatedSmokeScenario(scenarioId)) {
-      throw new Error(`Unsupported gated smoke scenario ${scenarioId}.`);
-    }
-    const localVote = this.localVotes.get(sessionId);
-    if (!localVote) {
-      throw new Error('Local vote evidence is unavailable for cast verification.');
-    }
-    this.localVotes.delete(sessionId);
-    const expectation = resolveGatedSmokeScenarioExpectation(scenarioId);
-    const result = await super.finalizeWithScenarios(sessionId, scenarioId);
-    const finalizationId = result.meta?.finalizationId;
-    if (!finalizationId) {
-      throw new Error('Finalization result is missing finalizationId authority.');
-    }
-    return await completeFinalizedVerificationAcceptance(result, {
-      baseUrl: resolveBaseUrl(),
-      sessionId,
-      finalizationId,
-      expectedImageId: this.expectedImageId,
-      expectedTerminalVerificationStatus: expectation.terminalVerificationStatus,
-      expectedOverallVerdict: expectation.overallVerdict,
-      scenario: scenarioId,
-      authHeaders: this.getPathSessionAuthHeaders(),
-      localVote,
+export function projectFinalizationObservations(result: FinalizeWithScenariosResult): FinalizationObservation[] {
+  const meta = result.meta;
+  if (!meta?.finalizationId || !meta.finalizationHistory?.length)
+    throw new Error('Finalization observation history is missing.');
+  const observations: FinalizationObservation[] = [];
+  for (const sample of meta.finalizationHistory) {
+    const state = sample.state;
+    if (state === null) continue;
+    if (state.finalizationId !== meta.finalizationId) throw new Error('Finalization observation identity changed.');
+    const concurrencyLimit = sample.runtimeDiagnostics?.queue?.concurrencyLimit;
+    observations.push({
+      status: state.status,
+      finalizationId: state.finalizationId,
+      receivedAt: sample.receivedAt,
+      queuedAtMs: state.queuedAtMs,
+      ...projectFinalizationTimes(state),
+      ...(concurrencyLimit === undefined ? {} : { concurrencyLimit }),
     });
   }
+  if (observations.length === 0) throw new Error('Finalization observation history is empty.');
+  return observations;
 }
 
-async function runPositiveOwnerFlow(
+export async function runParallelOwnerFlows(
   baseUrl: string,
   headers: Record<string, string>,
   expectedImageId: string,
-  config: CLITestConfig,
-): Promise<void> {
-  process.env['STARK_BALLOT_CLI_BASE_URL'] = baseUrl;
-  process.env['STARK_BALLOT_CLI_SKIP_BUILD'] = 'true';
-
-  const helpers = new GatedSmokeCLITestHelpers(baseUrl, headers, expectedImageId);
-  const test = new CLIVotingTest(config, helpers);
-  let result: Awaited<ReturnType<CLIVotingTest['run']>>;
-  try {
-    await test.setup();
-    result = await test.run();
-  } finally {
-    await test.teardown();
-  }
-  if (!result.passed) {
-    throw new Error(`operator-gated ${config.scenario ?? '<unknown>'} owner flow failed.`);
-  }
+  scenarios: readonly GatedSmokeScenario[] = resolveGatedSmokeScenarios(),
+): Promise<ParallelOwnerFlowRow[]> {
+  const selected = resolveGatedSmokeScenarios(scenarios.join(','));
+  const proof = resolveRuntimeProfile({ RUNTIME_PROFILE: 'local-proof-production' }).proof;
+  const prepared = await Promise.allSettled(
+    selected.map(async (scenario) => {
+      const helper = new CLITestHelpers(baseUrl, headers, proof);
+      const sessionId = await helper.createSession();
+      const localVote = await helper.submitVote(sessionId, 'A');
+      await helper.generateBotVotes(sessionId);
+      return { scenario, helper, sessionId, localVote };
+    }),
+  );
+  if (prepared.some((result) => result.status === 'rejected'))
+    throw new Error('Parallel acceptance preparation failed; all started preparations settled.');
+  const ready = prepared.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  if (new Set(ready.map((entry) => entry.sessionId)).size !== selected.length)
+    throw new Error('Parallel acceptance sessions are not independent.');
+  const completed = await Promise.allSettled(
+    ready.map(async ({ scenario, helper, sessionId, localVote }) => {
+      const finalized = await helper.finalizeWithScenarios(sessionId, scenario);
+      const finalizationId = finalized.meta?.finalizationId;
+      if (!finalizationId) throw new Error('Finalization authority missing.');
+      const observations = projectFinalizationObservations(finalized);
+      const expected = resolveGatedSmokeScenarioExpectation(scenario);
+      const result = await completeFinalizedVerificationAcceptance(finalized, {
+        baseUrl,
+        sessionId,
+        finalizationId,
+        expectedImageId,
+        expectedTerminalVerificationStatus: expected.terminalVerificationStatus,
+        expectedOverallVerdict: expected.overallVerdict,
+        scenario,
+        authHeaders: helper.getPathSessionAuthHeaders(),
+        localVote,
+      });
+      return { scenario, sessionId, finalizationId, result, observations };
+    }),
+  );
+  if (completed.some((result) => result.status === 'rejected'))
+    throw new Error('Parallel acceptance failed; all started finalizations and checks settled.');
+  const rows = completed.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  if (new Set(rows.map((row) => row.finalizationId)).size !== selected.length)
+    throw new Error('Parallel acceptance finalization identities are not independent.');
+  return rows;
 }
 
-export async function main(): Promise<void> {
+async function main(): Promise<void> {
   const baseUrl = resolveBaseUrl();
   const headers = operatorHeaders();
   const expectedImageId = resolveGatedSmokeExpectedImageId();
-  process.env['EXPECTED_IMAGE_ID'] = expectedImageId;
+  process.env['CLI_FINALIZE_TIMEOUT_MS'] ??= '1800000';
   await runNegativeGateChecks(baseUrl);
   await runWrongCapabilityCheck(baseUrl, headers);
   await runDirectOriginCheck(headers, baseUrl);
-  for (const config of createPositiveOwnerFlowConfigs()) {
-    await runPositiveOwnerFlow(baseUrl, headers, expectedImageId, config);
+  if (!maySkipDirectOriginCheck(baseUrl)) {
+    const probes = await probeGatewayValidation(baseUrl, headers);
+    console.log(
+      '[develop-gated-smoke] Gateway probes (access-log correlation still required):',
+      JSON.stringify(probes),
+    );
   }
+  const rows = await runParallelOwnerFlows(baseUrl, headers, expectedImageId);
+  console.log(
+    `[develop-gated-smoke] Remote scenario checks passed (${rows.map((row) => row.scenario).join(', ')}); native capacity evidence and Gateway access-log correlation still required.`,
+  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
+  main().catch(() => {
+    console.error('[develop-gated-smoke] Acceptance failed; no complete live acceptance claimed.');
     process.exitCode = 1;
   });
 }

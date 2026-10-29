@@ -29,31 +29,13 @@
         "appExecutionAuthorityProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-execution-authority",
         "appExecutionAuthorityRole": "stark-ballot-sim-app-exec-auth-stark-dev-develop",
         "appRetainedArtifactBucket": "sbs-app-pipeline-artifacts-stark-dev-develop-000000000000",
-        "appSignaturePreflightApplyProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-preflight-terraform-apply",
-        "appSignaturePreflightApplyRole": "stark-ballot-sim-sig-preflight-apply-stark-dev-develop-app",
-        "appSignaturePreflightInvokeProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-preflight-verify",
-        "appSignaturePreflightInvokerRole": "stark-ballot-sim-sig-preflight-invoker-stark-dev-develop-app",
-        "appSignaturePreflightPlanProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-preflight-terraform-plan",
-        "appSignaturePreflightPlanRole": "stark-ballot-sim-sig-preflight-plan-stark-dev-develop-app",
         "appSignatureStateRefreshApplyProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-state-refresh-terraform-apply",
         "appSignatureStateRefreshApplyRole": "stark-ballot-sim-sig-state-refresh-apply-stark-dev-develop-app",
         "appSignatureStateRefreshPlanProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-state-refresh-terraform-plan",
         "appStaticDeployProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-static-deploy",
         "appStaticDeployRole": "stark-ballot-sim-static-deploy-stark-dev-develop-app",
-        "appStaticFastDeployProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast-deploy",
-        "appStaticFastDeployRole": "stark-ballot-sim-static-fast-deploy-stark-dev-develop-app",
-        "appStaticFastGateProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast-gate-and-build",
-        "appStaticFastGateRole": "stark-ballot-sim-static-fast-gate-stark-dev-develop-app",
-        "appStaticFastPipelineRole": "sbs-static-fast-pipeline-stark-dev-develop-app",
-        "appStaticFastSmokeProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast-smoke-lite",
-        "appStaticFastSmokeRole": "stark-ballot-sim-static-fast-smoke-stark-dev-develop-app",
         "approvalEvidencePrefix": "approval-evidence",
         "bootstrapTerraformAcceptancePublisherRole": "sbs-terraform-acceptance-publisher-stark-dev-develop-bootstrap",
-        "ecrRetentionFunction": "stark-ballot-simulator-stark-dev-develop-ecr-retention",
-        "ecrRetentionLogGroup": "/aws/lambda/stark-ballot-simulator-stark-dev-develop-ecr-retention",
-        "ecrRetentionPermissionsBoundary": "sbs-ecr-retention-boundary-stark-dev-develop",
-        "ecrRetentionRole": "sbs-ecr-retention-stark-dev-develop",
-        "ecrRetentionSchedule": "stark-ballot-simulator-stark-dev-develop-ecr-retention-daily",
         "finalizationStateMachine": "stark-ballot-simulator-stark-dev-develop-finalization",
         "foundationTerraformAcceptancePublisherRole": "sbs-terraform-acceptance-publisher-stark-dev-develop-foundation",
         "foundationAppNetworkingKey": "channels/develop/foundation/app-networking.json",
@@ -129,7 +111,12 @@
         "toolchainCandidateRole": "sbs-toolchain-candidate-stark-dev-develop",
         "toolchainPointerProject": "stark-ballot-simulator-pipeline-stark-dev-develop-toolchain-release-update-accepted-pointer",
         "toolchainPointerRole": "sbs-toolchain-pointer-stark-dev-develop",
-        "toolchainRepository": "stark-ballot-simulator-stark-dev-develop/risc0-toolchain"
+        "toolchainRepository": "stark-ballot-simulator-stark-dev-develop/risc0-toolchain",
+        "retainedAppSignaturePreflightApplyProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-preflight-terraform-apply",
+        "retainedAppSignaturePreflightPlanProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-preflight-terraform-plan",
+        "retainedAppSignaturePreflightVerifyProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-signature-preflight-verify",
+        "retiredImageRetentionBoundaryPolicy": "sbs-ecr-retention-boundary-stark-dev-develop",
+        "retiredImageRetentionRole": "sbs-ecr-retention-stark-dev-develop"
       },
       "lanes": {
         "bootstrap": {
@@ -241,28 +228,6 @@
             "terraformSmokeRole": "stark-ballot-sim-tf-smoke-stark-dev-develop-app",
             "validateProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-validate"
           }
-        },
-        "static-fast": {
-          "scope": "app",
-          "stateIdentity": "stark-dev/develop/app",
-          "backendKey": "stark-ballot-simulator/stark-dev/develop/app/terraform.tfstate",
-          "policy": {
-            "signatureVerificationRequired": true
-          },
-          "names": {
-            "pipeline": "stark-ballot-simulator-pipeline-stark-dev-develop-app-static-fast",
-            "artifactBucket": "sbs-static-fast-exec-artifacts-stark-dev-develop-000000000000",
-            "artifactKmsAlias": "alias/stark-ballot-simulator-pipeline-stark-dev-develop-app-artifacts",
-            "githubTriggerRole": "stark-ballot-simulator-github-trigger-stark-dev-develop-app",
-            "pipelineRole": "sbs-static-fast-pipeline-stark-dev-develop-app",
-            "smokeProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-smoke",
-            "terraformApplyProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-terraform-apply",
-            "terraformApplyRole": "stark-ballot-sim-tf-apply-stark-dev-develop-app",
-            "terraformPlanProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-terraform-plan",
-            "terraformPlanRole": "stark-ballot-sim-tf-plan-stark-dev-develop-app",
-            "terraformSmokeRole": "stark-ballot-sim-tf-smoke-stark-dev-develop-app",
-            "validateProject": "stark-ballot-simulator-pipeline-stark-dev-develop-app-validate"
-          }
         }
       }
     },
@@ -294,12 +259,6 @@
         "appExecutionAuthorityProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-execution-authority",
         "appExecutionAuthorityRole": "stark-ballot-sim-app-exec-auth-stark-prod-main",
         "appRetainedArtifactBucket": "sbs-app-pipeline-artifacts-stark-prod-main-111111111111",
-        "appSignaturePreflightApplyProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-preflight-terraform-apply",
-        "appSignaturePreflightApplyRole": "stark-ballot-sim-sig-preflight-apply-stark-prod-main-app",
-        "appSignaturePreflightInvokeProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-preflight-verify",
-        "appSignaturePreflightInvokerRole": "stark-ballot-sim-sig-preflight-invoker-stark-prod-main-app",
-        "appSignaturePreflightPlanProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-preflight-terraform-plan",
-        "appSignaturePreflightPlanRole": "stark-ballot-sim-sig-preflight-plan-stark-prod-main-app",
         "appSignatureStateRefreshApplyProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-state-refresh-terraform-apply",
         "appSignatureStateRefreshApplyRole": "stark-ballot-sim-sig-state-refresh-apply-stark-prod-main-app",
         "appSignatureStateRefreshPlanProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-state-refresh-terraform-plan",
@@ -307,11 +266,6 @@
         "appStaticDeployRole": "stark-ballot-sim-static-deploy-stark-prod-main-app",
         "approvalEvidencePrefix": "approval-evidence",
         "bootstrapTerraformAcceptancePublisherRole": "sbs-terraform-acceptance-publisher-stark-prod-main-bootstrap",
-        "ecrRetentionFunction": "stark-ballot-simulator-stark-prod-main-ecr-retention",
-        "ecrRetentionLogGroup": "/aws/lambda/stark-ballot-simulator-stark-prod-main-ecr-retention",
-        "ecrRetentionPermissionsBoundary": "sbs-ecr-retention-boundary-stark-prod-main",
-        "ecrRetentionRole": "sbs-ecr-retention-stark-prod-main",
-        "ecrRetentionSchedule": "stark-ballot-simulator-stark-prod-main-ecr-retention-daily",
         "finalizationStateMachine": "stark-ballot-simulator-stark-prod-main-finalization",
         "foundationTerraformAcceptancePublisherRole": "sbs-terraform-acceptance-publisher-stark-prod-main-foundation",
         "foundationAppNetworkingKey": "channels/main/foundation/app-networking.json",
@@ -387,7 +341,12 @@
         "toolchainCandidateRole": "sbs-toolchain-candidate-stark-prod-main",
         "toolchainPointerProject": "stark-ballot-simulator-pipeline-stark-prod-main-toolchain-release-update-accepted-pointer",
         "toolchainPointerRole": "sbs-toolchain-pointer-stark-prod-main",
-        "toolchainRepository": "stark-ballot-simulator-stark-prod-main/risc0-toolchain"
+        "toolchainRepository": "stark-ballot-simulator-stark-prod-main/risc0-toolchain",
+        "retainedAppSignaturePreflightApplyProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-preflight-terraform-apply",
+        "retainedAppSignaturePreflightPlanProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-preflight-terraform-plan",
+        "retainedAppSignaturePreflightVerifyProject": "stark-ballot-simulator-pipeline-stark-prod-main-app-signature-preflight-verify",
+        "retiredImageRetentionBoundaryPolicy": "sbs-ecr-retention-boundary-stark-prod-main",
+        "retiredImageRetentionRole": "sbs-ecr-retention-stark-prod-main"
       },
       "lanes": {
         "bootstrap": {
@@ -502,7 +461,6 @@
         }
       },
       "productionPolicy": {
-        "bootstrapApprovalAction": "ApproveBootstrapApply",
         "foundationPublicSubnetException": "accepted-for-production-prover-egress"
       }
     }

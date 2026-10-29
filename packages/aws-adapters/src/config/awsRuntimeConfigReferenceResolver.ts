@@ -6,7 +6,7 @@ import {
 } from '@stark-ballot/runtime-config/env/runtimeConfigReferences';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 
-export type AwsRuntimeReferenceEnvName =
+type AwsRuntimeReferenceEnvName =
   | 'SESSION_CAPABILITY_SECRET_REF'
   | 'VOTE_SECRET_ENCRYPTION_KEY_REF'
   | 'SESSION_CAPABILITY_TTL_SECONDS_REF'
@@ -39,7 +39,7 @@ interface AwsSendClient {
   send(command: object): Promise<unknown>;
 }
 
-export interface AwsRuntimeConfigInvalidNameCollector {
+interface AwsRuntimeConfigInvalidNameCollector {
   add(name: AwsRuntimeReferenceEnvName): void;
 }
 
@@ -250,27 +250,37 @@ async function loadAwsRuntimeConfigReferenceSelection(
   const clientConfig = { region: external.region };
   const ssmClient = options.ssmClient ?? new SSMClient(clientConfig);
   const secretsManagerClient = options.secretsManagerClient ?? new SecretsManagerClient(clientConfig);
-  const values = new Map<string, string>();
 
-  for (const { descriptor, reference } of selectedReferences) {
-    let resolvedValue: string;
-    try {
-      resolvedValue = await resolveAwsRuntimeReference(descriptor, reference, ssmClient, secretsManagerClient);
-    } catch (error) {
-      options.invalidNameCollector?.add(descriptor.envName);
-      throw error;
-    }
-    values.set(reference, resolvedValue);
-    if (descriptor.targetEnvName) {
-      env[descriptor.targetEnvName] = resolvedValue;
-    }
-  }
-
-  installStaticRuntimeConfigReferenceResolver(values, {
-    expectedAccountId: external.accountId,
-    expectedDeploymentEnvironment: options.profile.target.deploymentEnvironment,
-    expectedRegion: external.region,
+  // The entrypoint allowlist bounds concurrency to at most six reads. Drain all
+  // reads before rejecting so a retry cannot overlap an unfinished preload.
+  const results = await Promise.allSettled(
+    selectedReferences.map(async ({ descriptor, reference }) => {
+      try {
+        const value = await resolveAwsRuntimeReference(descriptor, reference, ssmClient, secretsManagerClient);
+        return { descriptor, reference, value };
+      } catch (error) {
+        options.invalidNameCollector?.add(descriptor.envName);
+        throw error;
+      }
+    }),
+  );
+  const resolvedReferences = results.map((result) => {
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
   });
+
+  // Publish neither the resolver nor environment values after a partial load.
+  installStaticRuntimeConfigReferenceResolver(
+    new Map(resolvedReferences.map(({ reference, value }) => [reference, value])),
+    {
+      expectedAccountId: external.accountId,
+      expectedDeploymentEnvironment: options.profile.target.deploymentEnvironment,
+      expectedRegion: external.region,
+    },
+  );
+  for (const { descriptor, value } of resolvedReferences) {
+    if (descriptor.targetEnvName) env[descriptor.targetEnvName] = value;
+  }
 }
 
 export async function loadAwsRuntimeConfigReferences(options: AwsRuntimeConfigReferenceResolverOptions): Promise<void> {

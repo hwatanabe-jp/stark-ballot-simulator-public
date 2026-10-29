@@ -2,17 +2,18 @@
 
 ## Overview
 
-Current review of the Docker image and entrypoint used by the async zkVM prover path.
-This supersedes the older 2025-10-22 Phase 9.4 review notes.
+This retained review records the Docker image and entrypoint assessment at the
+date in the title, including the cutover assumptions used then. It supersedes
+the older 2025-10-22 Phase 9.4 review notes. For current execution and release
+contracts, read the [zkVM workspace guide](../../zkvm/README.md) and
+[infrastructure guide](../../docs/infrastructure/README.md).
 
 ## Plan 02/03 Migration Guardrail
 
-This file is retained Docker and entrypoint implementation background. It is
-not Plan 02 release-candidate authority, not Plan 03 acceptance evidence, and
-not a substitute for the target-account release-candidate handoff.
-
-Current target-account go/no-go authority, prerequisite definitions, and
-handoff evidence are maintained in private operator documentation.
+This file supplies implementation background for the historical Plan 02/03
+migration. Target-account release-candidate authority, acceptance evidence,
+prerequisites, and handoff decisions belong to the private operator
+documentation; this review grants none of those authorities.
 
 Legacy/shared CodeBuild and ECR references below may be used only as
 background or local smoke context. They do not prove accepted target images,

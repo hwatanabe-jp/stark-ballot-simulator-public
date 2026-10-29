@@ -1,4 +1,4 @@
-export const RETIRED_PUBLIC_BOUNDARY_KEYS = new Set<string>([
+const RETIRED_PUBLIC_BOUNDARY_KEYS = new Set<string>([
   'missingIndices',
   'invalidIndices',
   'countedIndices',
@@ -14,7 +14,7 @@ export const RETIRED_PUBLIC_BOUNDARY_KEYS = new Set<string>([
   'proofMode',
 ] as const);
 
-export const PRIVATE_LOCATOR_KEYS = new Set<string>([
+const PRIVATE_LOCATOR_KEYS = new Set<string>([
   'bundleMetadata',
   'bundleUrl',
   'reportUrl',
@@ -27,9 +27,9 @@ export const PRIVATE_LOCATOR_KEYS = new Set<string>([
   'rawS3URL',
 ] as const);
 
-export const PRIVATE_OPENING_KEYS = new Set<string>(['random', 'rand'] as const);
+const PRIVATE_OPENING_KEYS = new Set<string>(['random', 'rand'] as const);
 
-export const PRIVATE_ARTIFACT_NAMES = new Set<string>([
+const PRIVATE_ARTIFACT_NAMES = new Set<string>([
   'input.json',
   'verification.json',
   'included-bitmap.json',
@@ -49,7 +49,7 @@ export interface PublicBoundaryScanOptions {
 
 const DEFAULT_ALLOWED_CAPABILITY_TOKEN_PATHS = new Set<string>();
 
-export function formatPublicBoundaryPath(segments: string[]): string {
+function formatPublicBoundaryPath(segments: string[]): string {
   return segments.reduce((acc, seg) => {
     if (seg === '[]') {
       return `${acc}[]`;

@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearSession, initializeSession } from '@stark-ballot/web/session';
@@ -5,8 +6,7 @@ import { SESSION_STORAGE_KEY } from '@stark-ballot/web/session/storage';
 import { useHasActiveSession } from './useActiveSession';
 
 const session = {
-  sessionId: 'active-session-test',
-  capabilityToken: 'active-session-test-capability',
+  ...admitSessionIdentity({ sessionId: 'active-session-test', capabilityToken: 'active-session-test-capability' }),
   electionId: '123e4567-e89b-42d3-a456-426614174000',
   electionConfigHash: `0x${'a'.repeat(64)}`,
   logId: `0x${'b'.repeat(64)}`,

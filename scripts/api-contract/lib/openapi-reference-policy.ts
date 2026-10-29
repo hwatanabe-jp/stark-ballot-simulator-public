@@ -1,4 +1,4 @@
-import { getSchemaDescriptor, type AnySchema } from '@stark-ballot/validation/schema';
+import { getSchemaDescriptor, type AnySchema, type SchemaDescriptor } from '@stark-ballot/validation/schema';
 import { getOpenApiEffectMetadata } from '@stark-ballot/validation/schema-openapi';
 
 export type OpenApiSchema = Readonly<Record<string, unknown>>;
@@ -57,6 +57,21 @@ function isUndefinedOnlySchema(schema: AnySchema): boolean {
   return descriptor.kind === 'OptionalSchema' && isUndefinedOnlySchema(descriptor.inner);
 }
 
+function appendRuntimeStringLengthConstraints(
+  projection: Record<string, unknown>,
+  minimumCodeUnits: number | undefined,
+  maximumCodeUnits: number | undefined,
+): void {
+  const runtimeConstraints: string[] = [];
+  if (minimumCodeUnits !== undefined) {
+    runtimeConstraints.push(`The runtime requires at least ${minimumCodeUnits} UTF-16 code units.`);
+  }
+  if (maximumCodeUnits !== undefined) {
+    runtimeConstraints.push(`The runtime permits at most ${maximumCodeUnits} UTF-16 code units.`);
+  }
+  if (runtimeConstraints.length > 0) projection['x-runtime-constraints'] = runtimeConstraints;
+}
+
 function projectStringSchema(schema: AnySchema, path: string): OpenApiSchema {
   const descriptor = getSchemaDescriptor(schema);
   if (descriptor.kind !== 'StringSchema') {
@@ -80,14 +95,7 @@ function projectStringSchema(schema: AnySchema, path: string): OpenApiSchema {
   }
 
   const projection: Record<string, unknown> = { type: 'string' };
-  const runtimeConstraints: string[] = [];
-  if (minimumCodeUnits !== undefined) {
-    runtimeConstraints.push(`The runtime requires at least ${minimumCodeUnits} UTF-16 code units.`);
-  }
-  if (maximumCodeUnits !== undefined) {
-    runtimeConstraints.push(`The runtime permits at most ${maximumCodeUnits} UTF-16 code units.`);
-  }
-  if (runtimeConstraints.length > 0) projection['x-runtime-constraints'] = runtimeConstraints;
+  appendRuntimeStringLengthConstraints(projection, minimumCodeUnits, maximumCodeUnits);
   if (patterns.length === 1) projection['pattern'] = patterns[0]?.source;
   if (patterns.length > 1) {
     projection['allOf'] = patterns.map((constraint) => ({ pattern: constraint.source }));
@@ -178,17 +186,24 @@ function projectObjectSchema(schema: AnySchema, path: string, direction: 'input'
   });
 }
 
-export function projectSchemaForOpenApi(
+function projectLeafSchema(
   schema: AnySchema,
+  descriptor: Extract<
+    SchemaDescriptor,
+    {
+      kind:
+        | 'BooleanSchema'
+        | 'UnknownSchema'
+        | 'NeverSchema'
+        | 'UndefinedSchema'
+        | 'LiteralSchema'
+        | 'EnumSchema'
+        | 'CustomSchema';
+    }
+  >,
   path: string,
-  direction: 'input' | 'output' = 'output',
 ): OpenApiSchema {
-  const descriptor = getSchemaDescriptor(schema);
   switch (descriptor.kind) {
-    case 'StringSchema':
-      return projectStringSchema(schema, path);
-    case 'NumberSchema':
-      return projectNumberSchema(schema);
     case 'BooleanSchema':
       return withDescription(schema, { type: 'boolean' });
     case 'UnknownSchema':
@@ -204,6 +219,18 @@ export function projectSchemaForOpenApi(
       return withDescription(schema, { const: descriptor.value });
     case 'EnumSchema':
       return withDescription(schema, { type: 'string', enum: [...descriptor.values] });
+    case 'CustomSchema':
+      throw new Error(`${path} uses unsupported custom schema ${descriptor.name}`);
+  }
+}
+
+function projectWrappedSchema(
+  schema: AnySchema,
+  descriptor: Extract<SchemaDescriptor, { kind: 'OptionalSchema' | 'NullableSchema' | 'EffectsSchema' }>,
+  path: string,
+  direction: 'input' | 'output',
+): OpenApiSchema {
+  switch (descriptor.kind) {
     case 'OptionalSchema':
       return withDescription(schema, { ...projectSchemaForOpenApi(descriptor.inner, path, direction) });
     case 'NullableSchema':
@@ -222,6 +249,32 @@ export function projectSchemaForOpenApi(
       const overlay = metadata.kind === 'transform' ? metadata.inputOverlay : metadata.overlay;
       return withDescription(schema, { ...inner, ...overlay });
     }
+  }
+}
+
+export function projectSchemaForOpenApi(
+  schema: AnySchema,
+  path: string,
+  direction: 'input' | 'output' = 'output',
+): OpenApiSchema {
+  const descriptor = getSchemaDescriptor(schema);
+  switch (descriptor.kind) {
+    case 'BooleanSchema':
+    case 'UnknownSchema':
+    case 'NeverSchema':
+    case 'UndefinedSchema':
+    case 'LiteralSchema':
+    case 'EnumSchema':
+    case 'CustomSchema':
+      return projectLeafSchema(schema, descriptor, path);
+    case 'OptionalSchema':
+    case 'NullableSchema':
+    case 'EffectsSchema':
+      return projectWrappedSchema(schema, descriptor, path, direction);
+    case 'StringSchema':
+      return projectStringSchema(schema, path);
+    case 'NumberSchema':
+      return projectNumberSchema(schema);
     case 'ArraySchema':
       return projectArraySchema(schema, path, direction);
     case 'TupleSchema':
@@ -241,7 +294,5 @@ export function projectSchemaForOpenApi(
           projectSchemaForOpenApi(option, `${path}|${index}`, direction),
         ),
       });
-    case 'CustomSchema':
-      throw new Error(`${path} uses unsupported custom schema ${descriptor.name}`);
   }
 }

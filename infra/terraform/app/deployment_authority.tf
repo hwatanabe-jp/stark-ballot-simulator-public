@@ -4,13 +4,12 @@ locals {
     for target in values(local.deployment_target_configuration.allowedTargets) : target
     if target.accountLabel == var.account_alias && target.environmentId == var.deployment_environment
   ])
-  deployment_shared_names    = local.deployment_target.sharedNames
-  bootstrap_lane_authority   = local.deployment_target.lanes.bootstrap
-  foundation_lane_authority  = local.deployment_target.lanes.foundation
-  toolchain_lane_authority   = local.deployment_target.lanes.toolchain
-  prover_lane_authority      = local.deployment_target.lanes.prover
-  app_lane_authority         = local.deployment_target.lanes.app
-  static_fast_lane_authority = contains(keys(local.deployment_target.lanes), "static-fast") ? local.deployment_target.lanes["static-fast"] : null
+  deployment_shared_names   = local.deployment_target.sharedNames
+  bootstrap_lane_authority  = local.deployment_target.lanes.bootstrap
+  foundation_lane_authority = local.deployment_target.lanes.foundation
+  toolchain_lane_authority  = local.deployment_target.lanes.toolchain
+  prover_lane_authority     = local.deployment_target.lanes.prover
+  app_lane_authority        = local.deployment_target.lanes.app
 
   deployment_target_configuration_exact = (
     local.deployment_target_configuration.configurationType == "deployment-target-configuration"

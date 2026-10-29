@@ -11,6 +11,12 @@ Apply consumes those exact saved bytes without replanning. Immutable image
 digests and confirmed ImageID mappings keep the proof toolchain bound through
 the application release.
 
-Records are create-only. A mutable current pointer is first created only if
-absent; later updates use conditional compare-and-swap against the observed
-pointer. A conflict leaves the existing accepted authority intact.
+Plan packages and image candidates are create-only. Root checkpoints and image
+promotions use fixed, versioned keys: explicit first creation requires absence,
+and later updates require compare-and-swap. A per-root mutation owner and
+create-only action records reject stale publishers and retries. A conflict
+cannot establish new successful authority. Native image retention keeps the
+newest five images; missing digests require rebuild and a fresh approved release.
+
+The Public Specs define the [saved-plan and approval rules](https://specs.stark-ballot-sim.hwatanabe.dev/aws/terraform.html)
+and [container image signature verification](https://specs.stark-ballot-sim.hwatanabe.dev/aws/image-signing.html).

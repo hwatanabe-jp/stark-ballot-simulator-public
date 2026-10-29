@@ -1,3 +1,4 @@
+import type { FinalizationResultAuthority } from '@stark-ballot/application/finalize/finalization-types';
 import { createHash } from 'node:crypto';
 import type { ApiHandlerArguments, RouteBoundResponse, SessionAdmittedContext } from '../context';
 import { ErrorCode, type ErrorDetails } from '@stark-ballot/api-contract/errors/apiErrors';
@@ -162,6 +163,76 @@ export function getSessionBulletinHandler({
   });
 }
 
+function isAffectedBotProofAllowed(
+  voting: SessionVotingRecord,
+  result: FinalizationResultAuthority,
+  voteId: string,
+): boolean {
+  const scenarios = result.scenarios ?? [];
+  const scenarioId = scenarios.length > 0 ? scenarios[0] : undefined;
+  const affectedBotIds = result.tamperSummary?.affectedBotIds ?? [];
+  if (scenarioId !== 'S3' && scenarioId !== 'S4') return false;
+  return affectedBotIds.some((botId) => {
+    const botVoteId = voting.votes.get(botId)?.voteId;
+    return Boolean(botVoteId && botVoteId === voteId);
+  });
+}
+
+function isVoteProofAllowed(voting: SessionVotingRecord, result: FinalizationResultAuthority, voteId: string): boolean {
+  const userVoteId =
+    voting.userParticipation.status === 'cast'
+      ? voting.votes.get(voting.userParticipation.voteIndex)?.voteId
+      : undefined;
+  return Boolean(userVoteId && userVoteId === voteId) || isAffectedBotProofAllowed(voting, result, voteId);
+}
+
+type StoredVoteProof = NonNullable<Awaited<ReturnType<SessionAdmittedContext['store']['getVoteByIdWithProof']>>>;
+
+async function readVoteProof(context: SessionAdmittedContext, voteId: string): Promise<StoredVoteProof | null> {
+  try {
+    return await context.store.getVoteByIdWithProof(context.sessionId, voteId);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'CT_PROOF_UNAVAILABLE') return null;
+    throw error;
+  }
+}
+
+function voteProofResponse(
+  voteId: string,
+  voteProof: StoredVoteProof,
+  startTime: number,
+): RouteBoundResponse<typeof sessionVoteInclusionProofRoute> {
+  const proofData = {
+    leafIndex: voteProof.leafIndex,
+    merklePath: voteProof.merklePath.map((node) => normalizeHex(node, { allowEmpty: true })),
+    treeSize: voteProof.treeSize,
+    bulletinRootAtCast: normalizeHex(voteProof.bulletinRootAtCast, { allowEmpty: true }),
+  };
+  const responseData = {
+    voteId,
+    proof: proofData,
+  };
+
+  if (process.env['NODE_ENV'] === 'development') {
+    const duration = performance.now() - startTime;
+    logger.debug(`[API] Vote proof retrieved in ${duration.toFixed(2)}ms`, {
+      voteId: voteId.substring(0, 8) + '...',
+      pathLength: proofData.merklePath.length,
+      responseSize: JSON.stringify(responseData).length,
+    });
+  }
+
+  return respondWithRoute(
+    sessionVoteInclusionProofRoute,
+    { status: 200, content: 'json', body: { data: responseData } },
+    {
+      headers: createPrivateNoStoreHeaders({
+        'X-Content-Type-Options': 'nosniff',
+      }),
+    },
+  );
+}
+
 /**
  * Return minimal inclusion proof data for a vote.
  */
@@ -179,80 +250,25 @@ export async function getSessionVoteInclusionProofHandler({
       return voteProofErrorResponse(ErrorCode.INVALID_VOTE_ID);
     }
 
-    const { session, sessionId, store } = context;
+    const { session } = context;
     if (session.finalization?.state.status !== 'succeeded' || !session.finalization.finalizationResult) {
       return voteProofErrorResponse(ErrorCode.SESSION_NOT_FINALIZED);
     }
     const { voting } = session;
     const finalizationResult = session.finalization.finalizationResult;
 
-    const userVoteId =
-      voting.userParticipation.status === 'cast'
-        ? voting.votes.get(voting.userParticipation.voteIndex)?.voteId
-        : undefined;
-    let isAllowed = Boolean(userVoteId && userVoteId === voteId);
-
-    if (!isAllowed) {
-      const scenarios = finalizationResult.scenarios ?? [];
-      const scenarioId = scenarios.length > 0 ? scenarios[0] : undefined;
-      const affectedBotIds = finalizationResult.tamperSummary?.affectedBotIds ?? [];
-      if ((scenarioId === 'S3' || scenarioId === 'S4') && affectedBotIds.length > 0) {
-        for (const botId of affectedBotIds) {
-          const botVoteId = voting.votes.get(botId)?.voteId;
-          if (botVoteId && botVoteId === voteId) {
-            isAllowed = true;
-            break;
-          }
-        }
-      }
-    }
+    const isAllowed = isVoteProofAllowed(voting, finalizationResult, voteId);
 
     if (!isAllowed) {
       return voteProofErrorResponse(ErrorCode.VOTE_NOT_FOUND);
     }
 
-    let voteProof;
-    try {
-      voteProof = await store.getVoteByIdWithProof(sessionId, voteId);
-    } catch (error) {
-      if (error instanceof Error && error.message === 'CT_PROOF_UNAVAILABLE') {
-        return voteProofErrorResponse(ErrorCode.VERIFICATION_FAILED, { details: 'CT_PROOF_UNAVAILABLE' });
-      }
-      throw error;
-    }
+    const voteProof = await readVoteProof(context, voteId);
     if (!voteProof) {
       return voteProofErrorResponse(ErrorCode.VERIFICATION_FAILED, { details: 'CT_PROOF_UNAVAILABLE' });
     }
 
-    const proofData = {
-      leafIndex: voteProof.leafIndex,
-      merklePath: voteProof.merklePath.map((node) => normalizeHex(node, { allowEmpty: true })),
-      treeSize: voteProof.treeSize,
-      bulletinRootAtCast: normalizeHex(voteProof.bulletinRootAtCast, { allowEmpty: true }),
-    };
-    const responseData = {
-      voteId,
-      proof: proofData,
-    };
-
-    if (process.env['NODE_ENV'] === 'development') {
-      const duration = performance.now() - startTime;
-      logger.debug(`[API] Vote proof retrieved in ${duration.toFixed(2)}ms`, {
-        voteId: voteId.substring(0, 8) + '...',
-        pathLength: proofData.merklePath.length,
-        responseSize: JSON.stringify(responseData).length,
-      });
-    }
-
-    return respondWithRoute(
-      sessionVoteInclusionProofRoute,
-      { status: 200, content: 'json', body: { data: responseData } },
-      {
-        headers: createPrivateNoStoreHeaders({
-          'X-Content-Type-Options': 'nosniff',
-        }),
-      },
-    );
+    return voteProofResponse(voteId, voteProof, startTime);
   } catch (error) {
     const { voteId } = input.params;
     logger.error('[API] Error retrieving vote proof:', {

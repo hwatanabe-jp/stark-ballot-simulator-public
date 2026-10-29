@@ -71,14 +71,18 @@ describe('schema wrapper behavior', () => {
     const pattern = descriptor.constraints.find((constraint) => constraint.kind === 'pattern');
     if (pattern?.kind !== 'pattern') throw new Error('Expected UUID pattern');
     expect(descriptor.constraints).toHaveLength(2);
-    for (const value of [
-      '123e4567-e89b-12d3-a456-426614174000',
-      '123E4567-E89B-52D3-B456-426614174000',
-      '123e4567-e89b-62d3-a456-426614174000',
-      '123e4567-e89b-12d3-c456-426614174000',
-      '00000000-0000-0000-0000-000000000000',
-    ]) {
-      expect(schema.safeParse(value).success).toBe(new RegExp(pattern.source, pattern.flags).test(value));
+    const examples = [
+      ['123e4567-e89b-12d3-a456-426614174000', true],
+      ['123E4567-E89B-52D3-B456-426614174000', true],
+      ['123e4567-e89b-62d3-a456-426614174000', false],
+      ['123e4567-e89b-12d3-c456-426614174000', false],
+      ['00000000-0000-0000-0000-000000000000', false],
+      ['123e4567e89b12d3a456426614174000', false],
+      ['123e4567-e89b-12d3-a456-42661417400g', false],
+    ] as const;
+    for (const [value, accepted] of examples) {
+      expect(schema.safeParse(value).success, value).toBe(accepted);
+      expect(new RegExp(pattern.source, pattern.flags).test(value), value).toBe(accepted);
     }
   });
 

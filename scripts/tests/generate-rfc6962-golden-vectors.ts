@@ -1,9 +1,8 @@
 #!/usr/bin/env tsx
 
-import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatSource } from '../formatting/format-source';
+import { generateGoldenVectorFile } from './lib/write-golden-vectors';
 import { buildRfc6962GoldenVectors } from './rfc6962-golden-vectors';
 
 const OUTPUT_PATH = path.resolve(
@@ -11,13 +10,4 @@ const OUTPUT_PATH = path.resolve(
   '../../zkvm/contract-core/testdata/rfc6962-ts-golden-vectors.json',
 );
 
-async function main(): Promise<void> {
-  const formatted = await formatSource(OUTPUT_PATH, JSON.stringify(buildRfc6962GoldenVectors()));
-  writeFileSync(OUTPUT_PATH, formatted);
-  console.log(`Wrote ${OUTPUT_PATH}`);
-}
-
-void main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+generateGoldenVectorFile(OUTPUT_PATH, buildRfc6962GoldenVectors);

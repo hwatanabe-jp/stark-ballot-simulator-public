@@ -1,5 +1,11 @@
 # Current Contract Ballot Evaluation Semantics Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: implemented (commit `cd64efe`).** This document defines the
 > current proof-bound ballot evaluation vocabulary and the slot-versus-
 > record semantics that the surviving guest, host, and mock paths must

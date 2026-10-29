@@ -139,57 +139,77 @@ export function validateRuntimeConfigReferenceSource(
     return value;
   }
 
+  validateRuntimeReferenceArn(name, value, options, expectedPaths);
+  return value;
+}
+
+function validateRuntimeReferenceArn(
+  name: RuntimeConfigReferenceName,
+  value: string,
+  options: RuntimeConfigReferenceValidationOptions,
+  expectedPaths: string[],
+): void {
   const arnMatch = /^arn:aws:(ssm|secretsmanager):([^:]+):([0-9]{12}):(.+)$/.exec(value);
-  if (arnMatch) {
-    const service = requiredMatchGroup(
+  if (!arnMatch) {
+    throw referenceConfigError(
       name,
-      arnMatch,
-      1,
       `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
     );
-    const region = requiredMatchGroup(
-      name,
-      arnMatch,
-      2,
-      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
-    );
-    const accountId = requiredMatchGroup(
-      name,
-      arnMatch,
-      3,
-      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
-    );
-    const resource = requiredMatchGroup(
-      name,
-      arnMatch,
-      4,
-      `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
-    );
-    if (options.expectedRegion && region !== options.expectedRegion) {
-      throw referenceConfigError(name, `${name}_REF region must match AWS_REGION/AWS_DEFAULT_REGION.`);
-    }
-    if (options.expectedAccountId && accountId !== options.expectedAccountId) {
-      throw referenceConfigError(name, `${name}_REF account must match AWS_ACCOUNT_ID.`);
-    }
-    if (service === 'ssm') {
-      if (!resource.startsWith('parameter/')) {
-        throw referenceConfigError(name, `${name}_REF must reference an SSM parameter or Secrets Manager secret.`);
-      }
-      const parameterPath = normalizeAbsolutePath(resource.slice('parameter/'.length));
-      assertExpectedReferencePath(name, parameterPath, expectedPaths);
-      return value;
-    }
-    if (!resource.startsWith('secret:')) {
+  }
+  const service = requiredMatchGroup(
+    name,
+    arnMatch,
+    1,
+    `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+  );
+  const region = requiredMatchGroup(
+    name,
+    arnMatch,
+    2,
+    `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+  );
+  const accountId = requiredMatchGroup(
+    name,
+    arnMatch,
+    3,
+    `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+  );
+  const resource = requiredMatchGroup(
+    name,
+    arnMatch,
+    4,
+    `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`,
+  );
+  if (options.expectedRegion && region !== options.expectedRegion) {
+    throw referenceConfigError(name, `${name}_REF region must match AWS_REGION/AWS_DEFAULT_REGION.`);
+  }
+  if (options.expectedAccountId && accountId !== options.expectedAccountId) {
+    throw referenceConfigError(name, `${name}_REF account must match AWS_ACCOUNT_ID.`);
+  }
+  validateRuntimeReferenceResource(name, service, resource, expectedPaths);
+}
+
+function validateRuntimeReferenceResource(
+  name: RuntimeConfigReferenceName,
+  service: string,
+  resource: string,
+  expectedPaths: string[],
+): void {
+  if (service === 'ssm') {
+    if (!resource.startsWith('parameter/')) {
       throw referenceConfigError(name, `${name}_REF must reference an SSM parameter or Secrets Manager secret.`);
     }
-    const secretName = resource.slice('secret:'.length);
-    if (!expectedPaths.some((expectedPath) => secretNameMatchesExpectedPath(secretName, expectedPath))) {
-      throw referenceConfigError(name, `${name}_REF must reference ${formatExpectedReferencePaths(expectedPaths)}.`);
-    }
-    return value;
+    const parameterPath = normalizeAbsolutePath(resource.slice('parameter/'.length));
+    assertExpectedReferencePath(name, parameterPath, expectedPaths);
+    return;
   }
-
-  throw referenceConfigError(name, `${name}_REF must be an absolute SSM parameter path or approved secret/config ARN.`);
+  if (!resource.startsWith('secret:')) {
+    throw referenceConfigError(name, `${name}_REF must reference an SSM parameter or Secrets Manager secret.`);
+  }
+  const secretName = resource.slice('secret:'.length);
+  if (!expectedPaths.some((expectedPath) => secretNameMatchesExpectedPath(secretName, expectedPath))) {
+    throw referenceConfigError(name, `${name}_REF must reference ${formatExpectedReferencePaths(expectedPaths)}.`);
+  }
 }
 
 function normalizeReference(

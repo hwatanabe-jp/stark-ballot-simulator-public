@@ -1,5 +1,5 @@
+import { sha256, isRecord, isSafeRelativePath, isSha256 } from '../../infra/image-signature-verifier/asset-files.mjs';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -118,47 +118,6 @@ export function buildInstallationRecord(input) {
 }
 
 /**
- * @param {Uint8Array} value
- * @returns {string}
- */
-function sha256(value) {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-/**
- * @param {unknown} value
- * @returns {value is Record<string, unknown>}
- */
-function isRecord(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {value is string}
- */
-function isSha256(value) {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
-}
-
-/**
- * @param {unknown} value
- * @returns {value is string}
- */
-function isSafeRelativePath(value) {
-  return (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    value.length <= 512 &&
-    !value.includes('\\') &&
-    !value.includes('\0') &&
-    !path.posix.isAbsolute(value) &&
-    path.posix.normalize(value) === value &&
-    !value.split('/').includes('..')
-  );
-}
-
-/**
  * @param {unknown} value
  * @returns {value is string}
  */
@@ -202,12 +161,7 @@ function isExecutableAsset(value, expectedVersion, archived) {
   if (!archived) {
     return value['archiveSha256'] === undefined && value['archiveEntries'] === undefined;
   }
-  return (
-    isSha256(value['archiveSha256']) &&
-    isArchiveEntryList(value['archiveEntries']) &&
-    typeof value['executableEntry'] === 'string' &&
-    value['archiveEntries'].includes(value['executableEntry'])
-  );
+  return isArchivedExecutable(value);
 }
 
 /**
@@ -247,60 +201,16 @@ function isCredentialHelperAsset(value) {
  * }}
  */
 function parseAssetManifest(raw, architecture) {
-  let manifest;
-  try {
-    manifest = JSON.parse(raw.toString('utf8'));
-  } catch {
-    throw new Error('Image signature verifier asset manifest is invalid.');
-  }
-  if (
-    !isRecord(manifest) ||
-    manifest['kind'] !== 'image-signature-verifier-assets' ||
-    manifest['verifierVersion'] !== 'notation@1.3.2+aws-signer-plugin@1.0.2292' ||
-    !isRecord(manifest['platforms'])
-  ) {
-    throw new Error('Image signature verifier asset manifest is invalid.');
-  }
+  const { manifest, platforms } = parseManifestEnvelope(raw);
 
-  const platform = manifest['platforms'][`linux-${architecture}`];
-  const expectedMachine = architecture === 'amd64' ? 62 : 183;
-  if (
-    !isRecord(platform) ||
-    platform['os'] !== 'linux' ||
-    platform['architecture'] !== architecture ||
-    platform['elfMachine'] !== expectedMachine ||
-    !isExecutableAsset(platform['notation'], '1.3.2', true) ||
-    !isExecutableAsset(platform['awsSignerPlugin'], '1.0.2292', true) ||
-    !isCredentialHelperAsset(platform['ecrCredentialHelper'])
-  ) {
-    throw new Error('Image signature verifier asset manifest is invalid.');
-  }
+  const platform = admitInstallPlatform(platforms[`linux-${architecture}`], architecture);
 
   const notation = /** @type {Record<string, unknown>} */ (platform['notation']);
   const plugin = /** @type {Record<string, unknown>} */ (platform['awsSignerPlugin']);
   const helper = /** @type {Record<string, unknown>} */ (platform['ecrCredentialHelper']);
-  const notationUrl = new URL(/** @type {string} */ (notation['url']));
-  const pluginUrl = new URL(/** @type {string} */ (plugin['url']));
-  const helperUrl = new URL(/** @type {string} */ (helper['url']));
-  if (
-    !notationUrl.pathname.includes('/releases/download/v1.3.2/') ||
-    !pluginUrl.searchParams.has('versionId') ||
-    !helperUrl.pathname.includes('/0.12.0/')
-  ) {
-    throw new Error('Image signature verifier asset manifest is invalid.');
-  }
+  assertExecutableDownloadPins(notation, plugin, helper);
 
-  const trustRoot = manifest['trustRoot'];
-  if (
-    !isRecord(trustRoot) ||
-    trustRoot['name'] !== 'aws-signer-ts' ||
-    !isPinnedHttpsUrl(trustRoot['url']) ||
-    !new URL(/** @type {string} */ (trustRoot['url'])).searchParams.has('versionId') ||
-    !isSha256(trustRoot['sha256']) ||
-    !isSafeRelativePath(trustRoot['installedPath'])
-  ) {
-    throw new Error('Image signature verifier asset manifest is invalid.');
-  }
+  const trustRoot = admitInstallTrustRoot(manifest['trustRoot']);
 
   const installedPaths = [
     notation['installedPath'],
@@ -715,4 +625,84 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await main();
+}
+
+/** @param {Record<string,unknown>} value */
+function isArchivedExecutable(value) {
+  return (
+    isSha256(value['archiveSha256']) &&
+    isArchiveEntryList(value['archiveEntries']) &&
+    typeof value['executableEntry'] === 'string' &&
+    value['archiveEntries'].includes(value['executableEntry'])
+  );
+}
+
+/** @param {Buffer} raw */
+function parseManifestEnvelope(raw) {
+  let manifest;
+  try {
+    manifest = JSON.parse(raw.toString('utf8'));
+  } catch {
+    throw new Error('Image signature verifier asset manifest is invalid.');
+  }
+  if (
+    !isRecord(manifest) ||
+    manifest['kind'] !== 'image-signature-verifier-assets' ||
+    manifest['verifierVersion'] !== 'notation@1.3.2+aws-signer-plugin@1.0.2292' ||
+    !isRecord(manifest['platforms'])
+  ) {
+    throw new Error('Image signature verifier asset manifest is invalid.');
+  }
+
+  return { manifest, platforms: manifest['platforms'] };
+}
+
+/** @param {unknown} value @param {VerifierArchitecture} architecture */
+function admitInstallPlatform(value, architecture) {
+  const platform = value;
+  const expectedMachine = architecture === 'amd64' ? 62 : 183;
+  if (
+    !isRecord(platform) ||
+    platform['os'] !== 'linux' ||
+    platform['architecture'] !== architecture ||
+    platform['elfMachine'] !== expectedMachine ||
+    !isExecutableAsset(platform['notation'], '1.3.2', true) ||
+    !isExecutableAsset(platform['awsSignerPlugin'], '1.0.2292', true) ||
+    !isCredentialHelperAsset(platform['ecrCredentialHelper'])
+  ) {
+    throw new Error('Image signature verifier asset manifest is invalid.');
+  }
+
+  return platform;
+}
+
+/** @param {Record<string,unknown>} notation @param {Record<string,unknown>} plugin @param {Record<string,unknown>} helper */
+function assertExecutableDownloadPins(notation, plugin, helper) {
+  const notationUrl = new URL(/** @type {string} */ (notation['url']));
+  const pluginUrl = new URL(/** @type {string} */ (plugin['url']));
+  const helperUrl = new URL(/** @type {string} */ (helper['url']));
+  if (
+    !notationUrl.pathname.includes('/releases/download/v1.3.2/') ||
+    !pluginUrl.searchParams.has('versionId') ||
+    !helperUrl.pathname.includes('/0.12.0/')
+  ) {
+    throw new Error('Image signature verifier asset manifest is invalid.');
+  }
+}
+
+/** @param {unknown} value */
+function admitInstallTrustRoot(value) {
+  const trustRoot = value;
+  if (
+    !isRecord(trustRoot) ||
+    trustRoot['name'] !== 'aws-signer-ts' ||
+    !isPinnedHttpsUrl(trustRoot['url']) ||
+    !new URL(/** @type {string} */ (trustRoot['url'])).searchParams.has('versionId') ||
+    !isSha256(trustRoot['sha256']) ||
+    !isSafeRelativePath(trustRoot['installedPath'])
+  ) {
+    throw new Error('Image signature verifier asset manifest is invalid.');
+  }
+
+  return trustRoot;
 }

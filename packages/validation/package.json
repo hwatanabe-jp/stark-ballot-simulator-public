@@ -6,14 +6,14 @@
     ".": "./src/index.ts",
     "./definedProperties": "./src/definedProperties.ts",
     "./duplicate-detector": "./src/duplicate-detector.ts",
-    "./duplicate-detector-cache": "./src/duplicate-detector-cache.ts",
     "./image-id-mapping": "./src/image-id-mapping.js",
     "./image-id-policy": "./src/image-id-policy.js",
     "./log-hash-salt": "./src/log-hash-salt.ts",
     "./safe-verifier-segment": "./src/safe-verifier-segment.ts",
     "./schema": "./src/schema.ts",
     "./unknown-value-guards": "./src/unknown-value-guards.ts",
-    "./schema-openapi": "./src/schema-openapi.ts"
+    "./schema-openapi": "./src/schema-openapi.ts",
+    "./vote-id": "./src/vote-id.ts"
   },
   "scripts": {
     "lint": "pnpm --dir ../.. exec oxlint packages/validation",

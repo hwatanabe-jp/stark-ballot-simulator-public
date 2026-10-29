@@ -14,7 +14,6 @@ import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import type { FinalizationTransitionCommand } from './finalization-transition-policy';
 
 export type FinalizationFailedError = Extract<FinalizationState, { status: 'failed' }>['error'];
-export type FinalizationSucceededState = Extract<FinalizationState, { status: 'succeeded' }>;
 
 export type FinalizationQueuedPayload = {
   finalizationId: FinalizationId;
@@ -59,6 +58,52 @@ export type FinalizationTimedOutPayload = {
   scenarioContext?: FinalizationScenarioContext;
   observability?: FinalizationTransitionMetadata;
 };
+
+// Lifecycle input keys have one owner across persistence adapters.
+export const FINALIZATION_QUEUED_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'scenarioContext',
+  'observability',
+]);
+export const FINALIZATION_RUNNING_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'scenarioContext',
+  'observability',
+]);
+export const FINALIZATION_SUCCEEDED_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'completedAtMs',
+  'scenarioContext',
+  'finalizationResult',
+  'observability',
+]);
+export const FINALIZATION_FAILED_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'failedAtMs',
+  'scenarioContext',
+  'error',
+  'observability',
+]);
+export const FINALIZATION_TIMED_OUT_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  'finalizationId',
+  'queuedAtMs',
+  'startedAtMs',
+  'timeoutAtMs',
+  'scenarioContext',
+  'observability',
+]);
+export function assertAllowedFinalizationPayloadKeys(value: object, allowed: ReadonlySet<string>, label: string): void {
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error(`Invalid ${label} payload`);
+  }
+}
 
 /** Project lifecycle payloads into semantic commands without adapter metadata. */
 export function buildFinalizationCommand(

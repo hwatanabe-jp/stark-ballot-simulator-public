@@ -5,7 +5,7 @@ import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/ru
 export type RuntimeConfigName = Uppercase<string>;
 export { RuntimeConfigValidationError };
 
-export interface RuntimeConfigInvalidNameCollector {
+interface RuntimeConfigInvalidNameCollector {
   add(name: RuntimeConfigName): void;
 }
 
@@ -38,6 +38,22 @@ function createInvalidNameCollector(): {
   };
 }
 
+function admittedDeploymentLogFields(
+  deploymentId: string | undefined,
+  appSourceSha: string | undefined,
+  deployMode: string | undefined,
+): {
+  deploymentId?: string;
+  appSourceSha?: string;
+  deployMode?: 'normal' | 'rollback';
+} {
+  return {
+    ...(deploymentId && /^dep_[0-9a-f]{32}$/.test(deploymentId) ? { deploymentId } : {}),
+    ...(appSourceSha && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(appSourceSha) ? { appSourceSha } : {}),
+    ...(deployMode === 'normal' || deployMode === 'rollback' ? { deployMode } : {}),
+  };
+}
+
 function configureSecretFreeLogger(
   serviceName: string,
   runtimeProfile: ResolvedRuntimeProfile,
@@ -54,9 +70,7 @@ function configureSecretFreeLogger(
     serviceName,
     envName: env['RUNTIME_DEPLOYMENT_ENV']?.trim() || env['NODE_ENV']?.trim() || 'unknown',
     includeStack: true,
-    ...(deploymentId && /^dep_[0-9a-f]{32}$/.test(deploymentId) ? { deploymentId } : {}),
-    ...(appSourceSha && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(appSourceSha) ? { appSourceSha } : {}),
-    ...(deployMode === 'normal' || deployMode === 'rollback' ? { deployMode } : {}),
+    ...admittedDeploymentLogFields(deploymentId, appSourceSha, deployMode),
   });
 }
 
@@ -73,6 +87,12 @@ function sanitizedRuntimeConfigError(invalidNames: readonly RuntimeConfigName[])
 
 export async function bootstrapLambdaRuntime(options: LambdaRuntimeBootstrapOptions): Promise<void> {
   configureSecretFreeLogger(options.serviceName, options.runtimeProfile, options.env ?? process.env);
+  logger.info('Node.js runtime initialized', {
+    event: 'runtime_initialized',
+    node_version: process.versions.node,
+    openssl_version: process.versions.openssl,
+    undici_version: process.versions['undici'],
+  });
 
   const referenceInvalidNames = createInvalidNameCollector();
   try {

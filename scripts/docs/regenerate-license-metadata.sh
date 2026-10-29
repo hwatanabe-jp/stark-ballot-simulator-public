@@ -70,8 +70,8 @@ require_command pnpm
 mkdir -p "$license_dir"
 
 echo "Regenerating pnpm license metadata..."
-pnpm licenses list --json --prod > "$tmp_dir/pnpm-licenses-prod.raw.json"
-pnpm licenses list --json > "$tmp_dir/pnpm-licenses-all.raw.json"
+pnpm --recursive licenses list --json --prod > "$tmp_dir/pnpm-licenses-prod.raw.json"
+pnpm --recursive licenses list --json > "$tmp_dir/pnpm-licenses-all.raw.json"
 sanitize_json "$tmp_dir/pnpm-licenses-prod.raw.json" "$license_dir/pnpm-licenses-prod.json"
 sanitize_json "$tmp_dir/pnpm-licenses-all.raw.json" "$license_dir/pnpm-licenses-all.json"
 

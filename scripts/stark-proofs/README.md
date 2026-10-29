@@ -3,8 +3,8 @@
 Compatibility wrappers for running production-mode zkVM proofs through the
 maintained CLI E2E harness.
 
-These scripts no longer generate legacy scenario fixture files directly. They
-delegate to `scripts/tests/cli-e2e-voting-flow.ts` via `pnpm test:cli`, which
+These scripts delegate to `scripts/tests/cli-e2e-voting-flow.ts` via
+`pnpm test:cli`, which
 creates a session, casts the user vote, generates bot votes, finalizes the
 selected scenario(s), downloads authenticated verification artifacts, and runs
 `verifier-service` when a bundle is available.
@@ -92,13 +92,16 @@ are not the stable output contract for these wrappers.
 1. **Production mode**: These scripts select `local-proof-production` and pass
    `--zkvm-mode prod`. The RISC Zero adapter translates that proof profile at
    the external process boundary, with development mode disabled.
-2. **Builds**: The CLI runs `pnpm build:ci` unless you pass `--skip-build` or set
-   `STARK_BALLOT_CLI_SKIP_BUILD=true` / `CLI_SKIP_BUILD=true`.
+2. **Builds**: When it owns the local server, the CLI runs `pnpm build:local-mock`
+   with the selected runtime profile unless you pass `--skip-build` or set
+   `STARK_BALLOT_CLI_SKIP_BUILD=true` / `CLI_SKIP_BUILD=true`. An external server
+   selected by `STARK_BALLOT_CLI_BASE_URL` owns its build and startup.
 3. **Prerequisites**:
    - Dependencies must be installed (`pnpm install`)
    - zkVM binary must be built (`pnpm build:zkvm`)
    - verifier-service binary must be built (`pnpm build:verifier-service`)
-   - an existing `pnpm build:ci` output is required when using `--skip-build`
+   - `--skip-build` requires an existing `dist/` built with the same local
+     `VITE_RUNTIME_PROFILE` as the requested run
 4. **No legacy test-data step**: legacy `scripts/test-data` generators are
    retired. These wrappers generate votes through the CLI flow.
 5. **Bundle boundary**: Public bundles must not include private artifacts such

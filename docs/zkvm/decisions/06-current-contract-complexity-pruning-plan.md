@@ -1,5 +1,11 @@
 # Current Contract Complexity Pruning Plan
 
+This is a historical implementation record. Its status and “current” statements
+refer to the recorded rollout. For current behavior, use the
+[verification contract](../../verification/README.md),
+[API contract](../../ui/api-contract.md), and
+[zkVM workspace guide](../../../zkvm/README.md).
+
 > **Status: internal pruning implemented** (commit `b951166`).
 > Public alias and delivery-URL response fields that survived this slice were
 > projection-only deletion debt until the later explicit public-boundary

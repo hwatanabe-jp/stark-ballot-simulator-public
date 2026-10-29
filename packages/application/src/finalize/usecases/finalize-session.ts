@@ -1,3 +1,4 @@
+import { toFinalizationScenarioContext } from './finalize-scenario-context';
 import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type { FinalizationStore } from '@stark-ballot/application/finalize/finalization-store';
 import {
@@ -11,7 +12,10 @@ import type { FinalizationRecord } from '@stark-ballot/application/finalize/fina
 import type { ZkVMExecutor } from '@stark-ballot/application/finalize/zkvm-executor';
 import { BOT_COUNT } from '@stark-ballot/domain/shared/constants';
 import { ApplicationErrorCode } from '@stark-ballot/application';
-import { type FinalizationScenarioContext } from '@stark-ballot/application/finalize/finalization-types';
+import {
+  type FinalizationScenarioContext,
+  type FinalizationId,
+} from '@stark-ballot/application/finalize/finalization-types';
 import type { VerificationResultStore } from '@stark-ballot/application/finalize/finalization-result-store';
 import { buildZkVMInputFromSession, CtProofUnavailableError } from '@stark-ballot/application/zkvm-input/input-builder';
 import { applyFinalizeScenarios } from '@stark-ballot/domain/finalize/scenario-application';
@@ -54,6 +58,79 @@ export async function finalizeSessionUsecase(
   input: FinalizeSessionInput,
   deps: FinalizeSessionDependencies,
 ): Promise<Result<FinalizeSessionOutcome, FinalizeSessionError>> {
+  const admission = admitFinalizationSession(input);
+  if (!admission.ok) return admission;
+  const { voting } = input;
+  const prepared = prepareFinalizationInputs(input, admission.value.userVoteIndex);
+  if (!prepared.ok) return prepared;
+  const { scenarioContext, zkvmInput, authoritativeElectionConfig } = prepared.value;
+
+  const scenarioStorageContext = toFinalizationScenarioContext(scenarioContext);
+  const queuedAtMs = (deps.now ?? Date.now)();
+  const finalizationId = generateFinalizationId(queuedAtMs);
+
+  if (input.finalizationMode.kind === 'async') {
+    return finalizeSessionAsynchronously(
+      input,
+      deps,
+      {
+        ...prepared.value,
+        finalizationId,
+        queuedAtMs,
+        scenarioStorageContext,
+      },
+      input.finalizationMode.inputSource,
+    );
+  }
+
+  const syncResult = await finalizeSync(
+    {
+      sessionId: input.sessionId,
+      finalizationId,
+      queuedAtMs,
+      voting,
+      zkvmInput,
+      ...omitUndefinedProperties({ electionConfig: authoritativeElectionConfig }),
+      expectedImageId: input.expectedImageId,
+      scenario: scenarioContext,
+      allowDevMode: input.allowDevMode,
+      debugFinalize: input.debugFinalize,
+      ...omitUndefinedProperties({ debugFileStore: input.debugFileStore }),
+      ...omitUndefinedProperties({
+        executorModeLabel: input.executorModeLabel,
+        bitmapProofSource: input.bitmapProofSource,
+      }),
+    },
+    {
+      store: deps.store,
+      getExecutor: deps.getExecutor,
+      proofBundleService: deps.proofBundleService,
+      ...omitUndefinedProperties({ now: deps.now }),
+    },
+  );
+
+  if (!syncResult.ok) {
+    return syncResult;
+  }
+
+  return {
+    ok: true,
+    value: {
+      kind: 'sync',
+      payload: syncResult.value,
+    },
+  };
+}
+
+interface PreparedFinalizationInputs {
+  scenarioContext: FinalizeScenarioContext;
+  zkvmInput: ReturnType<typeof buildZkVMInputFromSession>;
+  authoritativeElectionConfig: SessionIdentityRecord['electionConfig'];
+}
+
+function admitFinalizationSession(
+  input: FinalizeSessionInput,
+): Result<{ userVoteIndex: number }, FinalizeSessionError> {
   const { identity, voting } = input;
 
   if (
@@ -102,6 +179,14 @@ export async function finalizeSessionUsecase(
     };
   }
 
+  return { ok: true, value: { userVoteIndex } };
+}
+
+function prepareFinalizationInputs(
+  input: FinalizeSessionInput,
+  userVoteIndex: number,
+): Result<PreparedFinalizationInputs, FinalizeSessionError> {
+  const { identity, voting } = input;
   const scenarios = input.scenarioId === 'S0' ? [] : [input.scenarioId];
 
   let scenarioContext: FinalizeScenarioContext;
@@ -187,106 +272,72 @@ export async function finalizeSessionUsecase(
     };
   }
 
-  const scenarioStorageContext: FinalizationScenarioContext = {
-    scenarios: scenarioContext.scenariosApplied,
-    tamperMode: scenarioContext.tamperMode,
-    claimedCounts: scenarioContext.claimedCounts,
-    claimedTotalVotes: scenarioContext.claimedTotalVotes,
-    summary: {
-      ignoredCount: scenarioContext.summary.ignoredCount,
-      recountedCount: scenarioContext.summary.recountedCount,
-      userRecountChoice: scenarioContext.summary.userRecountChoice,
-      ...(scenarioContext.affectedBotIds ? { affectedBotIds: scenarioContext.affectedBotIds } : {}),
-    },
-  };
-  const queuedAtMs = (deps.now ?? Date.now)();
-  const finalizationId = generateFinalizationId(queuedAtMs);
+  return { ok: true, value: { scenarioContext, zkvmInput, authoritativeElectionConfig } };
+}
 
-  if (input.finalizationMode.kind === 'async') {
-    let asyncResult: Awaited<ReturnType<typeof finalizeAsync>>;
-    try {
-      asyncResult = await finalizeAsync(
-        {
-          sessionId: input.sessionId,
-          finalizationId,
-          queuedAtMs,
-          zkvmInput,
-          ...omitUndefinedProperties({ electionConfig: authoritativeElectionConfig }),
-          expectedImageId: input.expectedImageId,
-          scenarios: scenarioContext.scenariosApplied,
-          scenarioContext: scenarioStorageContext,
-          publishMaxAttempts: input.publishMaxAttempts,
-          inputSource: input.finalizationMode.inputSource,
-        },
-        {
-          store: deps.store,
-          finalizationQueue: deps.finalizationQueue,
-          ...omitUndefinedProperties({ now: deps.now }),
-          ...omitUndefinedProperties({ persistAsyncProverInput: deps.persistAsyncProverInput }),
-        },
-      );
-    } catch (error) {
-      return {
-        ok: false,
-        error: {
-          kind: 'api',
-          code: ApplicationErrorCode.INTERNAL_ERROR,
-          details: {
-            details: error instanceof Error ? error.message : 'Failed to enqueue finalization job',
-          },
-        },
-      };
-    }
-
-    if (!asyncResult.ok) {
-      return asyncResult;
-    }
-
+async function finalizeSessionAsynchronously(
+  input: FinalizeSessionInput,
+  deps: FinalizeSessionDependencies,
+  work: PreparedFinalizationInputs & {
+    finalizationId: FinalizationId;
+    queuedAtMs: number;
+    scenarioStorageContext: FinalizationScenarioContext;
+  },
+  inputSource: 'inline' | 's3',
+): Promise<Result<FinalizeSessionOutcome, FinalizeSessionError>> {
+  const {
+    finalizationId,
+    queuedAtMs,
+    zkvmInput,
+    authoritativeElectionConfig,
+    scenarioContext,
+    scenarioStorageContext,
+  } = work;
+  let asyncResult: Awaited<ReturnType<typeof finalizeAsync>>;
+  try {
+    asyncResult = await finalizeAsync(
+      {
+        sessionId: input.sessionId,
+        finalizationId,
+        queuedAtMs,
+        zkvmInput,
+        ...omitUndefinedProperties({ electionConfig: authoritativeElectionConfig }),
+        expectedImageId: input.expectedImageId,
+        scenarios: scenarioContext.scenariosApplied,
+        scenarioContext: scenarioStorageContext,
+        publishMaxAttempts: input.publishMaxAttempts,
+        inputSource: inputSource,
+      },
+      {
+        store: deps.store,
+        finalizationQueue: deps.finalizationQueue,
+        ...omitUndefinedProperties({ now: deps.now }),
+        ...omitUndefinedProperties({ persistAsyncProverInput: deps.persistAsyncProverInput }),
+      },
+    );
+  } catch (error) {
     return {
-      ok: true,
-      value: {
-        kind: 'accepted',
-        payload: asyncResult.value.payload,
-        state: asyncResult.value.state,
+      ok: false,
+      error: {
+        kind: 'api',
+        code: ApplicationErrorCode.INTERNAL_ERROR,
+        details: {
+          details: error instanceof Error ? error.message : 'Failed to enqueue finalization job',
+        },
       },
     };
   }
 
-  const syncResult = await finalizeSync(
-    {
-      sessionId: input.sessionId,
-      finalizationId,
-      queuedAtMs,
-      voting,
-      zkvmInput,
-      ...omitUndefinedProperties({ electionConfig: authoritativeElectionConfig }),
-      expectedImageId: input.expectedImageId,
-      scenario: scenarioContext,
-      allowDevMode: input.allowDevMode,
-      debugFinalize: input.debugFinalize,
-      ...omitUndefinedProperties({ debugFileStore: input.debugFileStore }),
-      ...omitUndefinedProperties({
-        executorModeLabel: input.executorModeLabel,
-        bitmapProofSource: input.bitmapProofSource,
-      }),
-    },
-    {
-      store: deps.store,
-      getExecutor: deps.getExecutor,
-      proofBundleService: deps.proofBundleService,
-      ...omitUndefinedProperties({ now: deps.now }),
-    },
-  );
-
-  if (!syncResult.ok) {
-    return syncResult;
+  if (!asyncResult.ok) {
+    return asyncResult;
   }
 
   return {
     ok: true,
     value: {
-      kind: 'sync',
-      payload: syncResult.value,
+      kind: 'accepted',
+      payload: asyncResult.value.payload,
+      state: asyncResult.value.state,
     },
   };
 }

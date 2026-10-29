@@ -2,8 +2,6 @@
 
 セッション作成から証拠の取得まで、ブラウザと CLI が呼び出す API の要求・応答をまとめます。すべてのパスは `/api` で始まります。
 
-<a id="active-browser-と-cli-api-一覧"></a>
-
 ## API 一覧
 
 | メソッド | パス                                                                                                                                                                | 主用途                     |
@@ -27,6 +25,8 @@
 | `GET`    | [`/api/sessions/:sessionId/finalizations/current/input-commitment`](#get-apisessionssessionidfinalizationscurrentinput-commitment)                                  | 入力コミットメント         |
 
 ## 共通仕様
+
+HEAD は GET 処理前に `404` で拒否します。
 
 ### セッション capability
 
@@ -62,7 +62,7 @@ JSON の成功応答は、結果を `data`、要求 ID を `meta` に入れま�
 
 ### JSON のエラー応答
 
-公開 API の標準エラーは HTTP ステータス を本文に重複させず、次の形を使います。
+公開 API の標準エラーは HTTP ステータスを本文に重複させず、次の形を使います。
 
 ```json
 {
@@ -87,6 +87,9 @@ JSON の成功応答は、結果を `data`、要求 ID を `meta` に入れま�
 エラーは `INVALID_REQUEST` (`400`)、AWS 上のオリジン検証の `SAME_ORIGIN_REQUIRED` (`403`)、
 ハンドラー内の予期しない失敗に対する `INTERNAL_ERROR` (`500`) です。
 
+AWS の API Gateway は、レート制限時に `RATE_LIMITED` (`429`)、バックエンド連携の失敗・
+タイムアウト時に `INTERNAL_ERROR` (`504`) を返します。
+
 ### 数値のクエリー・パスパラメーター
 
 掲示板の `offset`、整合性証明の `fromTreeSize` / `toTreeSize`、ビットマップ証明の
@@ -96,20 +99,22 @@ JSON の成功応答は、結果を `data`、要求 ID を `meta` に入れま�
 
 ### ボディサイズ、Turnstile、レート制限
 
-JSON 本文 を持つ API は `API_REQUEST_BODY_LIMIT_BYTES`（既定 16 KiB）の対象で、超過時は
+JSON 本文を持つ API は `API_REQUEST_BODY_LIMIT_BYTES`（既定 16 KiB）の対象で、超過時は
 `PAYLOAD_TOO_LARGE` (`413`) を返します。
 
-| API                                  | Turnstile         | アプリ内のレート制限                                  |
-| ------------------------------------ | ----------------- | ----------------------------------------------------- |
-| `POST /api/sessions`                 | `session` action  | クライアント IP 単位                                  |
-| `POST .../votes`                     | `vote` action     | session と クライアント IP 単位                       |
-| `POST .../finalizations`             | `finalize` action | session と クライアント IP 単位                       |
-| `POST .../cancel`                    | なし              | session と クライアント IP 単位                       |
-| `POST .../verification`              | なし              | session と クライアント IP 単位                       |
-| `POST .../verification/observations` | なし              | 専用制限なし。API Gateway の既定の呼び出し制限 を使用 |
+| API                                  | Turnstile         | アプリ内のレート制限                                 |
+| ------------------------------------ | ----------------- | ---------------------------------------------------- |
+| `POST /api/sessions`                 | `session` action  | クライアント IP 単位                                 |
+| `POST .../votes`                     | `vote` action     | クライアント IP 単位                                 |
+| `POST .../finalizations`             | `finalize` action | クライアント IP 単位と、全体の日次・時間単位の上限   |
+| `POST .../cancel`                    | なし              | クライアント IP 単位                                 |
+| `POST .../verification`              | なし              | クライアント IP 単位と、全体の日次・時間単位の上限   |
+| `POST .../verification/observations` | なし              | 専用制限なし。API Gateway の既定の呼び出し制限を使用 |
+
+ローカルでメモリ上のレート制限ストアを使うプロファイルでは、集計・検証の上記カウンター検査を省略します。
 
 Turnstile のトークンは本文の `turnstileToken` に置きます。AWS の main では、表で action を示した三つの API で検査を必須とします。AWS の develop では、運用者用の入口制限を通った要求に限り省略します。
-[ローカルの四つのプロファイル](../aws/runtime-boundary.md#semantic-runtime-profiles)では Turnstile を省略します。
+[ローカルの四つのプロファイル](../aws/runtime-boundary.md#実行プロファイル)では Turnstile を省略します。
 
 ## セッションと投票
 
@@ -200,7 +205,6 @@ Turnstile のトークンは本文の `turnstileToken` に置きます。AWS の
   - `asyncMode`: `enabled` / `disabled`
   - `queue`（任意または `null`）
   - `progress`（任意。実行中の段階から導出した進捗）
-  - `orchestrator`（任意または `null`）
 
 `status` ごとの追加フィールド:
 
@@ -252,18 +256,21 @@ Turnstile のトークンは本文の `turnstileToken` に置きます。AWS の
 
 ### `GET /api/sessions/:sessionId/finalizations/current`
 
-現在の集計を返します。まだ集計がない場合も成功応答となり、`data` は `null` です。存在する場合は上記の集計リソースを返します。
+現在の保存済み集計を返します。まだ集計がない場合も成功応答となり、`data` は `null` です。存在する場合は上記の集計リソースを返します。
+
+AWS の失敗・timeout の照合は閲覧に依存せず、定期的に起動する writer が担います。
+未保存の失敗状態を GET の表示用に投影しません。
 
 ### `POST /api/sessions/:sessionId/finalizations/:finalizationId/cancel`
 
-URL のパスで指定した実行中の集計 をキャンセルします。
+URL のパスで指定した実行中の集計をキャンセルします。
 
 要求本文:
 
 - `reason`（任意、最大 256 文字）
 - 本文に `executionId` や `finalizationId` は置きません
 
-応答 (`200`) はキャンセル後の集計リソース です。
+応答 (`200`) はキャンセル後の集計リソースです。
 
 主な固有エラー:
 
@@ -275,7 +282,7 @@ URL のパスで指定した実行中の集計 をキャンセルします。
 
 ### `GET /api/sessions/:sessionId/finalizations/:finalizationId/verification`
 
-指定した集計の検証データ を返します。
+指定した集計の検証データを返します。
 
 クエリー:
 
@@ -303,7 +310,8 @@ URL のパスで指定した実行中の集計 をキャンセルします。
 
 ### `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification`
 
-サーバー側の STARK レシート検証を実行します。
+サーバー側の STARK レシート検証を実行します。実行中の応答は再送も `202`、終了済みの結果は `200` です。
+古い集計 ID への要求は `409 FINALIZATION_NOT_CURRENT` で拒否します。受付成功だけでは Verified を意味しません。
 
 - 要求本文: 追加フィールドを許さない空オブジェクト `{}`
 - 応答 (`200`) の `data`:
@@ -318,11 +326,11 @@ URL のパスで指定した実行中の集計 をキャンセルします。
 - `ZKVM_RATE_LIMIT_EXCEEDED` (`429`)
 - `GLOBAL_LIMIT_EXCEEDED` (`503`)
 
-<a id="post-apiverificationobservation"></a>
-
 ### `POST /api/sessions/:sessionId/finalizations/:finalizationId/verification/observations`
 
 ブラウザで確認した Cast チェックの結果を観測記録として保存します。最終判定やサーバー側チェックの結果は、クライアントから指定できません。
+
+現在の集計 ID を指定し、その集計に対するサーバー検証が `success` / `failed` / `dev_mode` で終了している必要があります。
 
 要求本文の `castChecks` は次の 4 キーをすべて含み、他のキーを許しません。各値は
 `success` / `failed` / `not_run` のいずれかです。
@@ -341,7 +349,7 @@ URL のパスで指定した実行中の集計 をキャンセルします。
 
 主な固有エラー:
 
-- `VERIFICATION_OBSERVATION_CONFLICT` (`409`; 異なる内容による再送)
+- `VERIFICATION_OBSERVATION_CONFLICT` (`409`; 集計 ID が一致しない、終了済みの検証結果がない、再送内容が異なる場合)
 - `SESSION_NOT_FINALIZED` (`400`)
 - `USER_NOT_VOTED` (`400`)
 
@@ -364,8 +372,6 @@ URL のパスで指定した実行中の集計 をキャンセルします。
 - `BUNDLE_DOWNLOAD_FAILED` (`500`)
 - `BUNDLE_REQUIRES_RANGE_DOWNLOAD` (`413`)
 - `INVALID_RANGE` (`416`)
-
-<a id="get-apiverificationbundlessessionidexecutionidreport"></a>
 
 ### `GET /api/sessions/:sessionId/finalizations/:finalizationId/artifacts/report`
 
@@ -403,16 +409,16 @@ URL のパスで指定した実行中の集計 をキャンセルします。
 
 - `INVALID_OFFSET` (`400`)
 
-そのほかの不正なクエリー は `INVALID_REQUEST` (`400`) です。
+そのほかの不正なクエリーは `INVALID_REQUEST` (`400`) です。
 
 ### `GET /api/sessions/:sessionId/bulletin/consistency-proof`
 
-RFC 6962 の整合性証明 を返します。
+RFC 6962 の整合性証明を返します。
 
 クエリー:
 
 - `fromTreeSize`（必須、[数値のクエリー・パスパラメーター](#数値のクエリーパスパラメーター) の非負整数）
-- `toTreeSize`（必須、同じ数値契約の非負整数）
+- `toTreeSize`（必須、同じ数値形式の非負整数）
 
 応答 (`200`) の `data`:
 
@@ -454,7 +460,7 @@ RFC 6962 の整合性証明 を返します。
 パスパラメーター:
 
 - `kind`: `included` / `seen`
-- `voteIndex`: [数値のクエリー・パスパラメーター](#数値のクエリーパスパラメーター) の非負整数。セッションの利用者自身の投票位置に限定し、他の位置 は `INVALID_BITMAP_PROOF_REQUEST` (`400`) で拒否する
+- `voteIndex`: [数値のクエリー・パスパラメーター](#数値のクエリーパスパラメーター) の非負整数。セッションの利用者自身の投票位置に限定し、他の位置は `INVALID_BITMAP_PROOF_REQUEST` (`400`) で拒否する
 
 応答 (`200`) の `data`:
 
@@ -489,7 +495,7 @@ RFC 6962 の整合性証明 を返します。
 主な固有エラー:
 
 - `SESSION_NOT_FINALIZED` (`404`)
-- `SAME_ORIGIN_REQUIRED` (`403`; 同一オリジン 検証失敗)
+- `SAME_ORIGIN_REQUIRED` (`403`; 同一オリジン検証失敗)
 
 ### `GET /api/sessions/:sessionId/finalizations/current/input-commitment`
 
@@ -505,4 +511,4 @@ RFC 6962 の整合性証明 を返します。
 - `CT_PROOF_UNAVAILABLE` (`400`)
 - `INTERNAL_ERROR` (`500`; コミットメントの検査やハンドラー処理の失敗)
 
-<!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/*, packages/api-contract/src/routes/inventory.test.ts, packages/api-contract/src/schemas/*.test.ts, apps/api/src/server/api/routes/hono.ts, apps/web/src/api/* -->
+<!-- source: packages/api-contract/src/routes/inventory.ts, packages/api-contract/src/schemas/*, packages/api-contract/src/routes/inventory.test.ts, packages/api-contract/src/schemas/*.test.ts, apps/api/src/server/api/routes/hono.ts, apps/api/src/server/api/handlers/verificationObservation.ts, apps/web/src/api/*, infra/terraform/app/api_gateway.tf, apps/api/src/server/api/middleware/rateLimit.ts, apps/api/src/server/api/routes/verificationRoutes.ts -->

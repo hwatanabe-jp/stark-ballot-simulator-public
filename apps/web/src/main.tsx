@@ -39,7 +39,7 @@ function NotFoundPage(): React.ReactElement {
   );
 }
 
-export function App(): React.ReactElement {
+function App(): React.ReactElement {
   const initialLanguage = resolveStaticInitialLanguage();
 
   return (

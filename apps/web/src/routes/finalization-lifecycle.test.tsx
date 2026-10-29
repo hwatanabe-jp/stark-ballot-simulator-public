@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FinalizationResource } from '@stark-ballot/api-contract/schemas/finalizations';
@@ -59,8 +60,7 @@ vi.mock('@stark-ballot/web/verification/stark-verification-polling', () => ({
 }));
 
 const session: SessionData = {
-  sessionId: 'session-1',
-  capabilityToken: 'capability-1',
+  ...admitSessionIdentity({ sessionId: 'session-1', capabilityToken: 'capability-1' }),
   electionId: '550e8400-e29b-41d4-a716-446655440000',
   electionConfigHash: `0x${'a'.repeat(64)}`,
   logId: `0x${'b'.repeat(64)}`,
@@ -92,7 +92,10 @@ function missingSessionError(): ApiClientError {
   });
 }
 function replaceSession(): void {
-  vi.mocked(getSessionData).mockReturnValue({ ...session, sessionId: 'session-2', capabilityToken: 'capability-2' });
+  vi.mocked(getSessionData).mockReturnValue({
+    ...session,
+    ...admitSessionIdentity({ sessionId: 'session-2', capabilityToken: 'capability-2' }),
+  });
   vi.mocked(getSessionDataForIdentity).mockReturnValue(null);
   vi.mocked(isSessionReplacedForIdentity).mockReturnValue(true);
 }

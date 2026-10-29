@@ -344,148 +344,168 @@ function projectFinalizeDecisionEvent(
   };
 }
 
-function projectCanonicalEvent(value: unknown): CanonicalEvent | undefined {
-  if (!isRecord(value) || typeof value['event'] !== 'string') {
-    return undefined;
-  }
-  const record = value;
-  const correlations = readOptionalCorrelations(record);
-  if (!correlations) {
-    return undefined;
-  }
+type CanonicalEventProjector = (
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+) => CanonicalEvent | undefined;
 
-  switch (record['event']) {
-    case 'finalization_admitted':
-      return correlations.finalization_id
-        ? { event: 'finalization_admitted', finalization_id: correlations.finalization_id }
-        : undefined;
-    case 'finalize_transition_attempted':
-      return projectFinalizeDecisionEvent(record, 'finalize_transition_attempted');
-    case 'finalize_state_update_rejected':
-      return projectFinalizeDecisionEvent(record, 'finalize_state_update_rejected');
-    case 'finalize_state_transition': {
-      const from = readRegisteredString(record, 'from', FINALIZATION_FROM_STATE_SET);
-      const to = readRegisteredString(record, 'to', FINALIZATION_STATE_SET);
-      const source = readRegisteredString(record, 'source', FINALIZATION_SOURCE_SET);
-      const reason = readRegisteredString(record, 'reason', FINALIZATION_REASON_SET);
-      const changed = record['changed'];
-      if (!from || !to || !source || !reason || typeof changed !== 'boolean') {
-        return undefined;
-      }
-      return {
-        event: 'finalize_state_transition',
-        from: from as FinalizationEventFromState,
-        to: to as FinalizationEventState,
-        source: source as FinalizationEventSource,
-        reason: reason as FinalizationEventReason,
-        changed,
-        ...correlations,
-      };
-    }
-    case 'dispatch_dropped': {
-      const reason = readRegisteredString(record, 'reason', DISPATCH_DROP_REASON_SET);
-      return reason ? { event: 'dispatch_dropped', reason: reason as DispatchDropReason, ...correlations } : undefined;
-    }
-    case 'finalization_update_received': {
-      const transport = readRegisteredString(record, 'transport', FINALIZATION_UPDATE_TRANSPORT_SET);
-      const authResult = readRegisteredString(record, 'auth_result', FINALIZATION_AUTH_RESULT_SET);
-      const outcomeCode = readRegisteredString(record, 'outcome_code', FINALIZATION_UPDATE_OUTCOME_SET);
-      if (!transport || !authResult || !outcomeCode) {
-        return undefined;
-      }
-      return {
-        event: 'finalization_update_received',
-        transport: transport as FinalizationUpdateTransport,
-        auth_result: authResult as FinalizationAuthResult,
-        outcome_code: outcomeCode as FinalizationUpdateOutcome,
-        ...correlations,
-      };
-    }
-    case 'queue_publish': {
-      const queue = readRegisteredString(record, 'queue', QUEUE_NAME_SET);
-      const result = readRegisteredString(record, 'result', QUEUE_PUBLISH_RESULT_SET);
-      const sqsMessageId = record['sqs_message_id'];
-      if (
-        !queue ||
-        !result ||
-        (sqsMessageId !== undefined &&
-          (typeof sqsMessageId !== 'string' || !SQS_MESSAGE_ID_PATTERN.test(sqsMessageId))) ||
-        (result === 'succeeded' && typeof sqsMessageId !== 'string') ||
-        (result === 'failed' && sqsMessageId !== undefined)
-      ) {
-        return undefined;
-      }
-      return result === 'succeeded'
-        ? {
-            event: 'queue_publish',
-            queue: queue as CanonicalQueueName,
-            result: 'succeeded',
-            sqs_message_id: sqsMessageId as string,
-            ...correlations,
-          }
-        : {
-            event: 'queue_publish',
-            queue: queue as CanonicalQueueName,
-            result: 'failed',
-            ...correlations,
-          };
-    }
-    case 'verification_run_summary': {
-      const outcome = readRegisteredString(record, 'outcome', VERIFICATION_OUTCOME_SET);
-      const failureCategory = readRegisteredString(record, 'failure_category', VERIFICATION_FAILURE_CATEGORY_SET);
-      const scenarioId = readRegisteredString(record, 'scenario_id', SCENARIO_ID_SET);
-      const failedRequiredCount = record['failed_required_count'];
-      const devModeReceipt = record['dev_mode_receipt'];
-      if (
-        !outcome ||
-        !failureCategory ||
-        !scenarioId ||
-        typeof failedRequiredCount !== 'number' ||
-        !Number.isInteger(failedRequiredCount) ||
-        failedRequiredCount < 0 ||
-        typeof devModeReceipt !== 'boolean'
-      ) {
-        return undefined;
-      }
-      return {
-        event: 'verification_run_summary',
-        outcome: outcome as VerificationRunOutcome,
-        failure_category: failureCategory as VerificationFailureCategory,
-        scenario_id: scenarioId as CanonicalScenarioId,
-        failed_required_count: failedRequiredCount,
-        dev_mode_receipt: devModeReceipt,
-        ...correlations,
-      };
-    }
-    case 'bundle_download_failed': {
-      const endpoint = readRegisteredString(record, 'endpoint', BUNDLE_DOWNLOAD_ENDPOINT_SET);
-      const s3ErrorCode = readRegisteredString(record, 's3_error_code', BUNDLE_DOWNLOAD_S3_ERROR_CODE_SET);
-      const httpStatus = record['http_status'];
-      const keyPrefix = record['key_prefix'];
-      if (
-        !endpoint ||
-        !s3ErrorCode ||
-        typeof httpStatus !== 'number' ||
-        !Number.isInteger(httpStatus) ||
-        httpStatus < 400 ||
-        httpStatus > 599 ||
-        typeof keyPrefix !== 'string' ||
-        !KEY_PREFIX_PATTERN.test(keyPrefix)
-      ) {
-        return undefined;
-      }
-      return {
-        event: 'bundle_download_failed',
-        endpoint: endpoint as BundleDownloadEndpoint,
-        http_status: httpStatus,
-        s3_error_code: s3ErrorCode as BundleDownloadS3ErrorCode,
-        key_prefix: keyPrefix,
-        ...correlations,
-      };
-    }
-    default:
-      return undefined;
+const canonicalEventProjectors: Readonly<Record<string, CanonicalEventProjector>> = {
+  finalization_admitted: (_record, correlations) =>
+    correlations.finalization_id
+      ? { event: 'finalization_admitted', finalization_id: correlations.finalization_id }
+      : undefined,
+  finalize_transition_attempted: (record) => projectFinalizeDecisionEvent(record, 'finalize_transition_attempted'),
+  finalize_state_update_rejected: (record) => projectFinalizeDecisionEvent(record, 'finalize_state_update_rejected'),
+  finalize_state_transition: projectFinalizationTransition,
+  dispatch_dropped: projectDispatchDropped,
+  finalization_update_received: projectFinalizationUpdate,
+  queue_publish: projectQueuePublication,
+  verification_run_summary: projectVerificationSummary,
+  bundle_download_failed: projectBundleDownloadFailure,
+} satisfies Readonly<Record<CanonicalEventName, CanonicalEventProjector>>;
+
+export function projectCanonicalEvent(value: unknown): CanonicalEvent | undefined {
+  if (!isRecord(value) || typeof value['event'] !== 'string') return undefined;
+  const correlations = readOptionalCorrelations(value);
+  if (!correlations) return undefined;
+  const event = value['event'];
+  if (typeof event !== 'string' || !Object.hasOwn(canonicalEventProjectors, event)) return undefined;
+  return canonicalEventProjectors[event]?.(value, correlations);
+}
+
+function projectFinalizationTransition(
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+): FinalizeStateTransitionEvent | undefined {
+  const from = readRegisteredString(record, 'from', FINALIZATION_FROM_STATE_SET);
+  const to = readRegisteredString(record, 'to', FINALIZATION_STATE_SET);
+  const source = readRegisteredString(record, 'source', FINALIZATION_SOURCE_SET);
+  const reason = readRegisteredString(record, 'reason', FINALIZATION_REASON_SET);
+  const changed = record['changed'];
+  if (!from || !to || !source || !reason || typeof changed !== 'boolean') {
+    return undefined;
   }
+  return {
+    event: 'finalize_state_transition',
+    from: from as FinalizationEventFromState,
+    to: to as FinalizationEventState,
+    source: source as FinalizationEventSource,
+    reason: reason as FinalizationEventReason,
+    changed,
+    ...correlations,
+  };
+}
+
+function projectDispatchDropped(
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+): DispatchDroppedEvent | undefined {
+  const reason = readRegisteredString(record, 'reason', DISPATCH_DROP_REASON_SET);
+  return reason ? { event: 'dispatch_dropped', reason: reason as DispatchDropReason, ...correlations } : undefined;
+}
+
+function projectFinalizationUpdate(
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+): FinalizationUpdateReceivedEvent | undefined {
+  const transport = readRegisteredString(record, 'transport', FINALIZATION_UPDATE_TRANSPORT_SET);
+  const authResult = readRegisteredString(record, 'auth_result', FINALIZATION_AUTH_RESULT_SET);
+  const outcomeCode = readRegisteredString(record, 'outcome_code', FINALIZATION_UPDATE_OUTCOME_SET);
+  if (!transport || !authResult || !outcomeCode) {
+    return undefined;
+  }
+  return {
+    event: 'finalization_update_received',
+    transport: transport as FinalizationUpdateTransport,
+    auth_result: authResult as FinalizationAuthResult,
+    outcome_code: outcomeCode as FinalizationUpdateOutcome,
+    ...correlations,
+  };
+}
+
+function projectQueuePublication(
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+): QueuePublishEvent | undefined {
+  const queue = readRegisteredString(record, 'queue', QUEUE_NAME_SET);
+  const result = readRegisteredString(record, 'result', QUEUE_PUBLISH_RESULT_SET);
+  const sqsMessageId = record['sqs_message_id'];
+  if (!queue || !result || !isQueuePublicationMessageId(result, sqsMessageId)) return undefined;
+  return result === 'succeeded'
+    ? {
+        event: 'queue_publish',
+        queue: queue as CanonicalQueueName,
+        result: 'succeeded',
+        sqs_message_id: sqsMessageId as string,
+        ...correlations,
+      }
+    : {
+        event: 'queue_publish',
+        queue: queue as CanonicalQueueName,
+        result: 'failed',
+        ...correlations,
+      };
+}
+
+function projectVerificationSummary(
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+): VerificationRunSummaryEvent | undefined {
+  const outcome = readRegisteredString(record, 'outcome', VERIFICATION_OUTCOME_SET);
+  const failureCategory = readRegisteredString(record, 'failure_category', VERIFICATION_FAILURE_CATEGORY_SET);
+  const scenarioId = readRegisteredString(record, 'scenario_id', SCENARIO_ID_SET);
+  const failedRequiredCount = record['failed_required_count'];
+  const devModeReceipt = record['dev_mode_receipt'];
+  if (
+    !outcome ||
+    !failureCategory ||
+    !scenarioId ||
+    typeof failedRequiredCount !== 'number' ||
+    !Number.isInteger(failedRequiredCount) ||
+    failedRequiredCount < 0 ||
+    typeof devModeReceipt !== 'boolean'
+  ) {
+    return undefined;
+  }
+  return {
+    event: 'verification_run_summary',
+    outcome: outcome as VerificationRunOutcome,
+    failure_category: failureCategory as VerificationFailureCategory,
+    scenario_id: scenarioId as CanonicalScenarioId,
+    failed_required_count: failedRequiredCount,
+    dev_mode_receipt: devModeReceipt,
+    ...correlations,
+  };
+}
+
+function projectBundleDownloadFailure(
+  record: CanonicalEventRecord,
+  correlations: FinalizationCorrelationFields,
+): BundleDownloadFailedEvent | undefined {
+  const endpoint = readRegisteredString(record, 'endpoint', BUNDLE_DOWNLOAD_ENDPOINT_SET);
+  const s3ErrorCode = readRegisteredString(record, 's3_error_code', BUNDLE_DOWNLOAD_S3_ERROR_CODE_SET);
+  const httpStatus = record['http_status'];
+  const keyPrefix = record['key_prefix'];
+  if (
+    !endpoint ||
+    !s3ErrorCode ||
+    typeof httpStatus !== 'number' ||
+    !Number.isInteger(httpStatus) ||
+    httpStatus < 400 ||
+    httpStatus > 599 ||
+    typeof keyPrefix !== 'string' ||
+    !KEY_PREFIX_PATTERN.test(keyPrefix)
+  ) {
+    return undefined;
+  }
+  return {
+    event: 'bundle_download_failed',
+    endpoint: endpoint as BundleDownloadEndpoint,
+    http_status: httpStatus,
+    s3_error_code: s3ErrorCode as BundleDownloadS3ErrorCode,
+    key_prefix: keyPrefix,
+    ...correlations,
+  };
 }
 
 function emitProjectedCanonicalEvent(event: CanonicalEvent): void {
@@ -509,4 +529,12 @@ export function emitCanonicalEvent(event: CanonicalEvent): void {
   } catch {
     // Telemetry must never alter product behavior, including if the logger is replaced in tests.
   }
+}
+
+function isQueuePublicationMessageId(result: string, messageId: unknown): boolean {
+  return !(
+    (messageId !== undefined && (typeof messageId !== 'string' || !SQS_MESSAGE_ID_PATTERN.test(messageId))) ||
+    (result === 'succeeded' && typeof messageId !== 'string') ||
+    (result === 'failed' && messageId !== undefined)
+  );
 }

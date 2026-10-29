@@ -172,24 +172,52 @@ function isDeniedKey(key: string): boolean {
   return normalized.endsWith('hash') || normalized.endsWith('key') || normalized.endsWith('keyprefix');
 }
 
+const SENSITIVE_VALUE_PATTERNS = [
+  /s3:\/\/[^\s"'<>]+/i,
+  /https?:\/\/(?:[^/?#\s"'<>]+\.)?s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?\/[^\s"'<>]*/i,
+  /(?:^|[\s"'(])sessions\/[^\s"'<>/?#]+\/[^\s"'<>]*/i,
+  /\/api\/sessions\/[^/?#\s"'<>]+(?:\/[^?#\s"'<>]*)?/i,
+  /\/api\/(?:[^/:?#\s"'<>]+\/){3,}[^/:?#\s"'<>]+/i,
+  /\b(?:session(?:[\s_-]?id)?|sid)\b[^\r\n]{0,48}\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
+  /[?&](?:X-Amz-(?:Algorithm|Credential|Security-Token|Signature)|AWSAccessKeyId)=/i,
+  /\bBearer\s+\S+/i,
+  /\bv1\.[A-Za-z0-9_-]{16,}(?:\.[A-Za-z0-9_-]{16,})?/i,
+  /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/,
+  /(?:^|[^\d])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?=$|[^\d])/i,
+  /(?:^|[\s[(])(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}(?=$|[\s\])])/i,
+  /(?:^|[\s[(])::(?:ffff:)?[0-9a-f:.]+(?=$|[\s\])])/i,
+];
+
 function hasSensitiveValueShape(value: string): boolean {
-  return (
-    /s3:\/\/[^\s"'<>]+/i.test(value) ||
-    /https?:\/\/(?:[^/?#\s"'<>]+\.)?s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?\/[^\s"'<>]*/i.test(value) ||
-    /(?:^|[\s"'(])sessions\/[^\s"'<>/?#]+\/[^\s"'<>]*/i.test(value) ||
-    /\/api\/sessions\/[^/?#\s"'<>]+(?:\/[^?#\s"'<>]*)?/i.test(value) ||
-    /\/api\/(?:[^/:?#\s"'<>]+\/){3,}[^/:?#\s"'<>]+/i.test(value) ||
-    /\b(?:session(?:[\s_-]?id)?|sid)\b[^\r\n]{0,48}\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(
-      value,
-    ) ||
-    /[?&](?:X-Amz-(?:Algorithm|Credential|Security-Token|Signature)|AWSAccessKeyId)=/i.test(value) ||
-    /\bBearer\s+\S+/i.test(value) ||
-    /\bv1\.[A-Za-z0-9_-]{16,}(?:\.[A-Za-z0-9_-]{16,})?/i.test(value) ||
-    /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/.test(value) ||
-    /(?:^|[^\d])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?=$|[^\d])/i.test(value) ||
-    /(?:^|[\s[(])(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}(?=$|[\s\])])/i.test(value) ||
-    /(?:^|[\s[(])::(?:ffff:)?[0-9a-f:.]+(?=$|[\s\])])/i.test(value)
-  );
+  return SENSITIVE_VALUE_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function hasCanonicalSessionSegment(segments: readonly string[]): boolean {
+  const sessionsIndex = segments.indexOf('sessions');
+  if (sessionsIndex >= 0 && segments[sessionsIndex + 1] !== ':sessionId') {
+    return false;
+  }
+  const sessionIdIndex = segments.indexOf(':sessionId');
+  if (sessionIdIndex >= 0 && segments[sessionIdIndex - 1] !== 'sessions') {
+    return false;
+  }
+  return true;
+}
+
+function hasCanonicalFinalizationSegment(segments: readonly string[]): boolean {
+  const finalizationsIndex = segments.indexOf('finalizations');
+  if (
+    finalizationsIndex >= 0 &&
+    segments[finalizationsIndex + 1] !== 'current' &&
+    segments[finalizationsIndex + 1] !== ':finalizationId'
+  ) {
+    return false;
+  }
+  const finalizationIdIndex = segments.indexOf(':finalizationId');
+  if (finalizationIdIndex >= 0 && segments[finalizationIdIndex - 1] !== 'finalizations') {
+    return false;
+  }
+  return true;
 }
 
 function isCanonicalHttpRouteTemplate(value: string): boolean {
@@ -204,26 +232,7 @@ function isCanonicalHttpRouteTemplate(value: string): boolean {
   ) {
     return false;
   }
-  const sessionsIndex = segments.indexOf('sessions');
-  if (sessionsIndex >= 0 && segments[sessionsIndex + 1] !== ':sessionId') {
-    return false;
-  }
-  const sessionIdIndex = segments.indexOf(':sessionId');
-  if (sessionIdIndex >= 0 && segments[sessionIdIndex - 1] !== 'sessions') {
-    return false;
-  }
-  const finalizationsIndex = segments.indexOf('finalizations');
-  if (
-    finalizationsIndex >= 0 &&
-    segments[finalizationsIndex + 1] !== 'current' &&
-    segments[finalizationsIndex + 1] !== ':finalizationId'
-  ) {
-    return false;
-  }
-  const finalizationIdIndex = segments.indexOf(':finalizationId');
-  if (finalizationIdIndex >= 0 && segments[finalizationIdIndex - 1] !== 'finalizations') {
-    return false;
-  }
+  if (!hasCanonicalSessionSegment(segments) || !hasCanonicalFinalizationSegment(segments)) return false;
   return segments.every(
     (segment) => /^[a-z0-9._-]+$/i.test(segment) || /^:[a-z][a-z0-9_]*$/i.test(segment) || segment === '*',
   );
@@ -294,6 +303,10 @@ function sanitizeArray(
   return output;
 }
 
+function isSafeRouteTemplateField(key: string, value: unknown): value is string {
+  return normalizeKey(key) === 'path' && typeof value === 'string' && isCanonicalHttpRouteTemplate(value);
+}
+
 function sanitizeObject(
   value: object,
   state: SanitizationState,
@@ -325,11 +338,7 @@ function sanitizeObject(
       output[safeKey] = '[Accessor]';
       return;
     }
-    if (
-      normalizeKey(key) === 'path' &&
-      typeof descriptor.value === 'string' &&
-      isCanonicalHttpRouteTemplate(descriptor.value)
-    ) {
+    if (isSafeRouteTemplateField(key, descriptor.value)) {
       output[safeKey] = descriptor.value;
       return;
     }
@@ -379,6 +388,11 @@ function sanitizeValue(
   if (consumeCurrent && !consumeTraversalItem(state)) {
     return OMIT_VALUE;
   }
+  if (value === null || typeof value !== 'object') return sanitizePrimitive(value);
+  return sanitizeObjectGraph(value, state, depth, options);
+}
+
+function sanitizePrimitive(value: unknown): SafeLogValue | typeof OMIT_VALUE {
   if (value === null) {
     return null;
   }
@@ -394,15 +408,21 @@ function sanitizeValue(
   if (typeof value === 'bigint') {
     return sanitizeLogString(`${value.toString()}n`);
   }
-  if (typeof value === 'undefined') {
-    return OMIT_VALUE;
-  }
   if (typeof value === 'symbol') {
     return '[Symbol]';
   }
   if (typeof value === 'function') {
     return '[Function]';
   }
+  return OMIT_VALUE;
+}
+
+function sanitizeObjectGraph(
+  value: object,
+  state: SanitizationState,
+  depth: number,
+  options: SanitizeLogValueOptions,
+): SafeLogValue {
   if (depth >= MAX_DEPTH) {
     return '[Truncated: depth]';
   }

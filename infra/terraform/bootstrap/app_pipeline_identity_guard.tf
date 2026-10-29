@@ -1,5 +1,10 @@
 resource "terraform_data" "development_app_pipeline_identity_guard" {
-  input = "${local.app_lane_authority.stateIdentity}:${local.deployment_target.sourceBranch}"
+  input = {
+    state_identity       = local.app_lane_authority.stateIdentity
+    source_branch        = local.deployment_target.sourceBranch
+    status_source_type   = "GITHUB"
+    status_artifact_type = "NO_ARTIFACTS"
+  }
 
   lifecycle {
     precondition {

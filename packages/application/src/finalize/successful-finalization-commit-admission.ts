@@ -1,5 +1,9 @@
+import { admitFinalizationBitmapDisposition } from './finalization-bitmap-admission';
+import { parseVerificationResultRecord } from './finalization-result-store';
+import type { SuccessfulFinalizationCommitInput, SuccessfulFinalizationCommitResult } from './finalization-store';
 import { finalizationRecordCodec, type FinalizationRecord } from './finalization-record';
-import type { FinalizationSucceededPayload } from './finalization-store';
+import { buildFinalizationCommand, type FinalizationSucceededPayload } from './finalization-store';
+import { evaluateFinalizationTransition } from './finalization-transition-policy';
 import type { SessionId } from '@stark-ballot/domain/types/identifiers';
 import { admitFinalizationResultAuthority } from './finalization-storage';
 
@@ -11,7 +15,7 @@ export function cloneSuccessfulFinalizationRecord(record: SuccessfulFinalization
 }
 
 export function isSuccessfulFinalizationRecord(
-  record: FinalizationRecord | null,
+  record: FinalizationRecord | null | undefined,
 ): record is SuccessfulFinalizationRecord {
   return record?.state.status === 'succeeded' && record.finalizationResult !== undefined;
 }
@@ -71,7 +75,7 @@ export function assertDirectSuccessfulFinalizationPayload(payload: FinalizationS
   }
 }
 
-export function buildDirectSuccessfulFinalizationCommitRecord(
+function buildDirectSuccessfulFinalizationCommitRecord(
   sessionId: SessionId,
   payload: FinalizationSucceededPayload,
   current: FinalizationRecord | null,
@@ -118,4 +122,74 @@ export function assertSuccessfulFinalizationLifecycleAdmission(
   ) {
     throw new Error('Successful finalization commit does not match current lifecycle authority');
   }
+}
+
+/** Select the same direct-success path for all stores before adapter persistence. */
+export function prepareDirectSuccessfulFinalization(
+  sessionId: SessionId,
+  payload: FinalizationSucceededPayload,
+  current: FinalizationRecord | null,
+  evaluatedAtMs: number,
+) {
+  const command = buildFinalizationCommand(sessionId, 'succeed', payload);
+  const admission = evaluateFinalizationTransition({
+    authority: { currentRecord: current },
+    command,
+    evaluatedAtMs,
+  });
+  if (admission.kind === 'invalid') throw new Error(`Invalid finalization transition: ${admission.reason}`);
+  if (
+    current &&
+    (current.finalizationId !== payload.finalizationId ||
+      current.state.status === 'failed' ||
+      current.state.status === 'timeout')
+  ) {
+    return { kind: 'transition' as const, command };
+  }
+  return {
+    kind: 'commit' as const,
+    record: buildDirectSuccessfulFinalizationCommitRecord(sessionId, payload, current),
+  };
+}
+
+/** Admit evidence in lifecycle order, before any adapter writes. */
+export function admitSuccessfulFinalizationEvidence(
+  requested: SuccessfulFinalizationRecord,
+  input: SuccessfulFinalizationCommitInput,
+) {
+  const bitmap = admitFinalizationBitmapDisposition(requested, input.bitmap);
+  const receipt = admitSuccessfulFinalizationReceipt(input.receipt);
+  const verification = input.verificationResult
+    ? parseVerificationResultRecord({
+        sessionId: requested.sessionId,
+        finalizationId: requested.finalizationId,
+        verificationResult: input.verificationResult,
+      })
+    : undefined;
+  if (input.verificationResult && !verification) {
+    throw new Error('Invalid verification result record');
+  }
+  return { bitmap, receipt, verification };
+}
+
+export function buildPublishedSuccessfulFinalization(
+  requested: SuccessfulFinalizationRecord,
+  receiptPublication: SuccessfulFinalizationCommitResult['receiptPublication'],
+): SuccessfulFinalizationRecord {
+  const committed = finalizationRecordCodec.admit({
+    ...requested,
+    finalizationResult: {
+      ...requested.finalizationResult,
+      artifacts: {
+        ...requested.finalizationResult.artifacts,
+        ...(receiptPublication
+          ? { receiptPublication: { availability: 'available' as const, publication: receiptPublication } }
+          : {}),
+      },
+    },
+  });
+  if (!isSuccessfulFinalizationRecord(committed)) {
+    throw new Error('Invalid successful finalization commit');
+  }
+  return committed;
 }

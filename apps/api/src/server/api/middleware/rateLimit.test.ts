@@ -21,7 +21,7 @@ import {
   targetRuntimeProfile,
 } from '@stark-ballot/runtime-config/env/test-support/runtimeProfileFixtures';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { getRecordProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
+import { getObjectProperty, getStringProperty } from '@stark-ballot/validation/unknown-value-guards';
 
 const LOCAL_RUNTIME_PROFILE = localRuntimeProfile();
 const TARGET_RUNTIME_PROFILE = targetRuntimeProfile();
@@ -33,7 +33,7 @@ afterEach(() => {
 function expectRateLimitWarning(spy: MockInstance<typeof logger.warn>, reason: string): void {
   const call = spy.mock.calls[0];
   const fields = call?.[1];
-  const rateLimit = getRecordProperty(fields, 'rate_limit');
+  const rateLimit = getObjectProperty(fields, 'rate_limit');
   expect(spy).toHaveBeenCalledTimes(1);
   expect(call?.[0]).toBe('rate limit exceeded');
   expect(getStringProperty(fields, 'event')).toBe('rate_limit_hit');

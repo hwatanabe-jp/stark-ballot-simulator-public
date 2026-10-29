@@ -15,7 +15,7 @@ import type { VoteStore } from '@stark-ballot/domain/types/voteStore';
 import type { FinalizationLifecycleStore } from '@stark-ballot/application/finalize/finalization-store';
 import type { ZkVMInput } from '@stark-ballot/zkvm-contract/zkvm/types';
 import { logger } from '@stark-ballot/diagnostics/logger';
-import { emitCanonicalEvent } from '@stark-ballot/diagnostics/canonicalEvents';
+import { emitCanonicalEvent, type FinalizationEventReason } from '@stark-ballot/diagnostics/canonicalEvents';
 import { hashSessionIdForLogging } from '@stark-ballot/diagnostics/logging';
 import type { FinalizeAcceptedPayload, FinalizeSessionError, Result } from './types';
 import type { SessionId } from '@stark-ballot/domain/types/identifiers';
@@ -121,88 +121,8 @@ export async function finalizeAsync(
 
   const zkvmInputCommitment = (deps.computeCommitment ?? computeInputCommitment)(input.zkvmInput);
   if (input.inputSource === 's3') {
-    if (!deps.persistAsyncProverInput) {
-      emitCanonicalEvent({
-        event: 'finalize_transition_attempted',
-        to: 'failed',
-        source: 'finalize',
-        reason: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
-        ...correlation,
-      });
-      if (typeof deps.store.markFinalizationFailed === 'function') {
-        try {
-          await deps.store.markFinalizationFailed(input.sessionId, {
-            finalizationId: input.finalizationId,
-            queuedAtMs: input.queuedAtMs,
-            failedAtMs: (deps.now ?? Date.now)(),
-            error: {
-              code: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
-              message: 'Target async prover input persistence is unavailable',
-            },
-            observability: {
-              source: 'finalize',
-              reason: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
-            },
-          });
-        } catch {
-          logger.error('[API] Failed to mark finalization as failed after missing input persistence');
-        }
-      }
-      return {
-        ok: false,
-        error: {
-          kind: 'api',
-          code: ApplicationErrorCode.INTERNAL_ERROR,
-          details: { details: 'Target async prover input persistence is not configured' },
-        },
-      };
-    }
-    try {
-      await deps.persistAsyncProverInput({
-        sessionId: input.sessionId,
-        finalizationId: input.finalizationId,
-        zkvmInput: input.zkvmInput,
-        electionConfig: input.electionConfig,
-      });
-    } catch {
-      logger.error('[API] Failed to persist target async prover input');
-
-      if (typeof deps.store.markFinalizationFailed === 'function') {
-        emitCanonicalEvent({
-          event: 'finalize_transition_attempted',
-          to: 'failed',
-          source: 'finalize',
-          reason: 'PROVER_INPUT_UPLOAD_FAILED',
-          ...correlation,
-        });
-        try {
-          await deps.store.markFinalizationFailed(input.sessionId, {
-            finalizationId: input.finalizationId,
-            queuedAtMs: input.queuedAtMs,
-            failedAtMs: (deps.now ?? Date.now)(),
-            error: {
-              code: 'PROVER_INPUT_UPLOAD_FAILED',
-              message: 'Failed to persist target async prover input',
-            },
-            observability: {
-              source: 'finalize',
-              reason: 'PROVER_INPUT_UPLOAD_FAILED',
-            },
-          });
-        } catch {
-          logger.error('[API] Failed to mark finalization as failed after input upload error');
-        }
-      }
-
-      return {
-        ok: false,
-        error: {
-          kind: 'api',
-          code: ApplicationErrorCode.INTERNAL_ERROR,
-          details: { details: 'Failed to persist target async prover input' },
-        },
-      };
-    }
+    const persistence = await persistAsyncInput(input, deps, correlation);
+    if (!persistence.ok) return persistence;
   }
 
   const workItemCommon = {
@@ -242,23 +162,11 @@ export async function finalizeAsync(
         reason: 'SQS_PUBLISH_FAILED',
         ...correlation,
       });
-      try {
-        await deps.store.markFinalizationFailed(input.sessionId, {
-          finalizationId: input.finalizationId,
-          queuedAtMs: input.queuedAtMs,
-          failedAtMs: (deps.now ?? Date.now)(),
-          error: {
-            code: 'SQS_PUBLISH_FAILED',
-            message: 'Failed to enqueue finalization job',
-          },
-          observability: {
-            source: 'finalize',
-            reason: 'SQS_PUBLISH_FAILED',
-          },
-        });
-      } catch {
-        logger.error('[API] Failed to mark finalization as failed after publish error');
-      }
+      await writeAsyncFailure(input, deps, {
+        code: 'SQS_PUBLISH_FAILED',
+        message: 'Failed to enqueue finalization job',
+        writeFailureMessage: '[API] Failed to mark finalization as failed after publish error',
+      });
     }
 
     return {
@@ -281,4 +189,93 @@ export async function finalizeAsync(
       state: finalizationState,
     },
   };
+}
+
+type AsyncCorrelation = {
+  session_id_hash: ReturnType<typeof hashSessionIdForLogging>;
+  finalization_id: FinalizationId;
+};
+
+async function persistAsyncInput(
+  input: FinalizeAsyncInput,
+  deps: FinalizeAsyncDependencies,
+  correlation: AsyncCorrelation,
+): Promise<Result<void, FinalizeSessionError>> {
+  if (!deps.persistAsyncProverInput) {
+    emitCanonicalEvent({
+      event: 'finalize_transition_attempted',
+      to: 'failed',
+      source: 'finalize',
+      reason: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
+      ...correlation,
+    });
+    if (typeof deps.store.markFinalizationFailed === 'function') {
+      await writeAsyncFailure(input, deps, {
+        code: 'PROVER_INPUT_PERSISTENCE_UNAVAILABLE',
+        message: 'Target async prover input persistence is unavailable',
+        writeFailureMessage: '[API] Failed to mark finalization as failed after missing input persistence',
+      });
+    }
+    return {
+      ok: false,
+      error: {
+        kind: 'api',
+        code: ApplicationErrorCode.INTERNAL_ERROR,
+        details: { details: 'Target async prover input persistence is not configured' },
+      },
+    };
+  }
+  try {
+    await deps.persistAsyncProverInput({
+      sessionId: input.sessionId,
+      finalizationId: input.finalizationId,
+      zkvmInput: input.zkvmInput,
+      electionConfig: input.electionConfig,
+    });
+  } catch {
+    logger.error('[API] Failed to persist target async prover input');
+
+    if (typeof deps.store.markFinalizationFailed === 'function') {
+      emitCanonicalEvent({
+        event: 'finalize_transition_attempted',
+        to: 'failed',
+        source: 'finalize',
+        reason: 'PROVER_INPUT_UPLOAD_FAILED',
+        ...correlation,
+      });
+      await writeAsyncFailure(input, deps, {
+        code: 'PROVER_INPUT_UPLOAD_FAILED',
+        message: 'Failed to persist target async prover input',
+        writeFailureMessage: '[API] Failed to mark finalization as failed after input upload error',
+      });
+    }
+
+    return {
+      ok: false,
+      error: {
+        kind: 'api',
+        code: ApplicationErrorCode.INTERNAL_ERROR,
+        details: { details: 'Failed to persist target async prover input' },
+      },
+    };
+  }
+  return { ok: true, value: undefined };
+}
+
+async function writeAsyncFailure(
+  input: FinalizeAsyncInput,
+  deps: FinalizeAsyncDependencies,
+  failure: { code: FinalizationEventReason; message: string; writeFailureMessage: string },
+): Promise<void> {
+  try {
+    await deps.store.markFinalizationFailed(input.sessionId, {
+      finalizationId: input.finalizationId,
+      queuedAtMs: input.queuedAtMs,
+      failedAtMs: (deps.now ?? Date.now)(),
+      error: { code: failure.code, message: failure.message },
+      observability: { source: 'finalize', reason: failure.code },
+    });
+  } catch {
+    logger.error(failure.writeFailureMessage);
+  }
 }

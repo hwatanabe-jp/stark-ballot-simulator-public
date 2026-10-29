@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import type { RefObject } from 'react';
@@ -27,8 +28,7 @@ const mockIsSessionReplacedForIdentity = vi.mocked(sessionModule.isSessionReplac
 const mockSaveKnowledgeData = vi.mocked(saveKnowledgeData);
 
 const ACTIVE_SESSION = {
-  sessionId: 'test-session',
-  capabilityToken: 'test-capability-token',
+  ...admitSessionIdentity({ sessionId: 'test-session', capabilityToken: 'test-capability-token' }),
   electionId: '550e8400-e29b-41d4-a716-446655440000',
   electionConfigHash: `0x${'a'.repeat(64)}`,
   logId: `0x${'b'.repeat(64)}`,
@@ -71,8 +71,7 @@ const setup = (
   const verificationStartedRef = { current: false } satisfies RefObject<boolean>;
   const sessionIdentityRef = {
     current: {
-      sessionId: 'test-session',
-      capabilityToken: 'test-capability-token',
+      ...admitSessionIdentity({ sessionId: 'test-session', capabilityToken: 'test-capability-token' }),
     },
   } satisfies RefObject<SessionIdentity | null>;
   const triggerRunMock = triggerStarkVerificationRun ?? (() => Promise.resolve());

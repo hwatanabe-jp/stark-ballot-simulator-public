@@ -1,3 +1,4 @@
+import { admitSessionIdentity } from './identity';
 import type { ClientFinalizationSnapshot } from '@stark-ballot/web/finalize/client-finalization-result';
 import type { ServerIssuedSessionIdentity, SessionData, SessionPhase, VoteChoice } from './types';
 import { admitStoredSessionData } from './storageAdmission';
@@ -9,7 +10,7 @@ import {
   SESSION_STORAGE_KEY as SESSION_STORAGE_KEY_VALUE,
 } from './storage';
 
-export const SESSION_PHASE_TIMEOUTS_MS: Record<SessionPhase, number> = {
+const SESSION_PHASE_TIMEOUTS_MS: Record<SessionPhase, number> = {
   voting: 30 * 60 * 1000,
   finalizing: 30 * 60 * 1000,
   verifying: 24 * 60 * 60 * 1000,
@@ -68,6 +69,10 @@ function hasOwn(value: object, key: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function hasSessionIdentityKeys(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length === 2 && hasOwn(value, 'sessionId') && hasOwn(value, 'capabilityToken');
+}
+
 function parseSessionIdentity(value: unknown): SessionIdentity | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -75,9 +80,7 @@ function parseSessionIdentity(value: unknown): SessionIdentity | null {
 
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 2 ||
-    !hasOwn(record, 'sessionId') ||
-    !hasOwn(record, 'capabilityToken') ||
+    !hasSessionIdentityKeys(record) ||
     typeof record['sessionId'] !== 'string' ||
     record['sessionId'].length === 0 ||
     typeof record['capabilityToken'] !== 'string' ||
@@ -85,10 +88,10 @@ function parseSessionIdentity(value: unknown): SessionIdentity | null {
   ) {
     return null;
   }
-  return {
+  return admitSessionIdentity({
     sessionId: record['sessionId'],
     capabilityToken: record['capabilityToken'],
-  };
+  });
 }
 
 function toSessionIdentity(
@@ -236,12 +239,7 @@ function isExpired(session: SessionData, now: number = Date.now()): boolean {
   return now > session.expiresAt;
 }
 
-function applySessionPatch(current: SessionData, patch: SessionPatch, now: number): SessionData {
-  if (Object.keys(patch).some((key) => !SESSION_PATCH_KEYS.has(key as keyof SessionPatch))) {
-    throw new Error('Invalid browser session patch');
-  }
-
-  const candidate: Record<string, unknown> = { ...current };
+function applyOptionalSessionFields(candidate: Record<string, unknown>, patch: SessionPatch): void {
   for (const key of OPTIONAL_PATCH_KEYS) {
     if (!hasOwn(patch, key)) {
       continue;
@@ -253,12 +251,24 @@ function applySessionPatch(current: SessionData, patch: SessionPatch, now: numbe
       candidate[key] = value;
     }
   }
+}
 
+function applySessionPhase(candidate: Record<string, unknown>, patch: SessionPatch): void {
   if (hasOwn(patch, 'phase')) {
     candidate['phase'] = patch.phase;
   } else if (hasOwn(patch, 'finalizeResult') && patch.finalizeResult !== undefined) {
     candidate['phase'] = 'verifying';
   }
+}
+
+function applySessionPatch(current: SessionData, patch: SessionPatch, now: number): SessionData {
+  if (Object.keys(patch).some((key) => !SESSION_PATCH_KEYS.has(key as keyof SessionPatch))) {
+    throw new Error('Invalid browser session patch');
+  }
+
+  const candidate: Record<string, unknown> = { ...current };
+  applyOptionalSessionFields(candidate, patch);
+  applySessionPhase(candidate, patch);
 
   const phase = candidate['phase'];
   if (phase !== 'voting' && phase !== 'finalizing' && phase !== 'verifying') {

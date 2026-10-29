@@ -242,8 +242,8 @@ export const ja = {
     resetConfirm: '最初からやり直しますか？現在の進捗はすべて失われます。',
   },
   header: {
-    languageSwitchToEnglish: '英語に切り替え',
-    languageSwitchToJapanese: '日本語に切り替え',
+    languageSwitchToEnglish: 'JA: 英語に切り替え',
+    languageSwitchToJapanese: 'EN: 日本語に切り替え',
   },
   footer: {
     terms: '利用規約',

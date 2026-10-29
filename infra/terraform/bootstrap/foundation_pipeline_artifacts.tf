@@ -22,7 +22,6 @@ data "aws_iam_policy_document" "foundation_artifact_kms_key" {
       type = "AWS"
       identifiers = [
         aws_iam_role.foundation_pipeline[0].arn,
-        aws_iam_role.foundation_image_signing_authority_resolver_build[0].arn,
         aws_iam_role.foundation_prover_release_toolchain_resolver_build[0].arn,
         aws_iam_role.foundation_prover_release_candidate_build[0].arn,
         aws_iam_role.foundation_prover_release_update_accepted_pointer_build[0].arn,
@@ -51,11 +50,8 @@ resource "aws_kms_key" "foundation_pipeline_artifacts" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   depends_on = [
-    terraform_data.bootstrap_apply_authorization_propagation,
-    aws_iam_role_policy_attachment.terraform_apply_artifact_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_pipeline_management,
+
+
   ]
 
   description             = "STARK Ballot Simulator foundation pipeline artifact key for ${var.account_alias}/${var.deployment_environment}/foundation"
@@ -82,11 +78,8 @@ resource "aws_s3_bucket" "foundation_pipeline_artifacts" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
   depends_on = [
-    terraform_data.bootstrap_apply_authorization_propagation,
-    aws_iam_role_policy_attachment.terraform_apply_artifact_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_pipeline_management,
+
+
   ]
 
   bucket = local.foundation_pipeline_artifact_bucket_name

@@ -1,3 +1,4 @@
+import { isNonArrayObject as isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { addHexPrefix, isValidHexString, normalizeHexString } from '@stark-ballot/crypto-primitives';
 import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type { FinalizationId } from '@stark-ballot/application/finalize/finalization-types';
@@ -23,10 +24,6 @@ const MESSAGE_KEYS = new Set([
   'bundleKey',
   'expectedImageId',
 ]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function parseNonEmptyString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) {

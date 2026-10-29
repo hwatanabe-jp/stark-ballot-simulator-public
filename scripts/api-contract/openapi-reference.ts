@@ -7,8 +7,8 @@ import { TARGET_API_ROUTE_CONTRACTS } from '@stark-ballot/api-contract/routes';
 import { formatSource } from '../formatting/format-source';
 import { buildOpenApiDocument, serializeOpenApiDocument } from './lib/openapi-projection';
 
-export const OPENAPI_REFERENCE_PATH = 'openapi/stark-ballot-api.openapi.json';
-export const OPENAPI_REFERENCE_USAGE = 'Usage: openapi-reference.ts <generate|check>';
+const OPENAPI_REFERENCE_PATH = 'openapi/stark-ballot-api.openapi.json';
+const OPENAPI_REFERENCE_USAGE = 'Usage: openapi-reference.ts <generate|check>';
 
 export function parseOpenApiReferenceCommand(argv: readonly string[]): 'check' | 'generate' {
   if (argv.length !== 1 || (argv[0] !== 'check' && argv[0] !== 'generate')) {

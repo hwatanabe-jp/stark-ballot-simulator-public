@@ -13,13 +13,13 @@ import { parseImageIdMapping, resolveConfirmedImageIdVariant } from './image-id-
 /** @typedef {import('./image-id-mapping.js').ImageIdVariant} ImageIdVariant */
 
 /** @type {readonly ImageIdVariant[]} */
-export const IMAGE_ID_VARIANTS = ['default', 'x86_64'];
+const IMAGE_ID_VARIANTS = ['default', 'x86_64'];
 
 /**
  * @param {unknown} value
  * @returns {value is ImageIdVariant}
  */
-export function isImageIdVariant(value) {
+function isImageIdVariant(value) {
   return typeof value === 'string' && IMAGE_ID_VARIANTS.includes(/** @type {ImageIdVariant} */ (value));
 }
 

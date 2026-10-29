@@ -9,7 +9,7 @@ import {
   resolveDefaultCliExpectedImageId,
   runBuildCiCommand,
 } from './cli-e2e-voting-flow';
-import { getStringProperty, requireRecord } from '@stark-ballot/validation/unknown-value-guards';
+import { getStringProperty, requireNonNullObject } from '@stark-ballot/validation/unknown-value-guards';
 import { parseImageIdMapping } from '@stark-ballot/validation/image-id-mapping';
 import { createTestJournal } from '@stark-ballot/test-support/testing/test-helpers';
 import imageIdMappingJson from '../../public/imageId-mapping.json';
@@ -330,7 +330,7 @@ describe('CLIVotingTest regression coverage', () => {
       }),
     );
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
-    const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
+    const verifyOptions = requireNonNullObject(strictDefined(verifyCall)[1], 'verifySTARK options');
     expect(verifyOptions).not.toHaveProperty('verificationBundlePath');
 
     expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(2);
@@ -339,9 +339,9 @@ describe('CLIVotingTest regression coverage', () => {
       'http://localhost/api/sessions/session-123/finalizations/finalization-1/artifacts/report',
     ]);
     for (const fetchCall of vi.mocked(global.fetch).mock.calls) {
-      const requestOptions = requireRecord(fetchCall[1], 'fetch request init');
+      const requestOptions = requireNonNullObject(fetchCall[1], 'fetch request init');
       expect(getStringProperty(requestOptions, 'method')).toBe('GET');
-      const requestHeaders = requireRecord(requestOptions['headers'], 'fetch request headers');
+      const requestHeaders = requireNonNullObject(requestOptions['headers'], 'fetch request headers');
       expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBeUndefined();
       expect(getStringProperty(requestHeaders, 'X-Session-Capability')).toBe('capability-token');
     }
@@ -707,7 +707,7 @@ describe('CLIVotingTest regression coverage', () => {
     expect(describeReceipt).not.toHaveBeenCalled();
 
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
-    const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
+    const verifyOptions = requireNonNullObject(strictDefined(verifyCall)[1], 'verifySTARK options');
     const bundlePath = getStringProperty(verifyOptions, 'verificationBundlePath');
     expect(bundlePath).toBeDefined();
     expect(bundlePath).toContain('bundle');
@@ -729,10 +729,10 @@ describe('CLIVotingTest regression coverage', () => {
       'http://localhost/api/sessions/session-123/finalizations/finalization-1/artifacts/bundle',
     );
 
-    const requestOptions = requireRecord(fetchCall?.[1], 'fetch request init');
+    const requestOptions = requireNonNullObject(fetchCall?.[1], 'fetch request init');
     expect(getStringProperty(requestOptions, 'method')).toBe('GET');
 
-    const requestHeaders = requireRecord(requestOptions['headers'], 'fetch request headers');
+    const requestHeaders = requireNonNullObject(requestOptions['headers'], 'fetch request headers');
     expect(getStringProperty(requestHeaders, 'X-Session-ID')).toBeUndefined();
     expect(getStringProperty(requestHeaders, 'X-Session-Capability')).toBe('capability-token');
     expect(vi.mocked(global.fetch).mock.calls.at(1)?.[0]).toBe(
@@ -865,7 +865,7 @@ describe('CLIVotingTest regression coverage', () => {
     });
 
     const verifyCall = vi.mocked(verifySTARK).mock.calls[0];
-    const verifyOptions = requireRecord(strictDefined(verifyCall)[1], 'verifySTARK options');
+    const verifyOptions = requireNonNullObject(strictDefined(verifyCall)[1], 'verifySTARK options');
     expect(verifyOptions).toMatchObject({
       proofProfile: {
         executor: 'risc0',

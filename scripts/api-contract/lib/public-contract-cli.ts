@@ -33,6 +33,22 @@ interface PublicContractDriftLike {
 const DEFAULT_BASELINE_PATH = 'scripts/api-contract/baselines/reviewed-public-contract.json';
 const DEFAULT_CURRENT_PATH = '.tmp/api-contract/current-public-contract.json';
 
+function assignPublicContractOption(options: PublicContractCliOptions, flag: string, value: string): void {
+  if (flag === '--out') {
+    options.out = value;
+  } else if (flag === '--baseline') {
+    options.baseline = value;
+  } else if (flag === '--current') {
+    options.current = value;
+  } else if (flag === '--source-ref') {
+    options.sourceRef = value;
+  } else if (flag === '--classification') {
+    options.classification = value;
+  } else {
+    throw new Error(`Unknown option: ${flag}`);
+  }
+}
+
 export function parsePublicContractCli(argv: readonly string[]): PublicContractCliOptions {
   const [command] = argv;
   if (command !== 'capture' && command !== 'compare') {
@@ -56,19 +72,7 @@ export function parsePublicContractCli(argv: readonly string[]): PublicContractC
       throw new Error(`Invalid argument near ${flag}`);
     }
     index += 1;
-    if (flag === '--out') {
-      options.out = value;
-    } else if (flag === '--baseline') {
-      options.baseline = value;
-    } else if (flag === '--current') {
-      options.current = value;
-    } else if (flag === '--source-ref') {
-      options.sourceRef = value;
-    } else if (flag === '--classification') {
-      options.classification = value;
-    } else {
-      throw new Error(`Unknown option: ${flag}`);
-    }
+    assignPublicContractOption(options, flag, value);
   }
   return options;
 }

@@ -1,7 +1,8 @@
-import { createWriteStream, promises as fs } from 'node:fs';
+import { writeZipArchive } from './zip';
+import { openZipFromBuffer, openEntryStream, type ZipOpenOptions } from './zip-streams';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { Readable } from 'node:stream';
-import * as yauzl from 'yauzl';
+import type * as yauzl from 'yauzl';
 import * as yazl from 'yazl';
 import { isSafeVerifierSegment } from '@stark-ballot/validation/safe-verifier-segment';
 import type { VerificationBundleArtifactMap } from '@stark-ballot/verification/bundle';
@@ -127,24 +128,14 @@ export async function createVerificationBundleArchive(
     throw new Error('No public JSON artifacts found to archive');
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const zipfile = new yazl.ZipFile();
-    for (const fileName of filesToInclude) {
-      zipfile.addFile(path.join(bundlePath, fileName), fileName, {
-        mtime: new Date(0),
-        compress: false,
-      });
-    }
-
-    const output = createWriteStream(archivePath);
-    output.on('close', resolve);
-    output.on('error', reject);
-    zipfile.outputStream.on('error', reject);
-    zipfile.on('error', reject);
-
-    zipfile.outputStream.pipe(output);
-    zipfile.end();
-  });
+  const zipfile = new yazl.ZipFile();
+  for (const fileName of filesToInclude) {
+    zipfile.addFile(path.join(bundlePath, fileName), fileName, {
+      mtime: new Date(0),
+      compress: false,
+    });
+  }
+  await writeZipArchive(zipfile, archivePath);
 
   try {
     await inspectVerificationBundleArchiveFile(archivePath, options.policy);
@@ -162,11 +153,6 @@ class PublicBundleArchiveAdmissionError extends Error {
     this.name = 'PublicBundleArchiveAdmissionError';
   }
 }
-
-type ZipOpenOptions = yauzl.Options & {
-  strictFileNames?: boolean;
-  validateEntrySizes?: boolean;
-};
 
 const ZIP_OPEN_OPTIONS: ZipOpenOptions = {
   lazyEntries: true,
@@ -239,30 +225,6 @@ function assertNoMembershipOverlap(first: readonly string[], second: readonly st
   if (overlap) {
     throw new Error(`Invalid public bundle archive policy: ${label} overlap ${overlap}`);
   }
-}
-
-async function openZipFromBuffer(buffer: Buffer): Promise<yauzl.ZipFile> {
-  return await new Promise((resolve, reject) => {
-    yauzl.fromBuffer(buffer, ZIP_OPEN_OPTIONS, (error, zipfile) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(zipfile);
-    });
-  });
-}
-
-async function openEntryStream(zipfile: yauzl.ZipFile, entry: yauzl.Entry): Promise<Readable> {
-  return await new Promise((resolve, reject) => {
-    zipfile.openReadStream(entry, (error, stream) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(stream);
-    });
-  });
 }
 
 async function consumeEntry(zipfile: yauzl.ZipFile, entry: yauzl.Entry): Promise<void> {
@@ -396,7 +358,7 @@ export async function inspectVerificationBundleArchiveBuffer(
   assertValidArchivePolicy(policy);
   let zipfile: yauzl.ZipFile;
   try {
-    zipfile = await openZipFromBuffer(buffer);
+    zipfile = await openZipFromBuffer(buffer, ZIP_OPEN_OPTIONS);
   } catch {
     throw new PublicBundleArchiveAdmissionError('archive is malformed or unreadable');
   }

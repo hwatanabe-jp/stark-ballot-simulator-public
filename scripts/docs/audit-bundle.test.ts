@@ -66,7 +66,11 @@ function createArtifacts() {
   return { manifest, close, publicInput, journal };
 }
 
-async function writeArchive(extraMembers: Record<string, unknown> = {}, journalOverride: Record<string, unknown> = {}) {
+async function writeArchive(
+  extraMembers: Record<string, unknown> = {},
+  journalOverride: Record<string, unknown> = {},
+  receiptJournalOverride: Record<string, unknown> = {},
+) {
   const { manifest, close, publicInput, journal } = createArtifacts();
   const archivePath = path.join(fixtureRoot, 'input with spaces.zip');
   const zip = new ZipFile();
@@ -82,7 +86,10 @@ async function writeArchive(extraMembers: Record<string, unknown> = {}, journalO
   const saved = pipeline(zip.outputStream, createWriteStream(archivePath));
   zip.end();
   await saved;
-  await writeFile(path.join(fixtureRoot, 'host-journal.json'), JSON.stringify(journal));
+  await writeFile(
+    path.join(fixtureRoot, 'host-journal.json'),
+    JSON.stringify({ ...journal, ...receiptJournalOverride }),
+  );
   return archivePath;
 }
 
@@ -122,7 +129,7 @@ beforeEach(async () => {
   ]) {
     await mkdir(path.join(fixtureRoot, directory), { recursive: true });
   }
-  for (const entry of ['packages', 'node_modules']) {
+  for (const entry of ['packages', 'node_modules', 'scripts/node_modules']) {
     await symlink(path.join(REPO_ROOT, entry), path.join(fixtureRoot, entry));
   }
   await copyFile(
@@ -133,6 +140,10 @@ beforeEach(async () => {
   await copyFile(
     path.join(REPO_ROOT, 'scripts/docs/audit-bundle.sh'),
     path.join(fixtureRoot, 'scripts/docs/audit-bundle.sh'),
+  );
+  await copyFile(
+    path.join(REPO_ROOT, 'scripts/docs/audit-bundle.ts'),
+    path.join(fixtureRoot, 'scripts/docs/audit-bundle.ts'),
   );
   await copyFile(
     path.join(REPO_ROOT, 'verifier-service/scripts/read-image-id.mjs'),
@@ -277,6 +288,39 @@ describe('public bundle audit orchestration', () => {
     },
     30_000,
   );
+
+  it('rejects excluded slots even when the receipt and bundle journal agree', async () => {
+    const journal = {
+      excludedSlots: 1,
+      missingSlots: 1,
+      seenIndicesCount: 63,
+      totalVotes: 63,
+      validVotes: 63,
+      verifiedTally: [0, 63, 0, 0, 0],
+    };
+    const result = runAudit(await writeArchive({}, journal, journal));
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain('integrity_counts=ng');
+    expect(result.stdout).not.toContain('5/6:');
+    expect(await verifierCalls()).toEqual(['verify', 'decode-journal']);
+  });
+
+  it('rejects public-input authority that disagrees with the authenticated journal', async () => {
+    const { publicInput } = createArtifacts();
+    const result = runAudit(await writeArchive({ 'public-input.json': { ...publicInput, totalExpected: 63 } }));
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain('public audit artifact checks failed; stop the audit');
+    expect(result.stdout).not.toContain('6/6:');
+  });
+
+  it('rejects a commitment mismatch after the preceding public checks succeed', async () => {
+    const journal = { inputCommitment: hex(99) };
+    const result = runAudit(await writeArchive({}, journal, journal));
+    expect(result.status, result.stdout + result.stderr).toBe(1);
+    expect(result.stdout).toContain('6/6:');
+    expect(result.stdout).toContain('input_commitment=ng');
+    expect(result.stdout).not.toContain('Bundle audit passed');
+  });
 
   it('executes the full audit with real ZIP, journal and public-input checks', async () => {
     const result = runAudit(await writeArchive());

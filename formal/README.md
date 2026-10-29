@@ -3,8 +3,10 @@
 This directory contains the Lean 4 formalization layer for STARK Ballot
 Simulator. It proves selected structural invariants that support the product
 rule that the app must never present an overall `Verified` result unless all
-required cryptographic and consistency checks have passed, and it connects those
-models to targeted TypeScript and Rust tests through generated vectors.
+required cryptographic and consistency checks have passed. Generated vectors
+connect the summary, display, check-definition, input-commitment, bitmap, and
+guest models to targeted TypeScript and Rust tests; the worker model uses source
+checks described below.
 
 Lean is not intended to prove SHA-256 security, RISC Zero soundness, AWS runtime
 behavior, React rendering behavior, or production-election security. Those
@@ -20,6 +22,8 @@ The Lean workspace focuses on:
 - canonical input commitment encoding order
 - LSB-first bitmap packing
 - an abstract zkVM guest tally model over presented records
+- on-demand AWS Batch admission, distinct active attempts, conditional worker
+  bounds, and two-attempt/drain reachability
 
 Generated vectors exercise the corresponding TypeScript and Rust behavior for
 verification summaries and display decisions, check definitions, canonical
@@ -47,6 +51,7 @@ formal/
     InputCommitment.lean
     Bitmap.lean
     GuestModel.lean
+    WorkerConcurrency.lean
   Scripts/
     EmitFormalReport.lean
     EmitTestVectors.lean
@@ -123,6 +128,24 @@ candidate tally bucket `<= 1,000,000` as a consequence of the fold invariants;
 that bucket bound is not an additional input assumption. Rust enforces the
 tree-size and vote-count bounds through the validation-and-tally path shared by
 `guest_main` and the guest-vector tests, and uses checked counter increments.
+
+## Worker Concurrency
+
+`WorkerConcurrency.lean` models one target's on-demand Batch prover jobs.
+Every admitted single-container attempt consumes one unit of the same two-unit
+replenishable resource. Each transition preserves distinct active attempts and
+the capacity bound; the reachable-state theorem carries both properties from
+an empty initial state. Two jobs can be admitted together and then drain to zero.
+
+The model counts an attempt from Batch `STARTING` until the provider releases
+its resource on `SUCCEEDED` or `FAILED` after computation stops. Queueing,
+cancellation requests, Step Functions timeouts, application callbacks, and
+ledger notifications alone do not release capacity. The model assumes correct
+provider accounting and excludes bypass launches and detached computation.
+It proves neither fairness nor eventual termination. Source correspondence and
+its limits are described in the
+[worker contract](../docs/formal/README.md#worker-concurrency-claims); there are
+no generated worker vectors or proofs of AWS runtime behavior.
 
 ## Generated Artifacts
 
@@ -202,7 +225,7 @@ curl https://elan.lean-lang.org/elan-init.sh -sSf | sh
 source "$HOME/.elan/env"
 ```
 
-The workspace currently pins Lean `v4.33.1`, the latest stable release
+The workspace currently pins Lean `v4.35.0`, the latest stable release
 published when this workspace was last refreshed. Refresh that pin deliberately in a
 small change, because Lean does not promise strong backwards compatibility
 between all versions.

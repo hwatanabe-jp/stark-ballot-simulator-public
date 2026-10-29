@@ -1,9 +1,28 @@
 data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
-  count = local.foundation_pipeline_enabled ? 1 : 0
+  count                   = local.foundation_pipeline_enabled ? 1 : 0
+  source_policy_documents = concat([data.aws_iam_policy_document.foundation_gateway_logging_read.json], [data.aws_iam_policy_document.foundation_retained_image_logs_read.json])
 
   # Keep this ceiling independent of resources whose key policies trust the
   # smoke role. The attached identity policies narrow these guardrails to the
   # exact KMS keys and log streams after IAM intersects the two policy layers.
+  statement {
+    actions   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+    resources = ["${local.deployment_record_prefixes.foundation}/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucketVersions"]
+    resources = [local.deployment_record_roots.foundation.bucket]
+  }
+
+  statement {
+    actions   = ["codebuild:BatchGetBuilds"]
+    resources = ["arn:aws:codebuild:${var.aws_region}:${var.aws_account_id}:project/${local.managed_codebuild_executions.foundation_terraform_smoke.project}"]
+  }
+  statement {
+    actions   = ["codepipeline:ListActionExecutions", "codepipeline:GetPipelineExecution"]
+    resources = ["arn:aws:codepipeline:${var.aws_region}:${var.aws_account_id}:${local.managed_codebuild_executions.foundation_terraform_smoke.pipeline}"]
+  }
+
   statement {
     sid    = "FoundationSmokeBuildLogsGuardrail"
     effect = "Allow"
@@ -22,12 +41,6 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
     resources = ["*"]
   }
 
-  statement {
-    sid       = "FoundationSmokeProjectConfigurationReadGuardrail"
-    effect    = "Allow"
-    actions   = ["codebuild:BatchGetProjects"]
-    resources = [local.source_path_foundation_start_build_projects.smoke.project_arn]
-  }
 
   statement {
     sid    = "FoundationSmokePipelineArtifactsGuardrail"
@@ -58,12 +71,6 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
     resources = ["*"]
   }
 
-  statement {
-    sid       = "AssumeFoundationAcceptancePublisherGuardrail"
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
-    resources = [local.foundation_terraform_acceptance_publisher_role_arn]
-  }
 
   statement {
     sid    = "FoundationAcceptancePublisherGuardrail"
@@ -74,8 +81,7 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
       "s3:PutObject",
     ]
     resources = [
-      local.terraform_foundation_acceptance_object_arn_pattern,
-      local.terraform_foundation_acceptance_pointer_object_arn,
+      local.foundation_checkpoint_object_arn,
     ]
   }
 
@@ -117,7 +123,6 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
     actions = [
       "iam:GetRole",
       "iam:ListAttachedRolePolicies",
-      "iam:SimulatePrincipalPolicy",
     ]
     resources = [
       "arn:aws:iam::${var.aws_account_id}:role/${local.foundation_terraform_apply_role_name}",
@@ -137,61 +142,11 @@ data "aws_iam_policy_document" "foundation_smoke_deploy_permissions_boundary" {
     ]
   }
 
-  statement {
-    sid    = "FoundationSmokeEcrRetentionRoleReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "iam:GetRole",
-      "iam:GetRolePolicy",
-      "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-    ]
-    resources = [local.foundation_ecr_retention_role_arn]
-  }
-
-  statement {
-    sid    = "FoundationSmokeEcrRetentionBoundaryReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "iam:GetPolicy",
-      "iam:GetPolicyVersion",
-      "iam:ListPolicyVersions",
-    ]
-    resources = [local.foundation_ecr_retention_boundary_policy_arn]
-  }
-
-  statement {
-    sid    = "FoundationSmokeEcrRetentionLambdaReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "lambda:GetFunction",
-      "lambda:GetFunctionConcurrency",
-      "lambda:GetPolicy",
-      "lambda:ListTags",
-    ]
-    resources = [local.foundation_ecr_retention_function_arn]
-  }
-
-  statement {
-    sid    = "FoundationSmokeEcrRetentionScheduleReadGuardrail"
-    effect = "Allow"
-    actions = [
-      "events:DescribeRule",
-      "events:ListTagsForResource",
-      "events:ListTargetsByRule",
-    ]
-    resources = [local.foundation_ecr_retention_schedule_arn]
-  }
 }
 
 resource "aws_iam_policy" "foundation_smoke_deploy_permissions_boundary" {
   count = local.foundation_pipeline_enabled ? 1 : 0
 
-  depends_on = [
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_artifacts_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_iam_management,
-    aws_iam_role_policy_attachment.bootstrap_apply_foundation_lane_pipeline_management,
-  ]
 
   name   = local.foundation_smoke_deploy_permissions_boundary_policy_name
   policy = data.aws_iam_policy_document.foundation_smoke_deploy_permissions_boundary[0].json

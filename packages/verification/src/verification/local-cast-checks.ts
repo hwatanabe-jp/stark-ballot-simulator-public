@@ -83,6 +83,15 @@ function resolveCastCommitmentMatch(input: LocalCastCheckInput): LocalCastCheckR
     return { status: 'failed', error: `Unknown vote choice "${choice}".` };
   }
 
+  return compareRecomputedCommitment(electionId, choiceIndex, random, normalizedCommitment);
+}
+
+function compareRecomputedCommitment(
+  electionId: string,
+  choiceIndex: number,
+  random: string,
+  normalizedCommitment: string,
+): LocalCastCheckResult {
   try {
     const recomputed = computeCommitment(electionId, choiceIndex, random);
     const normalizedRecomputed = normalizeHexString(recomputed);

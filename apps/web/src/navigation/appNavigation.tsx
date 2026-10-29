@@ -82,21 +82,16 @@ type AppLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
   href: string;
 };
 
+function isUnmodifiedPrimaryClick(event: MouseEvent<HTMLAnchorElement>): boolean {
+  return !event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey && event.button === 0;
+}
+
 export function AppLink({ href, onClick, target, children, ...props }: AppLinkProps): ReactElement {
   const router = useAppRouter();
   const handleClick = useCallback(
     (event: MouseEvent<HTMLAnchorElement>) => {
       onClick?.(event);
-      if (
-        event.defaultPrevented ||
-        target ||
-        event.metaKey ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.button !== 0 ||
-        !href.startsWith('/')
-      ) {
+      if (event.defaultPrevented || target || !isUnmodifiedPrimaryClick(event) || !href.startsWith('/')) {
         return;
       }
       event.preventDefault();

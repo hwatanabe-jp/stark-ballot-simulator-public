@@ -7,9 +7,7 @@ export function normalizeHexString(hex: string): string {
 }
 
 export function addHexPrefix(hex: string): string {
-  if (!hex) return '0x';
-  const withoutPrefix = hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex;
-  return '0x' + withoutPrefix.toLowerCase();
+  return '0x' + normalizeHexString(hex);
 }
 
 export function isValidHexString(hex: string, expectedLength?: number): boolean {
@@ -28,11 +26,13 @@ export function hexToBytesStrict(hex: string): Uint8Array {
   if (!normalized) {
     throw new Error('Invalid hex string: empty');
   }
-  if (normalized.length % 2 !== 0) {
-    throw new Error('Invalid hex string: odd length');
+  // Decode valid inputs once; retain the established diagnostics for malformed input.
+  try {
+    return hexToBytes(normalized);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    if (normalized.length % 2 !== 0) throw new Error('Invalid hex string: odd length');
+    if (!isValidHexString(normalized)) throw new Error('Invalid hex string');
+    throw error;
   }
-  if (!/^[0-9a-f]+$/.test(normalized)) {
-    throw new Error('Invalid hex string');
-  }
-  return hexToBytes(normalized);
 }

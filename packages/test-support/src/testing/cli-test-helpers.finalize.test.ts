@@ -166,17 +166,19 @@ function buildSucceededFinalizationResource(options?: {
   };
 }
 
-function buildAvailableVerificationResource(options?: {
-  finalizationId?: string;
-  counts?: { A: number; B: number; C: number; D: number; E: number };
-  userCommitment?: string;
-  verificationStatus?: VerificationStatus;
-  checkStatuses?: Partial<Record<VerificationCheckId, VerificationCheck['status']>>;
-}): AvailableVerificationResource {
-  const finalizationId = options?.finalizationId ?? 'finalization-1';
-  const counts = options?.counts ?? { A: 1, B: 0, C: 0, D: 0, E: 0 };
-  const commitment = options?.userCommitment ?? hash('a');
-  const verificationStatus = options?.verificationStatus ?? 'success';
+function buildAvailableVerificationResource(
+  options: {
+    finalizationId?: string;
+    counts?: { A: number; B: number; C: number; D: number; E: number };
+    userCommitment?: string;
+    verificationStatus?: VerificationStatus;
+    checkStatuses?: Partial<Record<VerificationCheckId, VerificationCheck['status']>>;
+  } = {},
+): AvailableVerificationResource {
+  const finalizationId = options.finalizationId ?? 'finalization-1';
+  const counts = options.counts ?? { A: 1, B: 0, C: 0, D: 0, E: 0 };
+  const commitment = options.userCommitment ?? hash('a');
+  const verificationStatus = options.verificationStatus ?? 'success';
   const totalVotes = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const bulletinRootAtCast = computeSingleLeafRoot(commitment);
   const baseJournal = createTestJournal({
@@ -195,7 +197,7 @@ function buildAvailableVerificationResource(options?: {
   const checks = VERIFICATION_CHECK_DEFINITIONS.map((definition): VerificationCheck => ({
     id: definition.id,
     status:
-      options?.checkStatuses?.[definition.id] ?? (definition.category === 'cast_as_intended' ? 'not_run' : 'success'),
+      options.checkStatuses?.[definition.id] ?? (definition.category === 'cast_as_intended' ? 'not_run' : 'success'),
     evidence: definition.evidence,
     inputs: [...definition.inputs],
     ...(definition.derivedFrom ? { derivedFrom: definition.derivedFrom } : {}),
@@ -378,10 +380,7 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
         const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : init?.body;
         expect(body).toEqual({ scenarioId: 'S3' });
 
-        const capabilityHeader =
-          init?.headers instanceof Headers
-            ? init.headers.get('X-Session-Capability')
-            : (init?.headers as Record<string, string> | undefined)?.['X-Session-Capability'];
+        const capabilityHeader = new Headers(init?.headers).get('X-Session-Capability');
         expect(capabilityHeader).toBe('capability-token-123');
 
         return Promise.resolve(
@@ -528,10 +527,7 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
       }
 
       if (url === `${baseUrl}/api/sessions/session-123/finalizations`) {
-        const capabilityHeader =
-          init?.headers instanceof Headers
-            ? init.headers.get('X-Session-Capability')
-            : (init?.headers as Record<string, string> | undefined)?.['X-Session-Capability'];
+        const capabilityHeader = new Headers(init?.headers).get('X-Session-Capability');
         expect(capabilityHeader).toBe('capability-token-123');
 
         return Promise.resolve(
@@ -546,10 +542,7 @@ describe('CLITestHelpers.finalizeWithScenarios', () => {
       }
 
       if (url === verificationUrl) {
-        const capabilityHeader =
-          init?.headers instanceof Headers
-            ? init.headers.get('X-Session-Capability')
-            : (init?.headers as Record<string, string> | undefined)?.['X-Session-Capability'];
+        const capabilityHeader = new Headers(init?.headers).get('X-Session-Capability');
         expect(capabilityHeader).toBe('capability-token-123');
 
         return Promise.resolve(

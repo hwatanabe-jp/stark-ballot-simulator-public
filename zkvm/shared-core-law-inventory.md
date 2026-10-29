@@ -1,7 +1,9 @@
 # Shared-Core Law Inventory
 
-`WS4` extracts the shared Rust owner for these laws into
-`zkvm/contract-core/src/`.
+This inventory maps the shared Rust contract laws in `zkvm/contract-core/src/`
+to their current owners and test evidence. The
+[cleanup decision record](../docs/zkvm/decisions/04-canonical-zkvm-path-and-legacy-cleanup-plan.md)
+records the original WS4 extraction.
 
 ## Shared-Core Target
 

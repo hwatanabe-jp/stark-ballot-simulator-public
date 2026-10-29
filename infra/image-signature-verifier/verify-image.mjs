@@ -1,11 +1,10 @@
-import * as ecr from '@aws-sdk/client-ecr';
+import { createEcrSigningStatusLookup } from './signing-status.mjs';
 import { chmod, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyImageSignature } from './verifier.mjs';
+import { isImageVerificationResult, verifyImageSignature } from './verifier.mjs';
 
-const { DescribeImageSigningStatusCommand, ECRClient } = ecr;
 const maximumInvocationBytes = 16 * 1024;
 
 /**
@@ -42,12 +41,7 @@ function parseCliArguments(argv) {
   ) {
     return undefined;
   }
-  const inputPath = path.resolve(argv[1]);
-  const outputPath = path.resolve(argv[3]);
-  if (inputPath === outputPath || outputPath === path.parse(outputPath).root) {
-    return undefined;
-  }
-  return { inputPath, outputPath };
+  return parseCliPaths(argv[1], argv[3]);
 }
 
 /**
@@ -56,41 +50,6 @@ function parseCliArguments(argv) {
  */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} result
- * @returns {boolean}
- */
-function isSanitizedResult(result) {
-  if (!isRecord(result) || result['mode'] !== 'cryptographic') {
-    return false;
-  }
-  if (result['result'] === 'VERIFIED') {
-    const assets = result['verifierAssets'];
-    return (
-      Object.keys(result).sort().join('\0') ===
-        'assetManifestSha256\0mode\0result\0trustPolicySha256\0verifierAssets\0verifierVersion' &&
-      result['verifierVersion'] === 'notation@1.3.2+aws-signer-plugin@1.0.2292' &&
-      /^[0-9a-f]{64}$/.test(String(result['trustPolicySha256'])) &&
-      /^[0-9a-f]{64}$/.test(String(result['assetManifestSha256'])) &&
-      isRecord(assets) &&
-      Object.keys(assets).sort().join('\0') ===
-        'awsSignerPluginVersion\0ecrCredentialHelperVersion\0notationVersion\0trustRootSha256' &&
-      assets['notationVersion'] === '1.3.2' &&
-      assets['awsSignerPluginVersion'] === '1.0.2292' &&
-      assets['ecrCredentialHelperVersion'] === '0.12.0' &&
-      /^[0-9a-f]{64}$/.test(String(assets['trustRootSha256']))
-    );
-  }
-  return (
-    (result['result'] === 'VERIFICATION_FAILED' ||
-      result['result'] === 'VERIFIER_TIMEOUT' ||
-      result['result'] === 'VERIFIER_ERROR') &&
-    Object.keys(result).sort().join('\0') === 'mode\0reasonCode\0result' &&
-    typeof result['reasonCode'] === 'string' &&
-    /^[A-Z][A-Z0-9_]{0,63}$/.test(result['reasonCode'])
-  );
 }
 
 /**
@@ -140,33 +99,6 @@ async function writeSanitizedResult(outputPath, result) {
 }
 
 /**
- * @returns {(
- *   invocation: import('./verifier.mjs').ImageSignatureInvocation,
- *   abortSignal: AbortSignal
- * ) => Promise<unknown>}
- */
-function createSigningStatusLookup() {
-  /** @type {Map<string, InstanceType<typeof ECRClient>>} */
-  const clients = new Map();
-  return async (invocation, abortSignal) => {
-    let client = clients.get(invocation.imageRegion);
-    if (!client) {
-      client = new ECRClient({ region: invocation.imageRegion });
-      clients.set(invocation.imageRegion, client);
-    }
-    const response = await client.send(
-      new DescribeImageSigningStatusCommand({
-        registryId: invocation.registryId,
-        repositoryName: invocation.repositoryName,
-        imageId: { imageDigest: invocation.imageDigest },
-      }),
-      { abortSignal },
-    );
-    return response.signingStatuses;
-  };
-}
-
-/**
  * @typedef {{
  *   argv: readonly string[];
  *   environment: Record<string, string | undefined>;
@@ -188,87 +120,21 @@ function createSigningStatusLookup() {
 export async function runVerifierCli(options) {
   const log = options.log ?? ((line) => process.stderr.write(line));
   const args = parseCliArguments(options.argv);
-  const assetRoot = options.environment['IMAGE_SIGNATURE_VERIFIER_ASSET_ROOT'];
-  const maxStatusAttempts = parseBoundedInteger(
-    options.environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPTS'],
-    4,
-    1,
-    10,
-  );
-  const statusAttemptTimeoutMs = parseBoundedInteger(
-    options.environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPT_TIMEOUT_MS'],
-    5_000,
-    250,
-    15_000,
-  );
-  const statusRetryDelayMs = parseBoundedInteger(
-    options.environment['IMAGE_SIGNATURE_VERIFIER_STATUS_RETRY_DELAY_MS'],
-    1_000,
-    0,
-    5_000,
-  );
-  const verifierTimeoutMs = parseBoundedInteger(
-    options.environment['IMAGE_SIGNATURE_VERIFIER_TIMEOUT_MS'],
-    20_000,
-    1_000,
-    60_000,
-  );
-  if (
-    !args ||
-    typeof assetRoot !== 'string' ||
-    !path.isAbsolute(assetRoot) ||
-    maxStatusAttempts === undefined ||
-    statusAttemptTimeoutMs === undefined ||
-    statusRetryDelayMs === undefined ||
-    verifierTimeoutMs === undefined
-  ) {
+  const configuration = parseCliConfiguration(options.environment);
+  if (!args || !configuration) {
     emitBoundedResultLog(log, 'VERIFIER_ERROR');
     return 4;
   }
 
-  try {
-    await lstat(args.outputPath);
+  if (!(await canCreateVerifierResult(args.outputPath))) {
     emitBoundedResultLog(log, 'VERIFIER_ERROR');
     return 4;
-  } catch (error) {
-    if (!isRecord(error) || error['code'] !== 'ENOENT') {
-      emitBoundedResultLog(log, 'VERIFIER_ERROR');
-      return 4;
-    }
   }
 
   /** @type {Record<string, unknown>} */
   let result;
   try {
-    const inputDetails = await lstat(args.inputPath);
-    if (
-      !inputDetails.isFile() ||
-      inputDetails.isSymbolicLink() ||
-      inputDetails.size === 0 ||
-      inputDetails.size > maximumInvocationBytes
-    ) {
-      throw new Error('Invocation file contract is invalid.');
-    }
-    const invocation = JSON.parse(await readFile(args.inputPath, 'utf8'));
-    const temporaryRoot = path.resolve(options.temporaryRoot ?? os.tmpdir());
-    await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
-    const verify = options.verify ?? verifyImageSignature;
-    result = /** @type {Record<string, unknown>} */ (
-      await verify(invocation, {
-        assetRoot,
-        temporaryRoot,
-        expectedArchitecture: options.nativeArchitecture,
-        sourceEnvironment: options.environment,
-        maxStatusAttempts,
-        statusAttemptTimeoutMs,
-        statusRetryDelayMs,
-        verifierTimeoutMs,
-        describeSigningStatus: options.describeSigningStatus ?? createSigningStatusLookup(),
-      })
-    );
-    if (!isSanitizedResult(result)) {
-      throw new Error('Verifier returned an invalid result contract.');
-    }
+    result = await runCliVerification(args.inputPath, configuration, options);
   } catch {
     result = {
       result: 'VERIFIER_ERROR',
@@ -309,4 +175,94 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await main();
+}
+
+/** @param {string} input @param {string} output */
+function parseCliPaths(input, output) {
+  const inputPath = path.resolve(input);
+  const outputPath = path.resolve(output);
+  if (inputPath === outputPath || outputPath === path.parse(outputPath).root) {
+    return undefined;
+  }
+  return { inputPath, outputPath };
+}
+
+/** @param {Record<string,string|undefined>} environment */
+function parseCliConfiguration(environment) {
+  const assetRoot = environment['IMAGE_SIGNATURE_VERIFIER_ASSET_ROOT'];
+  const maxStatusAttempts = parseBoundedInteger(environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPTS'], 4, 1, 10);
+  const statusAttemptTimeoutMs = parseBoundedInteger(
+    environment['IMAGE_SIGNATURE_VERIFIER_STATUS_ATTEMPT_TIMEOUT_MS'],
+    5_000,
+    250,
+    15_000,
+  );
+  const statusRetryDelayMs = parseBoundedInteger(
+    environment['IMAGE_SIGNATURE_VERIFIER_STATUS_RETRY_DELAY_MS'],
+    1_000,
+    0,
+    5_000,
+  );
+  const verifierTimeoutMs = parseBoundedInteger(
+    environment['IMAGE_SIGNATURE_VERIFIER_TIMEOUT_MS'],
+    20_000,
+    1_000,
+    60_000,
+  );
+  if (
+    typeof assetRoot !== 'string' ||
+    !path.isAbsolute(assetRoot) ||
+    maxStatusAttempts === undefined ||
+    statusAttemptTimeoutMs === undefined ||
+    statusRetryDelayMs === undefined ||
+    verifierTimeoutMs === undefined
+  ) {
+    return undefined;
+  }
+  return { assetRoot, maxStatusAttempts, statusAttemptTimeoutMs, statusRetryDelayMs, verifierTimeoutMs };
+}
+
+/** @param {string} outputPath */
+async function canCreateVerifierResult(outputPath) {
+  try {
+    await lstat(outputPath);
+    return false;
+  } catch (error) {
+    return isRecord(error) && error['code'] === 'ENOENT';
+  }
+}
+
+/** @param {string} inputPath @param {NonNullable<ReturnType<typeof parseCliConfiguration>>} configuration @param {VerifierCliOptions} options */
+async function runCliVerification(inputPath, configuration, options) {
+  const { assetRoot, maxStatusAttempts, statusAttemptTimeoutMs, statusRetryDelayMs, verifierTimeoutMs } = configuration;
+  const inputDetails = await lstat(inputPath);
+  if (
+    !inputDetails.isFile() ||
+    inputDetails.isSymbolicLink() ||
+    inputDetails.size === 0 ||
+    inputDetails.size > maximumInvocationBytes
+  ) {
+    throw new Error('Invocation file contract is invalid.');
+  }
+  const invocation = JSON.parse(await readFile(inputPath, 'utf8'));
+  const temporaryRoot = path.resolve(options.temporaryRoot ?? os.tmpdir());
+  await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
+  const verify = options.verify ?? verifyImageSignature;
+  const result = /** @type {Record<string, unknown>} */ (
+    await verify(invocation, {
+      assetRoot,
+      temporaryRoot,
+      expectedArchitecture: options.nativeArchitecture,
+      sourceEnvironment: options.environment,
+      maxStatusAttempts,
+      statusAttemptTimeoutMs,
+      statusRetryDelayMs,
+      verifierTimeoutMs,
+      describeSigningStatus: options.describeSigningStatus ?? createEcrSigningStatusLookup(),
+    })
+  );
+  if (!isImageVerificationResult(result)) {
+    throw new Error('Verifier returned an invalid result contract.');
+  }
+  return result;
 }

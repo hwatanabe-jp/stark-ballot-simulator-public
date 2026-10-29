@@ -1,13 +1,14 @@
+import { admitSessionIdentity } from '@stark-ballot/web/session/identity';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchCurrentFinalization, resolveFinalizationStatusErrorCode } from './finalizations';
 import { ApiClientError } from './client';
 import {
-  clearBrowserPublicEnvForTests,
-  setBrowserPublicEnvForTests,
-} from '@stark-ballot/runtime-config/env/browserPublic';
+  clearPublicRuntimeEnvForTests,
+  setPublicRuntimeEnvForTests,
+} from '@stark-ballot/runtime-config/env/public-runtime-config';
 
 const sessionId = '1f8c6e60-8dec-4a44-b19c-c226bb7de6be';
-const identity = { sessionId, capabilityToken: 'token-123' };
+const identity = admitSessionIdentity({ sessionId, capabilityToken: 'token-123' });
 const requestMeta = { requestId: 'request-id' } as const;
 const finalizationId = '01HVN5WA1CEH94868G90QGJ7HX';
 
@@ -39,11 +40,11 @@ describe('finalization resource client', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     global.fetch = originalFetch;
-    setBrowserPublicEnvForTests('VITE_RUNTIME_PROFILE', 'static-mock-e2e');
+    setPublicRuntimeEnvForTests('VITE_RUNTIME_PROFILE', 'static-mock-e2e');
   });
 
   afterEach(() => {
-    clearBrowserPublicEnvForTests();
+    clearPublicRuntimeEnvForTests();
   });
 
   it('parses a successful current-finalization response', async () => {

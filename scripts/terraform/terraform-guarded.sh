@@ -9,23 +9,18 @@ deployment_authority_module_path="${terraform_guard_script_dir}/../../packages/d
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/terraform/terraform-guarded.sh <develop|main|account-alias/environment/scope> <terraform args...>
+  scripts/terraform/terraform-guarded.sh <account-alias/environment/scope> <terraform args...>
 
 Runs Terraform only after checking:
-  - AWS caller is an approved Terraform execution, bootstrap role, foundation CodeBuild role, or app CodeBuild role
+  - AWS caller is the selected Foundation or App command's CodeBuild role
   - AWS caller account matches the selected account identity
-  - legacy mode workspace matches <develop|main>
-  - target account mode plan/apply/destroy use the default workspace
-  - plan/apply/destroy use a tfvars file whose environment matches the selected deployment environment
+  - plan/apply use the default workspace
+  - plan uses the current pipeline tfvars; apply uses the approved saved plan
 
-Optional:
-  TERRAFORM_WORKING_DIR  # default: infra/terraform/legacy; target bootstrap requires infra/terraform/bootstrap; foundation requires infra/terraform/foundation; app requires infra/terraform/app
+Required:
+  TERRAFORM_WORKING_DIR  # required: infra/terraform/foundation or infra/terraform/app
 
-Run inside aws-vault, for example:
-  aws-vault exec terraform-admin -- scripts/terraform/terraform-guarded.sh develop plan -var-file=develop.local.tfvars
-
-For target account bootstrap init, run with an explicit AWS profile:
-  AWS_PROFILE=stark-dev-admin TERRAFORM_WORKING_DIR=infra/terraform/bootstrap scripts/terraform/terraform-guarded.sh stark-dev/develop/bootstrap init -reconfigure -backend-config=backend.local.hcl
+Bootstrap uses scripts/aws/bootstrap-local.ts or the explicit new-target initializer.
 EOF
 }
 
@@ -89,19 +84,6 @@ upper_identifier() {
 is_target_identity() {
   local value="$1"
   [[ "$value" =~ ^[a-z][a-z0-9-]*/(develop|main)/(bootstrap|foundation|app)$ ]]
-}
-
-require_reviewed_bootstrap_identity() {
-  local identity="$1"
-
-  if [ "$reviewed_target_environment_id" != "develop" ]; then
-    echo "Production Bootstrap requires its explicit bounded initializer or the managed saved-plan lane." >&2
-    exit 2
-  fi
-  if [ "$reviewed_target_scope" != "bootstrap" ] || [ "$identity" != "$reviewed_target_state_identity" ]; then
-    echo "This bootstrap helper requires the exact reviewed Bootstrap state identity." >&2
-    exit 2
-  fi
 }
 
 parse_target_identity() {
@@ -178,8 +160,6 @@ resolve_reviewed_target_root() {
             $root.names.terraformPlanRole,
             $root.names.terraformApplyRole,
             $root.names.terraformSmokeRole,
-            $target.sharedNames.appSignaturePreflightPlanRole,
-            $target.sharedNames.appSignaturePreflightApplyRole,
             $target.sharedNames.terraformStateBucket,
             $target.sharedNames.terraformStateKmsAlias
           ] as $values
@@ -212,8 +192,6 @@ resolve_reviewed_target_root() {
     reviewed_terraform_plan_role \
     reviewed_terraform_apply_role \
     reviewed_terraform_smoke_role \
-    reviewed_app_signature_preflight_plan_role \
-    reviewed_app_signature_preflight_apply_role \
     reviewed_target_state_bucket \
     reviewed_target_state_kms_alias \
     <<< "$resolved"
@@ -249,36 +227,7 @@ resolve_var_file() {
   exit 2
 }
 
-is_protected_target_var_key() {
-  local key="$1"
-
-  case "$key" in
-    account_alias|aws_account_id|deployment_environment|github_full_repository_id|pipeline_artifact_bucket_name|project_name|source_branch|state_backend_key|state_bucket_name|state_kms_alias|state_kms_key_id|state_scope)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-reject_cli_var_assignment() {
-  local assignment="$1"
-  local key
-
-  key="${assignment%%=*}"
-  key="$(trim "$key")"
-  if [ "${mode:-legacy}" = "target" ] && is_protected_target_var_key "$key"; then
-    echo "Do not pass ${key} through -var in target account mode; set it only in the guarded tfvars file." >&2
-    exit 2
-  fi
-  if [ "$key" = "environment" ]; then
-    echo "Do not pass environment through -var; set it only in the guarded tfvars file." >&2
-    exit 2
-  fi
-}
-
-read_tfvars_scalar() {
+read_hcl_scalar() {
   local var_file="$1"
   local requested_key="$2"
   local line key value
@@ -316,11 +265,11 @@ read_tfvars_environment() {
   local var_file="$1"
   local value
 
-  if value="$(read_tfvars_scalar "$var_file" deployment_environment)"; then
+  if value="$(read_hcl_scalar "$var_file" deployment_environment)"; then
     printf 'deployment_environment:%s' "$value"
     return 0
   fi
-  if value="$(read_tfvars_scalar "$var_file" environment)"; then
+  if value="$(read_hcl_scalar "$var_file" environment)"; then
     printf 'environment:%s' "$value"
     return 0
   fi
@@ -335,7 +284,7 @@ require_target_tfvars_value() {
   local expected="$3"
   local actual
 
-  if ! actual="$(read_tfvars_scalar "$var_file" "$key")"; then
+  if ! actual="$(read_hcl_scalar "$var_file" "$key")"; then
     echo "target account tfvars must set ${key} for ${identity_arg}." >&2
     exit 2
   fi
@@ -353,7 +302,7 @@ validate_optional_target_tfvars_value() {
   local expected="$3"
   local actual
 
-  if ! actual="$(read_tfvars_scalar "$var_file" "$key")"; then
+  if ! actual="$(read_hcl_scalar "$var_file" "$key")"; then
     return 0
   fi
   if [ "$actual" != "$expected" ]; then
@@ -377,21 +326,6 @@ validate_target_tfvars_identity() {
   validate_optional_target_tfvars_value "$var_file" source_branch "$reviewed_target_source_branch"
 }
 
-require_expected_account() {
-  local env_upper="$1"
-  local expected_account_id
-
-  expected_account_id="$(
-    first_nonempty "TERRAFORM_AWS_ACCOUNT_ID_${env_upper}" TERRAFORM_AWS_ACCOUNT_ID AWS_ACCOUNT_ID || true
-  )"
-  if [[ ! "$expected_account_id" =~ ^[0-9]{12}$ ]]; then
-    echo "Missing or invalid TERRAFORM_AWS_ACCOUNT_ID for Terraform guard." >&2
-    exit 2
-  fi
-
-  printf '%s' "$expected_account_id"
-}
-
 require_expected_target_account() {
   local account_alias="$1"
   local account_upper expected_account_id
@@ -411,69 +345,6 @@ require_expected_target_account() {
   fi
 
   printf '%s' "$reviewed_target_account_id"
-}
-
-require_allowed_caller() {
-  local expected_account_id="$1"
-  local required_pattern="$2"
-  local role_error="$3"
-  local caller account arn
-
-  if ! caller="$(aws sts get-caller-identity --query '[Account,Arn]' --output text --no-cli-pager)"; then
-    echo "Failed to read AWS caller identity. Check AWS_PROFILE or aws-vault credentials and try again." >&2
-    exit 2
-  fi
-
-  account="$(printf '%s\n' "$caller" | awk '{print $1}')"
-  arn="$(printf '%s\n' "$caller" | awk '{print $2}')"
-
-  if [ "$account" != "$expected_account_id" ]; then
-    echo "AWS account mismatch for Terraform." >&2
-    echo "Expected account: $expected_account_id" >&2
-    echo "Current account: $account" >&2
-    exit 2
-  fi
-
-  if [[ ! "$arn" =~ $required_pattern ]]; then
-    echo "$role_error" >&2
-    echo "Current caller ARN did not match the required role." >&2
-    exit 2
-  fi
-
-}
-
-require_terraform_admin_caller() {
-  local expected_account_id="$1"
-  local required_pattern role_error
-
-  required_pattern="^arn:aws:sts::${expected_account_id}:assumed-role/terraform-admin/.+$"
-  role_error="Terraform must run as arn:aws:sts::${expected_account_id}:assumed-role/terraform-admin/*."
-  require_allowed_caller "$expected_account_id" "$required_pattern" "$role_error"
-}
-
-require_target_caller() {
-  local expected_account_id="$1"
-  local state_scope="$2"
-  local required_pattern role_error
-
-  required_pattern="${TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN:-}"
-  if [ -z "$required_pattern" ]; then
-    case "$state_scope" in
-      bootstrap)
-        required_pattern="^arn:aws:sts::${expected_account_id}:assumed-role/AWSReservedSSO_AdministratorAccess_[0-9a-f]{16}/[A-Za-z0-9+=,.@_-]+$"
-        ;;
-      *)
-        echo "TERRAFORM_ALLOWED_PRINCIPAL_ARN_PATTERN is required for target state scope ${state_scope}." >&2
-        exit 2
-        ;;
-    esac
-  fi
-  role_error="Terraform target account guard rejected the current caller for state scope ${state_scope}."
-  require_allowed_caller "$expected_account_id" "$required_pattern" "$role_error"
-}
-
-is_app_signature_preflight_plan_caller() {
-  [ "${current_terraform_caller_role_name:-}" = "$reviewed_app_signature_preflight_plan_role" ]
 }
 
 require_allowed_role_caller() {
@@ -524,56 +395,7 @@ require_allowed_role_caller() {
   exit 2
 }
 
-require_app_caller_for_command() {
-  local expected_account_id="$1"
-  local command_name="$2"
-  local role_label role_error
-  local -a allowed_role_names
-
-  case "$command_name" in
-    init)
-      allowed_role_names=(
-        "$reviewed_terraform_plan_role"
-        "$reviewed_terraform_apply_role"
-        "$reviewed_app_signature_preflight_plan_role"
-        "$reviewed_app_signature_preflight_apply_role"
-      )
-      role_label="plan or apply"
-      ;;
-    validate|plan)
-      allowed_role_names=(
-        "$reviewed_terraform_plan_role"
-        "$reviewed_app_signature_preflight_plan_role"
-      )
-      role_label="plan"
-      ;;
-    apply)
-      allowed_role_names=(
-        "$reviewed_terraform_apply_role"
-        "$reviewed_app_signature_preflight_apply_role"
-      )
-      role_label="apply"
-      ;;
-    smoke)
-      allowed_role_names=("$reviewed_terraform_smoke_role")
-      role_label="smoke"
-      ;;
-    destroy)
-      echo "destroy is not authorized for target app state." >&2
-      exit 2
-      ;;
-    *)
-      echo "Unsupported app Terraform command: ${command_name}." >&2
-      echo "Allowed app commands are init, validate, plan, apply, and smoke." >&2
-      exit 2
-      ;;
-  esac
-
-  role_error="Terraform app guard requires the app ${role_label} CodeBuild role for ${command_name}."
-  require_allowed_role_caller "$expected_account_id" "$role_error" "${allowed_role_names[@]}"
-}
-
-require_foundation_caller_for_command() {
+require_managed_caller_for_command() {
   local expected_account_id="$1"
   local command_name="$2"
   local role_label role_error
@@ -588,11 +410,15 @@ require_foundation_caller_for_command() {
       role_label="plan or apply"
       ;;
     validate|plan)
-      allowed_role_names=("$reviewed_terraform_plan_role")
+      allowed_role_names=(
+        "$reviewed_terraform_plan_role"
+      )
       role_label="plan"
       ;;
     apply)
-      allowed_role_names=("$reviewed_terraform_apply_role")
+      allowed_role_names=(
+        "$reviewed_terraform_apply_role"
+      )
       role_label="apply"
       ;;
     smoke)
@@ -600,17 +426,17 @@ require_foundation_caller_for_command() {
       role_label="smoke"
       ;;
     destroy)
-      echo "destroy is not authorized for target foundation state." >&2
+      echo "destroy is not authorized for target ${reviewed_target_scope} state." >&2
       exit 2
       ;;
     *)
-      echo "Unsupported foundation Terraform command: ${command_name}." >&2
-      echo "Allowed foundation commands are init, validate, plan, apply, and smoke." >&2
+      echo "Unsupported ${reviewed_target_scope} Terraform command: ${command_name}." >&2
+      echo "Allowed ${reviewed_target_scope} commands are init, validate, plan, apply, and smoke." >&2
       exit 2
       ;;
   esac
 
-  role_error="Terraform foundation guard requires the foundation ${role_label} CodeBuild role for ${command_name}."
+  role_error="Terraform ${reviewed_target_scope} guard requires the ${reviewed_target_scope} ${role_label} CodeBuild role for ${command_name}."
   require_allowed_role_caller "$expected_account_id" "$role_error" "${allowed_role_names[@]}"
 }
 
@@ -634,96 +460,9 @@ require_matching_workspace() {
 
 require_matching_tfvars_environment() {
   local env_name="$1"
-  local command_name="$2"
-  shift 2
-  local arg expected_var_file_name positional_arg_count resolved_var_file tfvars_env tfvars_env_record var_file
-  local next_is_var=0 next_is_var_file=0 var_file_count=0
-  positional_arg_count=0
-
-  case "$command_name" in
-    plan|apply|destroy)
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-
-  if [ "$#" -gt 0 ] && [ "$1" = "$command_name" ]; then
-    shift
-  fi
-
-  for arg in "$@"; do
-    if [ "$next_is_var_file" -eq 1 ]; then
-      var_file="$arg"
-      var_file_count=$((var_file_count + 1))
-      next_is_var_file=0
-      continue
-    fi
-
-    if [ "$next_is_var" -eq 1 ]; then
-      reject_cli_var_assignment "$arg"
-      next_is_var=0
-      continue
-    fi
-
-    case "$arg" in
-      -var-file=*)
-        var_file="${arg#-var-file=}"
-        var_file_count=$((var_file_count + 1))
-        ;;
-      -var-file)
-        next_is_var_file=1
-        ;;
-      -var=*)
-        reject_cli_var_assignment "${arg#-var=}"
-        ;;
-      -var)
-        next_is_var=1
-        ;;
-      -*)
-        ;;
-      *)
-        positional_arg_count=$((positional_arg_count + 1))
-        ;;
-    esac
-  done
-
-  if [ "$next_is_var_file" -eq 1 ]; then
-    echo "$command_name received -var-file without a value." >&2
-    exit 2
-  fi
-  if [ "$next_is_var" -eq 1 ]; then
-    echo "$command_name received -var without a value." >&2
-    exit 2
-  fi
-
-  if [ "$var_file_count" -eq 0 ]; then
-    if [ "$command_name" = "apply" ] && [ "$positional_arg_count" -eq 1 ]; then
-      return 0
-    fi
-    echo "$command_name requires -var-file=<env>.local.tfvars when using terraform-guarded.sh." >&2
-    exit 2
-  fi
-  if [ "$var_file_count" -ne 1 ]; then
-    echo "$command_name accepts exactly one -var-file when using terraform-guarded.sh." >&2
-    exit 2
-  fi
-
-  if [ "$mode" = "target" ] && { [ "${reviewed_target_scope:-}" = "app" ] || [ "${reviewed_target_scope:-}" = "foundation" ]; }; then
-    expected_var_file_name="pipeline.auto.tfvars"
-    if [ "$(basename "$var_file")" != "$expected_var_file_name" ]; then
-      echo "$command_name requires -var-file=${expected_var_file_name} for target ${reviewed_target_scope} state." >&2
-      exit 2
-    fi
-  else
-    expected_var_file_name="${env_name}.local.tfvars"
-    if [ "$(basename "$var_file")" != "$expected_var_file_name" ]; then
-      echo "$command_name requires -var-file=${expected_var_file_name} when using terraform-guarded.sh." >&2
-      exit 2
-    fi
-  fi
-
-  resolved_var_file="$(resolve_var_file "$var_file")"
+  local resolved_var_file tfvars_env_record tfvars_env
+  # Exact Plan arguments were admitted before this call.
+  resolved_var_file="$(resolve_var_file pipeline.auto.tfvars)"
   tfvars_env_record="$(read_tfvars_environment "$resolved_var_file")"
   tfvars_env="${tfvars_env_record#*:}"
   if [ "$tfvars_env" != "$env_name" ]; then
@@ -732,147 +471,42 @@ require_matching_tfvars_environment() {
     echo "tfvars environment: $tfvars_env" >&2
     exit 2
   fi
-  if [ "$mode" = "target" ]; then
-    validate_target_tfvars_identity "$resolved_var_file"
-  fi
-
+  validate_target_tfvars_identity "$resolved_var_file"
   printf '%s' "$resolved_var_file"
 }
 
-require_app_apply_saved_plan_args() {
+require_managed_apply_saved_plan_args() {
   shift
   if [ "$#" -ne 2 ] || [ "$1" != "-auto-approve" ] || [ "$2" != "tfplan" ]; then
-    echo "app apply accepts only the reviewed pipeline saved plan command shape: apply -auto-approve tfplan." >&2
+    echo "${reviewed_target_scope} apply accepts only the reviewed pipeline saved plan command shape: apply -auto-approve tfplan." >&2
     exit 2
   fi
 }
 
-require_app_plan_args() {
+require_managed_plan_args() {
   shift
-
-  if is_app_signature_preflight_plan_caller; then
-    local -a actual_args=("$@")
-    local -a expected_args=(
-      "-out=tfplan"
-      "-var-file=pipeline.auto.tfvars"
-      "-target=terraform_data.image_signature_verifier_reconciliation_authority"
-      "-target=aws_lambda_alias.image_signature_verifier_preflight"
-    )
-    if [ "$reviewed_target_environment_id" = "main" ] && [ "$#" -eq 10 ]; then
-      require_target_tfvars_value "$terraform_working_dir/pipeline.auto.tfvars" verifier_phase prerequisite
-      local initialization_targets
-      initialization_targets="$(node --input-type=module --eval '
-        const { resolveAppVerifierInitializationScope } = await import(process.argv[1]);
-        const scope = resolveAppVerifierInitializationScope("prerequisite", process.argv[2]);
-        process.stdout.write(scope.resourceAddresses.map((address) => `-target=${address}`).join("\n"));
-      ' "${terraform_guard_script_dir}/../../packages/deployment-authority/src/app-verifier-initialization.js" "${reviewed_target_account_label}/${reviewed_target_environment_id}")"
-      local -a prerequisite_targets
-      mapfile -t prerequisite_targets <<< "$initialization_targets"
-      if [ "${#prerequisite_targets[@]}" -ne 8 ]; then
-        echo "Initial verifier plan requires the exact canonical resource scope." >&2
-        exit 2
-      fi
-      expected_args=("-out=tfplan" "-var-file=pipeline.auto.tfvars" "${prerequisite_targets[@]}")
-    fi
-    if [ "$#" -ne "${#expected_args[@]}" ]; then
-      echo "signature preflight plan accepts only the exact verifier-only saved-plan target set." >&2
-      exit 2
-    fi
-    local index
-    for index in "${!expected_args[@]}"; do
-      if [ "${actual_args[$index]}" != "${expected_args[$index]}" ]; then
-        echo "signature preflight plan accepts only the exact verifier-only saved-plan target set." >&2
-        exit 2
-      fi
-    done
-    return 0
-  fi
 
   if [ "$#" -ne 2 ] || [ "$1" != "-out=tfplan" ] || [ "$2" != "-var-file=pipeline.auto.tfvars" ]; then
-    echo "app plan accepts only the reviewed pipeline plan command shape: plan -out=tfplan -var-file=pipeline.auto.tfvars." >&2
+    echo "${reviewed_target_scope} plan accepts only the reviewed pipeline plan command shape: plan -out=tfplan -var-file=pipeline.auto.tfvars." >&2
     exit 2
   fi
 }
 
-require_app_init_args() {
+require_managed_init_args() {
   shift
 
-  if [ "$#" -ne 1 ]; then
-    echo "app init requires exactly one backend config argument: -backend-config=backend.pipeline.hcl." >&2
-    exit 2
-  fi
-
-  case "$1" in
-    -backend-config=backend.pipeline.hcl)
-      ;;
-    *)
-      echo "app init requires exactly one backend config argument: -backend-config=backend.pipeline.hcl." >&2
-      exit 2
-      ;;
-  esac
-}
-
-require_foundation_apply_saved_plan_args() {
-  shift
-  if [ "$#" -ne 2 ] || [ "$1" != "-auto-approve" ] || [ "$2" != "tfplan" ]; then
-    echo "foundation apply accepts only the reviewed pipeline saved plan command shape: apply -auto-approve tfplan." >&2
-    exit 2
-  fi
-}
-
-require_foundation_plan_args() {
-  shift
-  if [ "$#" -ne 2 ] || [ "$1" != "-out=tfplan" ] || [ "$2" != "-var-file=pipeline.auto.tfvars" ]; then
-    echo "foundation plan accepts only the reviewed pipeline plan command shape: plan -out=tfplan -var-file=pipeline.auto.tfvars." >&2
-    exit 2
-  fi
-}
-
-require_foundation_init_args() {
-  shift
-
-  if [ "$#" -ne 1 ]; then
-    echo "foundation init requires exactly one backend config argument: -backend-config=backend.pipeline.hcl." >&2
-    exit 2
-  fi
-
-  case "$1" in
-    -backend-config=backend.pipeline.hcl)
-      ;;
-    *)
-      echo "foundation init requires exactly one backend config argument: -backend-config=backend.pipeline.hcl." >&2
-      exit 2
-      ;;
-  esac
-}
-
-normalize_terraform_args() {
-  local resolved_var_file="$1"
-  shift
-  local arg
-  local next_is_var_file=0
-  TERRAFORM_ARGS=()
-
-  for arg in "$@"; do
-    if [ "$next_is_var_file" -eq 1 ]; then
-      TERRAFORM_ARGS+=("$resolved_var_file")
-      next_is_var_file=0
-      continue
+  if [ "$current_terraform_caller_role_name" = "$reviewed_terraform_apply_role" ]; then
+    if [ "$#" -eq 2 ] && [ "$1" = "-lockfile=readonly" ] && [ "$2" = "-backend-config=backend.pipeline.hcl" ]; then
+      return 0
     fi
-
-    case "$arg" in
-      -var-file=*)
-        TERRAFORM_ARGS+=("-var-file=${resolved_var_file}")
-        ;;
-      -var-file)
-        TERRAFORM_ARGS+=("$arg")
-        next_is_var_file=1
-        ;;
-      *)
-        TERRAFORM_ARGS+=("$arg")
-        ;;
-    esac
-  done
+    echo "${reviewed_target_scope} apply-role init requires exactly: -lockfile=readonly -backend-config=backend.pipeline.hcl." >&2
+  else
+    if [ "$#" -eq 1 ] && [ "$1" = "-backend-config=backend.pipeline.hcl" ]; then
+      return 0
+    fi
+    echo "${reviewed_target_scope} plan-role init requires exactly: -backend-config=backend.pipeline.hcl." >&2
+  fi
+  exit 2
 }
 
 resolve_backend_config_file() {
@@ -905,47 +539,13 @@ resolve_backend_config_file() {
   exit 2
 }
 
-read_backend_scalar() {
-  local backend_file="$1"
-  local requested_key="$2"
-  local line key value
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="$(trim "$line")"
-    case "$line" in
-      ''|'#'*)
-        continue
-        ;;
-    esac
-    case "$line" in
-      *=*)
-        key="${line%%=*}"
-        key="$(trim "$key")"
-        if [ "$key" != "$requested_key" ]; then
-          continue
-        fi
-        value="${line#*=}"
-        value="$(trim "$value")"
-        value="${value%%#*}"
-        value="$(trim "$value")"
-        value="${value%\"}"
-        value="${value#\"}"
-        printf '%s' "$value"
-        return 0
-        ;;
-    esac
-  done < "$backend_file"
-
-  return 1
-}
-
 require_target_backend_value() {
   local backend_file="$1"
   local key="$2"
   local expected="$3"
   local actual
 
-  if ! actual="$(read_backend_scalar "$backend_file" "$key")"; then
+  if ! actual="$(read_hcl_scalar "$backend_file" "$key")"; then
     echo "Terraform target backend config must include ${key}." >&2
     exit 2
   fi
@@ -1015,7 +615,7 @@ require_backend_value() {
   local label="$4"
   local actual
 
-  if ! actual="$(read_backend_scalar "$backend_file" "$key")"; then
+  if ! actual="$(read_hcl_scalar "$backend_file" "$key")"; then
     echo "Terraform app backend config must include ${key}." >&2
     exit 2
   fi
@@ -1050,6 +650,10 @@ require_matching_app_backend_identity() {
   if [ "$#" -gt 0 ] && [ "$1" = "init" ]; then
     shift
   fi
+  # The caller-role argument gate has already admitted this exact Apply prefix.
+  if [ "$#" -gt 0 ] && [ "$1" = "-lockfile=readonly" ]; then
+    shift
+  fi
   backend_file="${1#-backend-config=}"
   resolved_backend_file="$(resolve_backend_config_file "$backend_file")"
   expected_bucket="$(
@@ -1082,29 +686,18 @@ fi
 
 identity_arg="$1"
 shift
-mode="legacy"
-case "$identity_arg" in
-  develop|main)
-    env_name="$identity_arg"
-    ;;
-  *)
-    if is_target_identity "$identity_arg"; then
-      mode="target"
-      parse_target_identity "$identity_arg"
-      resolve_reviewed_target_root "$identity_arg" "$target_state_scope"
-      env_name="$reviewed_target_environment_id"
-    else
-      echo "Environment must be develop, main, or <account-alias>/<environment>/<state-scope>." >&2
-      usage >&2
-      exit 2
-    fi
-    ;;
-esac
+if ! is_target_identity "$identity_arg"; then
+  echo "Terraform requires <account-alias>/<environment>/<state-scope>; workspace-only identities are not supported." >&2
+  exit 2
+fi
+parse_target_identity "$identity_arg"
+resolve_reviewed_target_root "$identity_arg" "$target_state_scope"
+env_name="$reviewed_target_environment_id"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 load_env_file ".env.local"
-terraform_working_dir="${TERRAFORM_WORKING_DIR:-infra/terraform/legacy}"
+terraform_working_dir="${TERRAFORM_WORKING_DIR:-}"
 if [[ "$terraform_working_dir" = /* ]]; then
   echo "TERRAFORM_WORKING_DIR must be relative to the repository root." >&2
   exit 2
@@ -1113,73 +706,49 @@ if [[ "$terraform_working_dir" == *..* ]]; then
   echo "TERRAFORM_WORKING_DIR must not contain '..'." >&2
   exit 2
 fi
-if [ "$mode" = "target" ]; then
-  require_target_terraform_working_dir "$identity_arg" "$terraform_working_dir"
-fi
+require_target_terraform_working_dir "$identity_arg" "$terraform_working_dir"
 if [ ! -d "$terraform_working_dir" ]; then
   echo "Terraform working directory not found: $terraform_working_dir" >&2
   exit 2
 fi
 
-if [ "$mode" = "legacy" ]; then
-  env_upper="${env_name^^}"
-  expected_account_id="$(require_expected_account "$env_upper")"
-  require_terraform_admin_caller "$expected_account_id"
-  require_matching_workspace "$env_name"
+expected_account_id="$(require_expected_target_account "$reviewed_target_account_label")"
+if [ "$reviewed_target_scope" = "bootstrap" ]; then
+  echo "Bootstrap requires scripts/aws/bootstrap-local.ts or the explicit new-target initializer." >&2
+  exit 2
+fi
+require_managed_caller_for_command "$expected_account_id" "$1"
+case "$1" in
+  apply) require_managed_apply_saved_plan_args "$@" ;;
+  plan) require_managed_plan_args "$@" ;;
+esac
+if [ "$reviewed_target_scope" = "app" ] && [ "$1" = "init" ]; then
+  require_managed_init_args "$@"
+  require_matching_app_backend_identity "$identity_arg" "$@"
+fi
+if [ "$reviewed_target_scope" = "foundation" ] && [ "$1" = "init" ]; then
+  require_managed_init_args "$@"
+fi
+if [ "$1" = "smoke" ] && [ "$reviewed_target_scope" = "app" ]; then
+  echo "App smoke guard passed for ${identity_arg}."
+  exit 0
+elif [ "$1" = "smoke" ] && [ "$reviewed_target_scope" = "foundation" ]; then
+  echo "foundation smoke guard passed for ${identity_arg}."
+  exit 0
+elif [ "$1" = "init" ]; then
+  if [ "$reviewed_target_scope" != "app" ]; then
+    require_matching_target_backend_identity "$identity_arg" "$@"
+  fi
 else
-  expected_account_id="$(require_expected_target_account "$reviewed_target_account_label")"
-  if [ "$reviewed_target_scope" = "app" ]; then
-    require_app_caller_for_command "$expected_account_id" "$1"
-  elif [ "$reviewed_target_scope" = "foundation" ]; then
-    require_foundation_caller_for_command "$expected_account_id" "$1"
-  else
-    require_reviewed_bootstrap_identity "$identity_arg"
-    require_target_caller "$expected_account_id" "$target_state_scope"
-  fi
-  if [ "$reviewed_target_scope" = "app" ] && [ "$1" = "apply" ]; then
-    require_app_apply_saved_plan_args "$@"
-  fi
-  if [ "$reviewed_target_scope" = "foundation" ] && [ "$1" = "apply" ]; then
-    require_foundation_apply_saved_plan_args "$@"
-  fi
-  if [ "$reviewed_target_scope" = "app" ] && [ "$1" = "plan" ]; then
-    require_app_plan_args "$@"
-  fi
-  if [ "$reviewed_target_scope" = "foundation" ] && [ "$1" = "plan" ]; then
-    require_foundation_plan_args "$@"
-  fi
-  if [ "$reviewed_target_scope" = "app" ] && [ "$1" = "init" ]; then
-    require_app_init_args "$@"
-    require_matching_app_backend_identity "$identity_arg" "$@"
-  fi
-  if [ "$reviewed_target_scope" = "foundation" ] && [ "$1" = "init" ]; then
-    require_foundation_init_args "$@"
-  fi
-  if [ "$1" = "smoke" ] && [ "$reviewed_target_scope" = "app" ]; then
-    echo "App smoke guard passed for ${identity_arg}."
-    exit 0
-  elif [ "$1" = "smoke" ] && [ "$reviewed_target_scope" = "foundation" ]; then
-    echo "foundation smoke guard passed for ${identity_arg}."
-    exit 0
-  elif [ "$1" = "init" ]; then
-    if [ "$reviewed_target_scope" != "app" ]; then
-      require_matching_target_backend_identity "$identity_arg" "$@"
-    fi
-  else
-    require_matching_workspace "default"
-  fi
+  require_matching_workspace "default"
 fi
 
-validated_var_file="$(require_matching_tfvars_environment "$env_name" "$1" "$@")"
-if [ -n "$validated_var_file" ]; then
-  normalize_terraform_args "$validated_var_file" "$@"
+if [ "$1" = "plan" ]; then
+  validated_var_file="$(require_matching_tfvars_environment "$env_name")"
+  TERRAFORM_ARGS=(plan -out=tfplan "-var-file=${validated_var_file}")
 else
   TERRAFORM_ARGS=("$@")
 fi
 
-if [ "$mode" = "legacy" ]; then
-  echo "Terraform guard passed for ${env_name}."
-else
-  echo "Terraform guard passed for ${identity_arg}."
-fi
+echo "Terraform guard passed for ${identity_arg}."
 exec terraform -chdir="$terraform_working_dir" "${TERRAFORM_ARGS[@]}"

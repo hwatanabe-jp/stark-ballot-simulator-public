@@ -65,110 +65,71 @@ function isHashField(key: keyof KnowledgeData): boolean {
   return HASH_FIELDS.includes(key);
 }
 
-/**
- * Format a value for display
- */
-function formatValue(item: KnowledgeItemType, lang: 'ja' | 'en' = 'ja'): React.ReactNode {
+function formatProofBundleStatus(status: KnowledgeData['proofBundleStatus'], lang: 'ja' | 'en'): React.ReactNode {
+  const t = i18n[lang];
+  if (status === 'not_downloaded') return <span className="text-warning-600">{t.notDownloaded}</span>;
+  if (status === 'downloaded') return <span className="text-verified-600">{t.downloaded}</span>;
+  return status;
+}
+
+function formatBotVotesStatus(value: NonNullable<KnowledgeData['botVotesStatus']>, lang: 'ja' | 'en'): React.ReactNode {
+  const t = i18n[lang];
+  const resolved = typeof value === 'object' ? value : null;
+  const status = typeof value === 'object' ? value.status : value;
+  const total = resolved?.total;
+  const statusLabel = status === 'pending' ? t.pending : t.completed;
+  const totalLabel = typeof total === 'number' ? (lang === 'ja' ? `${total}${t.votes}` : `${total} ${t.votes}`) : null;
+  const combined = totalLabel ? `${totalLabel} (${statusLabel})` : statusLabel;
+  const statusClass = status === 'pending' ? 'text-warning-600' : 'text-verified-600';
+  return <span className={statusClass}>{combined}</span>;
+}
+
+function formatKnowledgeString(key: keyof KnowledgeData, value: string): React.ReactNode {
+  if (isHashField(key) || (value.startsWith('0x') && value.length > 20)) return <KnowledgeHash value={value} />;
+  return value;
+}
+
+function formatStructuredValue(item: KnowledgeItemType, lang: 'ja' | 'en'): React.ReactNode {
   const { key, value } = item;
   const t = i18n[lang];
-
-  // Handle number
-  if (typeof value === 'number') {
-    return value.toLocaleString();
-  }
-
-  // Handle proof bundle status
-  if (key === 'proofBundleStatus') {
-    const status = value;
-    if (status === 'not_downloaded') {
-      return <span className="text-warning-600">{t.notDownloaded}</span>;
-    }
-    if (status === 'downloaded') {
-      return <span className="text-verified-600">{t.downloaded}</span>;
-    }
-    return status;
-  }
-
-  if (key === 'botVotesStatus') {
-    const resolved = typeof value === 'object' ? value : null;
-    const status = typeof value === 'object' ? value.status : value;
-    const total = resolved?.total;
-    const statusLabel = status === 'pending' ? t.pending : t.completed;
-    const totalLabel =
-      typeof total === 'number' ? (lang === 'ja' ? `${total}${t.votes}` : `${total} ${t.votes}`) : null;
-    const combined = totalLabel ? `${totalLabel} (${statusLabel})` : statusLabel;
-    const statusClass = status === 'pending' ? 'text-warning-600' : 'text-verified-600';
-    return <span className={statusClass}>{combined}</span>;
-  }
-
-  if (key === 'scenarioId') {
-    return scenarioLabels[lang][value];
-  }
-
-  // Handle string
-  if (typeof value === 'string') {
-    // Check if it's a hash value
-    if (isHashField(key) || (value.startsWith('0x') && value.length > 20)) {
-      return <KnowledgeHash value={value} />;
-    }
-    return value;
-  }
-
-  // Handle tally counts object
-  if (key === 'tally.counts') {
-    const counts = value;
+  if (key === 'tally.counts')
     return (
       <span className="font-mono text-[0.8125rem]">
-        {Object.entries(counts)
+        {Object.entries(value)
           .map(([k, v]) => `${k}:${v}`)
           .join(' ')}
       </span>
     );
-  }
-
-  // Handle verification steps array
-  if (key === 'verification.steps') {
-    const steps = value;
-    const passedCount = steps.filter((s) => s.status === 'success').length;
+  if (key === 'verification.steps')
     return (
       <span className="font-mono text-[0.8125rem]">
-        {passedCount}/{steps.length} {t.verified}
+        {value.filter((s) => s.status === 'success').length}/{value.length} {t.verified}
       </span>
     );
-  }
-
-  // Handle receipt publication
-  if (key === 'receiptPublication') {
-    return <KnowledgeHash value={value.receiptHash} />;
-  }
-
-  // Handle inclusion proof (merklePath)
-  if (key === 'user.merklePath' || key === 'bot.merklePath') {
-    const proof = value;
+  if (key === 'receiptPublication') return <KnowledgeHash value={value.receiptHash} />;
+  if (key === 'user.merklePath' || key === 'bot.merklePath')
     return (
       <span className="font-mono text-[0.8125rem]">
-        idx:{proof.leafIndex} / {proof.treeSize}
+        idx:{value.leafIndex} / {value.treeSize}
       </span>
     );
-  }
+  if (key === 'user.voteReceipt') return <span className="font-mono text-[0.8125rem]">#{value.bulletinIndex}</span>;
+  return typeof value === 'object' ? (
+    <span className="text-[0.75rem] text-text-muted">
+      {Object.keys(value).length} {t.fields}
+    </span>
+  ) : null;
+}
 
-  // Handle vote receipt
-  if (key === 'user.voteReceipt') {
-    const receipt = value;
-    return <span className="font-mono text-[0.8125rem]">#{receipt.bulletinIndex}</span>;
-  }
-
-  // Handle objects by showing a summary
-  if (typeof value === 'object') {
-    const keys = Object.keys(value);
-    return (
-      <span className="text-[0.75rem] text-text-muted">
-        {keys.length} {t.fields}
-      </span>
-    );
-  }
-
-  return null;
+/** Format admitted knowledge while preserving the specialized status presentations. */
+function formatValue(item: KnowledgeItemType, lang: 'ja' | 'en' = 'ja'): React.ReactNode {
+  const { key, value } = item;
+  if (typeof value === 'number') return value.toLocaleString();
+  if (key === 'proofBundleStatus') return formatProofBundleStatus(value, lang);
+  if (key === 'botVotesStatus') return formatBotVotesStatus(value, lang);
+  if (key === 'scenarioId') return scenarioLabels[lang][value];
+  if (typeof value === 'string') return formatKnowledgeString(key, value);
+  return formatStructuredValue(item, lang);
 }
 
 /**

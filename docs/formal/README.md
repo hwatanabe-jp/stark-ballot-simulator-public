@@ -3,7 +3,7 @@
 This directory contains the stable outputs from the Lean 4 formalization
 workspace under `formal/`. Lean is installed through `elan`; `lake` is provided
 by the selected Lean toolchain rather than by a separate system package. The
-workspace pins `leanprover/lean4:v4.33.1` in `formal/lean-toolchain` for
+workspace pins `leanprover/lean4:v4.35.0` in `formal/lean-toolchain` for
 reproducible builds.
 
 ## Scope and Claim Boundaries
@@ -12,7 +12,8 @@ The formal layer covers a small fail-closed model for verification summaries, a
 mathematical `Nat` model for zkVM journal count fields,
 implementation-correspondence models for canonical input commitment preimage
 encoding and LSB-first bitmap packing, and an abstract guest state machine over
-presented vote records.
+presented vote records. `WorkerConcurrency.lean` additionally models distinct
+active attempts and the capacity bound of on-demand AWS Batch scheduling.
 
 The count model makes the slot partition explicit:
 
@@ -38,12 +39,51 @@ bound, not a third input precondition. The Rust checked validation-and-tally
 path independently validates the input ceilings, uses checked counter
 increments, and rejects a candidate bucket above the same ceiling.
 
-| Category      | Current claim                                                                                                                                                                                                                    |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Proved        | Fail-closed summary invariants, journal count partition facts, canonical input-order facts, LSB-first bitmap facts, abstract guest tally/order invariants, and guest count plus tally-bucket bounds under explicit input limits. |
-| Vector-tested | TypeScript summary/display behavior, TypeScript and Rust input commitment encoding, TypeScript and Rust bitmap packing/Merkle behavior, TypeScript check-definition metadata, and Rust guest-model correspondence cases.         |
-| Assumed       | SHA-256 collision resistance, RISC Zero receipt soundness, compiler/runtime correctness, and correctness of implementation surfaces outside the vector-tested contracts.                                                         |
-| Not claimed   | Full formal verification of the voting system, full Rust zkVM guest correctness, serialization boundaries, AWS runtime verification, React rendering correctness as a whole, or production election security.                    |
+| Category      | Current claim                                                                                                                                                                                                                                                                                                                       |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Proved        | Fail-closed summary invariants, journal count partition facts, canonical input-order facts, LSB-first bitmap facts, abstract guest tally/order invariants, guest count plus tally-bucket bounds under explicit input limits, distinct Batch attempts, a conditional two-attempt capacity bound, and two-attempt/drain reachability. |
+| Vector-tested | TypeScript summary/display behavior, TypeScript and Rust input commitment encoding, TypeScript and Rust bitmap packing/Merkle behavior, TypeScript check-definition metadata, and Rust guest-model correspondence cases.                                                                                                            |
+| Assumed       | SHA-256 collision resistance, RISC Zero receipt soundness, compiler/runtime correctness, correctness of implementation surfaces outside the vector-tested contracts, and the Batch admission, termination, and provider resource contracts detailed below.                                                                          |
+| Not claimed   | Full formal verification of the voting system, full Rust zkVM guest correctness, serialization boundaries, AWS runtime verification, worker liveness or exactly-once delivery, React rendering correctness as a whole, or production election security.                                                                             |
+
+## Worker Concurrency Claims
+
+The [worker model](../../formal/StarkBallotFormal/WorkerConcurrency.lean) covers
+one target's shared replenishable resource with two units, one required per
+single-container attempt. `BatchInvariant` states that active attempts are
+distinct and their count is at most two. `batch_step_preserves_invariant` and
+`batch_reachable_invariant` preserve both properties through each transition
+and every finite trace from an empty state. `batch_workers_at_most_two` exposes
+the capacity bound; `batch_can_run_two_and_drain` establishes a trace that
+admits two attempts together and then drains to zero.
+
+An active entry begins at Batch `STARTING`. `finished` represents provider
+release on `SUCCEEDED` or `FAILED` after computation stops, matching the
+[AWS resource lifecycle](https://docs.aws.amazon.com/batch/latest/userguide/resource-aware-scheduling-how-to-for-jobs.html).
+Queueing, cancellation requests, Step Functions timeouts, application callbacks,
+and ledger notifications preserve the modeled active set. A terminal
+application finalization is not evidence that Batch capacity has been released.
+Step Functions cancellation is
+[best effort](https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html).
+
+In the source checkout, correspondence is inspectable at these boundaries:
+
+| Model premise                                                             | Current source and checks                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One shared resource with two units; one unit per attempt                  | `infra/terraform/app/prover_batch.tf`, the exact-two validation in `infra/terraform/app/variables.tf`, and `infra/terraform/app/prover-batch.test.ts`.                                                                                                                                    |
+| Single-container on-demand work without a separate permit counter         | The same Batch job definition declares one Fargate container and one attempt. `infra/terraform/app/step_functions.tf` submits the exact job definition and queue without a SubmitJob retry; `infra/terraform/app/target-finalization-state-machine-contract.test.ts` check that boundary. |
+| Startup admission and process termination are separate from ledger events | The `infra/docker/entrypoint.sh` obtains writer admission before input access, waits for the host, and forwards termination signals; its `scripts/tests/entrypoint-bundle.test.sh` checks admission and interruption behavior. The retained janitor only normalizes ledger events.        |
+
+The capacity bound assumes that every attempt uses the same resource and that
+resource release follows physical computation stopping. Source checks inspect
+those assumptions in repository configuration and process handling; AWS scheduler
+and container-runtime correctness remain assumptions. Bypass launches and
+detached computation are outside the model.
+
+Worker correspondence uses the source checks above. The six vector contracts
+below cover other models; there are no worker vectors. Two-attempt/drain
+reachability establishes an available trace. It provides no fairness, eventual
+completion, exactly-once delivery, or cancellation-latency guarantee.
 
 ## Models and Vector Consumers
 
@@ -121,7 +161,7 @@ theorem statement hashes, byte-for-byte generated-vector hashes, checked
 `#print axioms` dependency summaries, the proof-hygiene scan summary, and the
 native-decision allowlist.
 
-The theorem dependencies are checked under Lean `v4.33.1`. The allowlisted Lean
+The theorem dependencies are checked under Lean `v4.35.0`. The allowlisted Lean
 core axioms are `propext`, `Quot.sound`, and `Classical.choice`. The
 `pack_bits_get_bit` theorem also depends on generated `native_decide` axioms from
 the exhaustive byte-bit case split in `byteValueAt_get_bit`;

@@ -1,3 +1,4 @@
+import { isNonArrayObject as isRecord } from '@stark-ballot/validation/unknown-value-guards';
 import { asFinalizationId } from '@stark-ballot/application/finalize/finalization-id';
 import type {
   FinalizationId,
@@ -67,10 +68,6 @@ const ELECTION_CONFIG_KEYS = new Set(['totalExpected', 'choices', 'version', 'bo
 const SCENARIO_CONTEXT_KEYS = new Set(['scenarios', 'tamperMode', 'claimedCounts', 'claimedTotalVotes', 'summary']);
 const CLAIMED_COUNTS_KEYS = new Set(['A', 'B', 'C', 'D', 'E']);
 const SCENARIO_SUMMARY_KEYS = new Set(['ignoredCount', 'recountedCount', 'userRecountChoice', 'affectedBotIds']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function assertRecord(value: unknown, label: string): Record<string, unknown> {
   if (!isRecord(value)) {
@@ -227,6 +224,16 @@ function parseClaimedCounts(value: unknown): FinalizationScenarioContext['claime
   };
 }
 
+function parseTamperMode(value: unknown): FinalizationScenarioContext['tamperMode'] {
+  if (value === 'none' || value === 'input' || value === 'claim') return value;
+  throw new Error('tamperMode must be none, input, or claim');
+}
+
+function parseUserRecountChoice(value: unknown): FinalizationScenarioContext['summary']['userRecountChoice'] {
+  if (value === null || value === 'A' || value === 'B' || value === 'C' || value === 'D' || value === 'E') return value;
+  throw new Error('userRecountChoice must be a vote choice or null');
+}
+
 function parseScenarioContext(value: unknown): FinalizationScenarioContext | undefined {
   if (value === undefined) {
     return undefined;
@@ -241,28 +248,13 @@ function parseScenarioContext(value: unknown): FinalizationScenarioContext | und
   }
   return {
     scenarios: parseScenarioCodes(record['scenarios']),
-    tamperMode:
-      record['tamperMode'] === 'none' || record['tamperMode'] === 'input' || record['tamperMode'] === 'claim'
-        ? record['tamperMode']
-        : (() => {
-            throw new Error('tamperMode must be none, input, or claim');
-          })(),
+    tamperMode: parseTamperMode(record['tamperMode']),
     claimedCounts: parseClaimedCounts(record['claimedCounts']),
     claimedTotalVotes: parseInteger(record['claimedTotalVotes'], 'claimedTotalVotes', { min: 0 }),
     summary: {
       ignoredCount: parseInteger(summary['ignoredCount'], 'ignoredCount', { min: 0 }),
       recountedCount: parseInteger(summary['recountedCount'], 'recountedCount', { min: 0 }),
-      userRecountChoice:
-        summary['userRecountChoice'] === null ||
-        summary['userRecountChoice'] === 'A' ||
-        summary['userRecountChoice'] === 'B' ||
-        summary['userRecountChoice'] === 'C' ||
-        summary['userRecountChoice'] === 'D' ||
-        summary['userRecountChoice'] === 'E'
-          ? summary['userRecountChoice']
-          : (() => {
-              throw new Error('userRecountChoice must be a vote choice or null');
-            })(),
+      userRecountChoice: parseUserRecountChoice(summary['userRecountChoice']),
       ...(affectedBotIds
         ? {
             affectedBotIds: affectedBotIds.map((entry, index) =>

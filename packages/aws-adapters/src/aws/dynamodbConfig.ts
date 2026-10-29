@@ -4,14 +4,11 @@ import {
   assertDynamoDbEndpointAllowed,
   requireDynamoDbRegion,
   resolveDynamoDbEndpoint,
-  resolveDynamoDbRegion,
 } from '@stark-ballot/runtime-config/env/dynamodbConfig';
 import type { ResolvedRuntimeProfile } from '@stark-ballot/runtime-config/env/runtimeProfile';
 import { omitUndefinedProperties } from '@stark-ballot/validation/definedProperties';
 
 let sharedDocumentClient: DynamoDBDocumentClient | null = null;
-
-export { assertDynamoDbEndpointAllowed, requireDynamoDbRegion, resolveDynamoDbEndpoint, resolveDynamoDbRegion };
 
 export function getSharedDynamoDocumentClient(
   profile: ResolvedRuntimeProfile,

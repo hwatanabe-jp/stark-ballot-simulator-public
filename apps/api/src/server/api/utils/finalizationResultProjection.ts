@@ -31,6 +31,10 @@ type PublicFinalizationVerificationState =
   | { verificationStatus: 'dev_mode'; verificationReport?: PublicVerificationDevModeReport }
   | { verificationStatus: 'failed'; verificationReport?: PublicVerificationFailedReport };
 
+function optionalVerificationReport<T>(report: T | undefined): { verificationReport?: T } {
+  return report ? { verificationReport: report } : {};
+}
+
 function projectPublicFinalizationVerificationState(
   result: VerificationResult | undefined,
 ): PublicFinalizationVerificationState {
@@ -42,17 +46,17 @@ function projectPublicFinalizationVerificationState(
     case 'success':
       return {
         verificationStatus: 'success',
-        ...(projected.report ? { verificationReport: projected.report } : {}),
+        ...optionalVerificationReport(projected.report),
       };
     case 'dev_mode':
       return {
         verificationStatus: 'dev_mode',
-        ...(projected.report ? { verificationReport: projected.report } : {}),
+        ...optionalVerificationReport(projected.report),
       };
     case 'failed':
       return {
         verificationStatus: 'failed',
-        ...(projected.report ? { verificationReport: projected.report } : {}),
+        ...optionalVerificationReport(projected.report),
       };
   }
 }
@@ -88,15 +92,19 @@ function admitFinalizationScenarios(values: string[]): ScenarioId[] {
   return scenarios;
 }
 
+function evidenceAvailability(value: unknown): 'available' | 'unavailable' {
+  return value ? 'available' : 'unavailable';
+}
+
 function deriveArtifactAvailability(
   evidence: FinalizationResultProjectionEvidence,
 ): FinalizationResult['artifactAvailability'] {
   const { verificationResult, deliveryMetadata } = evidence;
   return {
-    bundle: deliveryMetadata?.s3BundleKey || verificationResult ? 'available' : 'unavailable',
-    report: verificationResult?.report ? 'available' : 'unavailable',
-    includedBitmap: evidence.bitmapData?.includedBitmap ? 'available' : 'unavailable',
-    seenBitmap: evidence.bitmapData?.seenBitmap ? 'available' : 'unavailable',
+    bundle: evidenceAvailability(deliveryMetadata?.s3BundleKey || verificationResult),
+    report: evidenceAvailability(verificationResult?.report),
+    includedBitmap: evidenceAvailability(evidence.bitmapData?.includedBitmap),
+    seenBitmap: evidenceAvailability(evidence.bitmapData?.seenBitmap),
   };
 }
 

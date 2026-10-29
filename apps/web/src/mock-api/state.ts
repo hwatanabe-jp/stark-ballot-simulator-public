@@ -80,3 +80,40 @@ export function resetMockState(): MockState {
   currentState = createInitialState();
   return currentState;
 }
+
+export const MOCK_FINALIZATION_DURATION_MS = 20000;
+
+type MockFinalizationStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+
+function resolveMockFinalizationStatus(
+  state: MockState,
+  now: number,
+  startedAtMs: number,
+  completedAtMs: number,
+): MockFinalizationStatus {
+  if (typeof state.finalizationFailedAtMs === 'number') return 'failed';
+  if (now < startedAtMs) return 'pending';
+  if (now < completedAtMs) return 'running';
+  return 'succeeded';
+}
+
+export function resolveMockFinalizationTiming(state: MockState, now: number) {
+  const queuedAtMs = state.finalizationQueuedAtMs ?? now;
+  const startedAtMs = state.finalizationStartedAtMs ?? queuedAtMs + 2000;
+  const completedAtMs = state.finalizationCompletedAtMs ?? startedAtMs + MOCK_FINALIZATION_DURATION_MS;
+  return {
+    queuedAtMs,
+    startedAtMs,
+    completedAtMs,
+    status: resolveMockFinalizationStatus(state, now, startedAtMs, completedAtMs),
+  };
+}
+
+/** Verification requires an explicitly completed finalization, not an estimated deadline. */
+export function hasCompletedMockFinalization(state: MockState, now: number): boolean {
+  return (
+    typeof state.finalizationCompletedAtMs === 'number' &&
+    now >= state.finalizationCompletedAtMs &&
+    typeof state.finalizationFailedAtMs !== 'number'
+  );
+}
